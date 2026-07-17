@@ -278,6 +278,9 @@ touchpoint in the system, but still fully independent.
 **Deliverables:**
 - Indexing/embedding pipeline over a text corpus.
 - Retrieval + answer-synthesis call to the LLM, scoped to rephrase retrieved content only.
+- The LLM call goes through `pioneer.config.Settings` (`llm_base_url` + `llm_model`) against a
+  local, OpenAI-compatible endpoint — this is the point where the specific backend (Ollama,
+  llama.cpp, vLLM, ...) gets picked; nothing before this stage needs to care.
 
 **Test fixtures:** a small hand-written corpus (a few recipes + a few wiki-style paragraphs) — not
 the full Knowledge Base.
@@ -360,6 +363,9 @@ plumbs it together.
 - Tool-calling registration exposing every Stage 2–11 module's real function as a callable tool.
 - The routing loop: classify intent → call module(s) → run Stage 4 Verifier / Stage 15 scoring on
   the result → compose a `ResponseArtifact`.
+- Intent classification and tool-call routing go through the same local, OpenAI-compatible LLM
+  endpoint as Stage 11 (`pioneer.config.Settings`) — reuse that connection, don't stand up a
+  second LLM client.
 - Replace every fixture used by Presentation (Stages 12–14) with real Orchestrator output.
 - Replace the fixture recipe/corpus data used during isolated development with the real Stage 2
   Knowledge Base and Stage 6 Server Client / Stage 5 Save Parser, end to end.

@@ -75,6 +75,16 @@ This split is the single most important invariant in the system: **reasoning is 
 arithmetic is deterministic.** Keep them in separate code paths so the deterministic half can be
 unit-tested without ever invoking a model.
 
+### 3.1 LLM runtime
+
+The LLM runs **locally**, not against a hosted provider API. Every module that talks to it
+(Orchestrator, Q&A Engine) does so through an **OpenAI-compatible chat/completions endpoint** —
+that interface is the fixed assumption; the specific local backend behind it (Ollama, llama.cpp,
+vLLM, LM Studio, ...) is an implementation choice deferred to the stage that first needs it (Q&A
+Engine, implementation.md Stage 11) and swappable later without touching calling code. Config
+(`pioneer.config.Settings`) exposes this as `llm_base_url` + `llm_model`, with `llm_api_key`
+optional since most local setups don't require one.
+
 ## 4. High-level data flow
 
 ```mermaid
