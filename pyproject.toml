@@ -1,0 +1,33 @@
+[project]
+name = "pioneer"
+version = "0.1.0"
+description = "Satisfactory AI Planning Assistant"
+requires-python = ">=3.12"
+dependencies = [
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pioneer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
