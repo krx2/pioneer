@@ -21,7 +21,7 @@ build-backend = "hatchling.build"
 packages = ["src/pioneer"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "src"]
+testpaths = ["tests"]
 addopts = "-ra"
 
 [tool.ruff]

@@ -38,12 +38,20 @@ outputs (Stage 1 below). Once contracts exist, each module becomes a self-contai
 - Put shared contracts in their own package (e.g. `contracts/`) containing **only** data
   definitions (dataclasses / typed structures), zero logic. Every module imports from `contracts/`
   and nothing else in the codebase.
-- Give each module its own directory and its own test suite: `knowledge_base/`, `verifier/`,
+- Give each module its own directory under `src/pioneer/`: `knowledge_base/`, `verifier/`,
   `production_planner/`, etc. If a module's test file needs to reach into another module's
   directory to pass, that's a signal the contract leaked and needs tightening.
-- Keep a `fixtures/` folder per module with the synthetic data it needs (a handful of recipes, a
-  tiny sample `.sav`-shaped object, a handful of resource nodes). These fixtures are what make the
-  module testable without the real game, the real server, or any other module.
+- Tests live under the top-level `tests/` tree, mirroring the module layout one-to-one:
+  `tests/knowledge_base/`, `tests/verifier/`, etc. — not colocated inside `src/pioneer/<module>/`.
+- Keep a `fixtures/` folder per module **inside its `tests/<module>/` directory**, not inside
+  `src/pioneer/<module>/` — fixtures are test data, not something the module needs at runtime, so
+  they have no business being bundled into the installable package. Resolve a fixture path
+  relative to the test file itself (e.g. `Path(__file__).parent / "fixtures" / "..."`); since
+  fixtures now live next to the tests that use them, there's no need to go through the package's
+  `__file__` as a stable anchor. These fixtures are what make a module testable without the real
+  game, the real server, or any other module. Where a module has a real committed data source
+  worth checking against too (Knowledge Base's `docs/en-US.json`), add that as a *second*, bonus
+  test file — the fixture-based suite stays the one that decides whether the module is "done."
 - Don't reach for dependency injection or interfaces to fake other modules — you don't need that
   ceremony. Just don't call other modules' code from within a module's own package or tests.
 
@@ -106,17 +114,22 @@ simplest/leaf-first), but no stage here is blocked on another finishing first.
 **Contract:** produces `Recipe` / `Building` / `Technology` (Stage 1).
 
 **Deliverables:**
-- Loader that ingests recipe/building/technology data (from game files or a hand-curated export)
-  into the Stage 1 shapes.
+- Loader that ingests recipe/building/technology data from the game's own `Docs.json`-style
+  export (committed at `docs/en-US.json`) into the Stage 1 shapes.
 - Pure lookup functions: recipe(s) for output X, building for a recipe, prerequisites for a
   recipe/building.
 
-**Test fixtures:** a small hand-curated recipe set (10-20 recipes covering the iron chain examples
-from the source deck is enough) — no need to ingest the full game data set to consider this module
-done; that can grow later without touching any other module.
+**Test fixtures:** a small hand-curated `Docs.json`-shaped export (`fixtures/mini_docs.json`)
+covering the iron chain from the source deck, plus one alternate recipe and one schematic that
+should be filtered out — no need to ingest the full game data set to consider this module done;
+that can grow later without touching any other module. A second test file
+(`tests/knowledge_base/test_real_docs.py`) runs the same kind of checks against the real,
+committed `docs/en-US.json` as a bonus confidence check — proof the parsing logic holds up
+against the actual, messy source data, not just the small stand-in — but it is not the bar this
+module has to clear to be "done."
 
-**Done when:** "what recipes produce Reinforced Iron Plate" returns correct, tested answers against
-the fixture set, no other module involved.
+**Done when:** "what recipes produce Reinforced Iron Plate" returns correct, tested answers
+against the fixture set, no other module involved.
 
 ---
 
@@ -206,8 +219,9 @@ resources to X via graph search over recipe data.
 - Alternate-recipe awareness: expose the choice when multiple recipes produce the same output
   rather than silently picking one.
 
-**Test fixtures:** the same small recipe fixture set from Stage 2 (copy it into this module's own
-`fixtures/`, don't import Stage 2's loader) plus hand-verified expected output graphs.
+**Test fixtures:** a small hand-written `Recipe` set covering the iron chain (own `fixtures/`,
+don't import Stage 2's loader or read `docs/en-US.json` from here) plus hand-verified expected
+output graphs.
 
 **Done when:** "10/min of Reinforced Iron Plate" produces a correctly-shaped graph matching the
 example chains in the source deck, checked by hand or against a fixture expected-output — no live

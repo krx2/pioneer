@@ -20,6 +20,8 @@ class Building:
     building_id: str
     name: str
     power_consumption_mw: float
+    """Net power draw: positive = consumes power, negative = generates power (for generator
+    buildings). A single signed field so the Verifier can sum it directly for a power balance."""
     input_slots: int
     output_slots: int
 
@@ -36,7 +38,10 @@ class Technology:
 class Recipe:
     recipe_id: str
     name: str
-    building_id: str
+    building_ids: tuple[str, ...]
+    """A recipe can be craftable in more than one building (e.g. a manual Workbench recipe that's
+    also automatable in a Constructor) — every `Building.building_id` it can run in, in the
+    source data's own order (first entry is the primary/automated building, by convention)."""
     inputs: tuple[ItemAmount, ...]
     outputs: tuple[ItemAmount, ...]
     unlocked_by: str | None = None

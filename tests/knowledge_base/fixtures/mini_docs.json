@@ -1,0 +1,107 @@
+[
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGRecipe'",
+    "Classes": [
+      {
+        "ClassName": "Recipe_IngotIron_C",
+        "mDisplayName": "Iron Ingot",
+        "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/RawResources/OreIron/Desc_OreIron.Desc_OreIron_C'\",Amount=1))",
+        "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronIngot/Desc_IronIngot.Desc_IronIngot_C'\",Amount=1))",
+        "mManufactoringDuration": "2.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/SmelterMk1/Build_SmelterMk1.Build_SmelterMk1_C\")"
+      },
+      {
+        "ClassName": "Recipe_IronPlate_C",
+        "mDisplayName": "Iron Plate",
+        "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronIngot/Desc_IronIngot.Desc_IronIngot_C'\",Amount=3))",
+        "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronPlate/Desc_IronPlate.Desc_IronPlate_C'\",Amount=2))",
+        "mManufactoringDuration": "6.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Build_ConstructorMk1.Build_ConstructorMk1_C\")"
+      },
+      {
+        "ClassName": "Recipe_IronRod_C",
+        "mDisplayName": "Iron Rod",
+        "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronIngot/Desc_IronIngot.Desc_IronIngot_C'\",Amount=1))",
+        "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronRod/Desc_IronRod.Desc_IronRod_C'\",Amount=1))",
+        "mManufactoringDuration": "4.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Build_ConstructorMk1.Build_ConstructorMk1_C\")"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableManufacturer'",
+    "Classes": [
+      {
+        "ClassName": "Build_SmelterMk1_C",
+        "mDisplayName": "Smelter",
+        "mPowerConsumption": "4.000000"
+      },
+      {
+        "ClassName": "Build_ConstructorMk1_C",
+        "mDisplayName": "Constructor",
+        "mPowerConsumption": "4.000000"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableResourceExtractor'",
+    "Classes": [
+      {
+        "ClassName": "Build_MinerMk1_C",
+        "mDisplayName": "Miner Mk.1",
+        "mPowerConsumption": "5.000000"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorFuel'",
+    "Classes": [
+      {
+        "ClassName": "Build_GeneratorBiomass_C",
+        "mDisplayName": "Biomass Burner",
+        "mPowerConsumption": "0.000000",
+        "mPowerProduction": "30.000000"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGSchematic'",
+    "Classes": [
+      {
+        "ClassName": "Schematic_StartingRecipes_C",
+        "mDisplayName": "Starting Blueprints",
+        "mType": "EST_Custom",
+        "mTechTier": "0",
+        "mSchematicDependencies": [],
+        "mUnlocks": [
+          {
+            "Class": "BP_UnlockRecipe_C",
+            "mRecipes": "(\"/Game/FactoryGame/Recipes/Smelter/Recipe_IngotIron.Recipe_IngotIron_C\",\"/Game/FactoryGame/Recipes/Constructor/Recipe_IronPlate.Recipe_IronPlate_C\",\"/Game/FactoryGame/Recipes/Constructor/Recipe_IronRod.Recipe_IronRod_C\")"
+          }
+        ]
+      },
+      {
+        "ClassName": "Schematic_Alternate_PureIronIngot_C",
+        "mDisplayName": "Alternate: Pure Iron Ingot",
+        "mType": "EST_Alternate",
+        "mTechTier": "0",
+        "mSchematicDependencies": [
+          {
+            "Class": "BP_SchematicPurchasedDependency_C",
+            "mSchematics": "(\"/Game/FactoryGame/Schematics/Schematic_StartingRecipes.Schematic_StartingRecipes_C\")",
+            "mRequireAllSchematicsToBePurchased": "True"
+          }
+        ],
+        "mUnlocks": []
+      },
+      {
+        "ClassName": "Schematic_ResourceSinkBonus_C",
+        "mDisplayName": "Should be filtered out",
+        "mType": "EST_ResourceSink",
+        "mTechTier": "0",
+        "mSchematicDependencies": [],
+        "mUnlocks": []
+      }
+    ]
+  }
+]
