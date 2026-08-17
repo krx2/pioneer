@@ -1,0 +1,26 @@
+[
+  {
+    "node_id": "iron_node_pure_1",
+    "item_id": "Desc_OreIron_C",
+    "purity": "pure",
+    "position": { "x": 0.0, "y": 0.0, "z": 0.0 }
+  },
+  {
+    "node_id": "iron_node_normal_1",
+    "item_id": "Desc_OreIron_C",
+    "purity": "normal",
+    "position": { "x": 100.0, "y": 0.0, "z": 0.0 }
+  },
+  {
+    "node_id": "iron_node_impure_1",
+    "item_id": "Desc_OreIron_C",
+    "purity": "impure",
+    "position": { "x": 10.0, "y": 0.0, "z": 0.0 }
+  },
+  {
+    "node_id": "copper_node_normal_1",
+    "item_id": "Desc_OreCopper_C",
+    "purity": "normal",
+    "position": { "x": 5.0, "y": 0.0, "z": 0.0 }
+  }
+]
