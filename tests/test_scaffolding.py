@@ -42,3 +42,4 @@ def test_settings_load_from_env() -> None:
     assert settings.llm_api_key is None
     assert settings.dedicated_server_host is None
     assert settings.dedicated_server_port is None
+    assert settings.dedicated_server_api_token is None

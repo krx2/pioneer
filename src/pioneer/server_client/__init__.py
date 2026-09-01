@@ -4,3 +4,12 @@ Pulls live game state: progress, phase, session info. Depends only on `pioneer.c
 tested against mocked HTTP responses, including the "server unreachable" case, which must
 surface as a typed result, never a raw exception.
 """
+
+from pioneer.server_client.client import (
+    PostJson,
+    ServerUnavailable,
+    TransportError,
+    query_server_state,
+)
+
+__all__ = ["PostJson", "ServerUnavailable", "TransportError", "query_server_state"]

@@ -26,6 +26,10 @@ class Settings:
     llm_api_key: str | None
     dedicated_server_host: str | None
     dedicated_server_port: int | None
+    dedicated_server_api_token: str | None
+    """Bearer token for the Dedicated Server HTTPS API (see server_client's module docstring).
+    Obtained out-of-band via the server's login functions — not something this project logs into
+    on its own yet."""
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -36,6 +40,7 @@ class Settings:
             llm_api_key=os.environ.get("PIONEER_LLM_API_KEY"),
             dedicated_server_host=os.environ.get("PIONEER_SERVER_HOST"),
             dedicated_server_port=int(port) if port else None,
+            dedicated_server_api_token=os.environ.get("PIONEER_SERVER_API_TOKEN"),
         )
 
 

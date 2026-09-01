@@ -43,7 +43,7 @@ def test_resource_node_and_placement() -> None:
 
 
 def test_game_state() -> None:
-    state = c.GameState(phase="tier_3", progress_percent=42.0)
+    state = c.GameState(phase="tier_3", tech_tier=6)
     assert state.session_name is None
 
 
