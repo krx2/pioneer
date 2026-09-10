@@ -3,3 +3,7 @@
 Scans a production state for gaps, power blackouts, and congestion. Depends only on
 `pioneer.contracts`; tested against a deliberately-broken fixture production graph.
 """
+
+from pioneer.anomaly_detector.detector import detect_anomalies
+
+__all__ = ["detect_anomalies"]
