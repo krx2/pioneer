@@ -4,3 +4,7 @@ Given a new target and an existing production state, computes the minimal delta 
 instead of planning from scratch. Depends only on `pioneer.contracts`; tested against hand-built
 "existing" vs. "from scratch" graph fixtures.
 """
+
+from pioneer.expansion_advisor.advisor import advise_expansion
+
+__all__ = ["advise_expansion"]
