@@ -4,3 +4,27 @@ Answers free-form game-mechanics questions via retrieval-augmented generation. T
 touchpoint in the system, but still fully independent — tested against a small fixture corpus,
 not the full Knowledge Base.
 """
+
+from pioneer.qa_engine.engine import (
+    ChatCompletion,
+    Citation,
+    LLMUnavailable,
+    NoRelevantPassages,
+    QAAnswer,
+    TransportError,
+    answer_question,
+)
+from pioneer.qa_engine.retrieval import Passage, ScoredPassage, retrieve
+
+__all__ = [
+    "ChatCompletion",
+    "Citation",
+    "LLMUnavailable",
+    "NoRelevantPassages",
+    "Passage",
+    "QAAnswer",
+    "ScoredPassage",
+    "TransportError",
+    "answer_question",
+    "retrieve",
+]
