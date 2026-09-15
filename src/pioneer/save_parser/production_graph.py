@@ -1,0 +1,53 @@
+"""Folds recipe-carrying placements into a `ProductionGraph` describing what the player has built.
+
+One node per distinct recipe, its `machine_count` being how many buildings are running that recipe
+— which is exactly what the Expansion Advisor (Stage 8) matches on when deciding whether to extend
+an existing factory or add a new stage, and what the Verifier (Stage 4) needs to compute balance
+and power draw over the existing factory.
+
+**`flows` is empty, deliberately.** Material routing between machines isn't recoverable from what
+this parser reads: a belt's endpoints live in conveyor-specific trailing data that needs per-class
+parsing (see entities.py). Deriving flows would instead mean asking the Knowledge Base what each
+recipe consumes — a different module's data, which this one must not import. The Stage 8 consumer
+doesn't need them (`advise_expansion` takes its flows from the *target* plan), so an empty tuple is
+the honest shape here rather than a guessed one.
+
+**Machines are counted, not clock-scaled.** A building overclocked to 250% still counts as one
+machine, because its `mCurrentPotential` isn't read yet. Nothing downstream currently models clock
+speed either, so this is consistent — just be aware the count is buildings, not effective capacity.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+from pioneer.contracts import PlacementRecord, ProductionGraph, ProductionNode
+
+
+def to_production_graph(placements: Sequence[PlacementRecord]) -> ProductionGraph:
+    """Every placement carrying a `recipe_id`, grouped into one node per recipe. Placements without
+    one (belts, storage, unconfigured machines) are skipped — they aren't production stages.
+
+    `is_existing=True` on every node: all of this came out of a save file, so Graph presentation
+    (Stage 13) renders it as already-built rather than newly-proposed.
+    """
+    machine_counts: dict[str, int] = {}
+    building_ids: dict[str, str] = {}
+
+    for placement in placements:
+        if placement.recipe_id is None:
+            continue
+        machine_counts[placement.recipe_id] = machine_counts.get(placement.recipe_id, 0) + 1
+        building_ids.setdefault(placement.recipe_id, placement.building_id)
+
+    nodes = tuple(
+        ProductionNode(
+            node_id=f"save_{recipe_id}",
+            recipe_id=recipe_id,
+            building_id=building_ids[recipe_id],
+            machine_count=count,
+            is_existing=True,
+        )
+        for recipe_id, count in machine_counts.items()
+    )
+    return ProductionGraph(nodes=nodes, flows=())

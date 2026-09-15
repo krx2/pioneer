@@ -1,8 +1,9 @@
 """Runtime configuration, loaded from environment variables.
 
-Environment-specific values (LLM endpoint, dedicated server address) live only in environment
-variables — optionally via a local `.env` file, which is gitignored. Never hardcode a secret here
-or anywhere else. See `.env.example` for the full list of variables.
+Environment-specific values (LLM endpoint, dedicated server address, save location) live only in
+environment variables — optionally via a local `.env` file, which is gitignored. Never hardcode a
+secret, or a machine-specific path, here or anywhere else. See `.env.example` for the full list of
+variables.
 
 The LLM is expected to run locally (e.g. Ollama, llama.cpp, vLLM) behind an OpenAI-compatible
 endpoint, so `llm_base_url` / `llm_model` are the primary settings. `llm_api_key` is optional and
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -30,6 +32,10 @@ class Settings:
     """Bearer token for the Dedicated Server HTTPS API (see server_client's module docstring).
     Obtained out-of-band via the server's login functions — not something this project logs into
     on its own yet."""
+    save_directory: str | None
+    """Where to look for `.sav` files; the newest one wins (see `save_parser.find_latest_save`).
+    Defaults to the game's own dedicated-server save location, so a normal Windows install needs
+    no configuration at all."""
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -41,7 +47,18 @@ class Settings:
             dedicated_server_host=os.environ.get("PIONEER_SERVER_HOST"),
             dedicated_server_port=int(port) if port else None,
             dedicated_server_api_token=os.environ.get("PIONEER_SERVER_API_TOKEN"),
+            save_directory=os.environ.get("PIONEER_SAVE_DIR") or default_save_directory(),
         )
+
+
+def default_save_directory() -> str | None:
+    """`%LOCALAPPDATA%/FactoryGame/Saved/SaveGames/server` — where the game itself stores saves
+    pulled from a dedicated server (the only play mode this project supports, per architecture.md
+    §2). `None` off Windows, or if `LOCALAPPDATA` isn't set; set `PIONEER_SAVE_DIR` then."""
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    return str(Path(local_app_data) / "FactoryGame" / "Saved" / "SaveGames" / "server")
 
 
 settings = Settings.from_env()

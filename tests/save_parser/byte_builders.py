@@ -112,9 +112,57 @@ def component_header_bytes(
     return out
 
 
-def object_table_bytes(headers: list[bytes]) -> bytes:
-    """The `[length: int64][numObjects: int32][headers...]` framing `object_table` resyncs onto
-    and reads. `length` is written correctly here (unlike some real saves — see
-    object_table.py's module docstring) since this fixture is for testing the happy path."""
-    payload = struct.pack("<i", len(headers)) + b"".join(headers)
+def object_property_tag_bytes(
+    *,
+    name: str,
+    referenced_path: str,
+    size: int = 0,
+    array_index: int = 0,
+    padding_before_value: bytes = b"\x00\x00\x00\x00\x00",
+) -> bytes:
+    """One `ObjectProperty`-typed tag as `properties.read_property_tag` +
+    `read_object_reference_value` expect to resync onto: `[Name][Type="ObjectProperty"]
+    [ArrayIndex][Size]`, then arbitrary `padding_before_value` (standing in for the tag's
+    `HasPropertyGuid` byte and whatever else -- see properties.py's module docstring for why the
+    real value is found by resync, not a fixed offset) before the referenced object's own path
+    `FString`.
+    """
+    out = fstring(name) + fstring("ObjectProperty")
+    out += struct.pack("<ii", array_index, size)
+    out += padding_before_value
+    out += fstring(referenced_path)
+    return out
+
+
+def property_list_terminator_bytes() -> bytes:
+    """The `"None"` tag that ends a property list — just its name `FString`, per
+    `properties.read_property_tag`."""
+    return fstring("None")
+
+
+def object_table_bytes(headers: list[bytes], *, trailing_block: bytes = b"") -> bytes:
+    """The `[length: int64][numObjects: int32][headers...][trailing_block]` framing `object_table`
+    resyncs onto and reads. `trailing_block` stands in for the real format's persistent-level flag,
+    level name and collected-object list, which `entities.find_entity_spans` skips wholesale via
+    the declared `length` — so `length` covers it here, exactly as in a real save."""
+    payload = struct.pack("<i", len(headers)) + b"".join(headers) + trailing_block
+    return struct.pack("<q", len(payload)) + payload
+
+
+def entity_bytes(payload: bytes, *, entity_save_version: int = 60) -> bytes:
+    """One entity, framed as `entities._read_one_entity_span` expects:
+    `[entitySaveVersion: uint32][shouldMigrate: uint32][length: int32][payload]`, plus the
+    "no data package version follows" int32 that trails entities from save version 53 on."""
+    out = struct.pack("<II", entity_save_version, 0)
+    out += struct.pack("<i", len(payload))
+    out += payload
+    if entity_save_version >= 53:
+        out += struct.pack("<i", 0)  # haveDataPackageVersion
+    return out
+
+
+def entity_section_bytes(entities: list[bytes]) -> bytes:
+    """The `[length: int64][countEntities: int32][entities...]` section that follows the objects
+    section — `length` counts everything after itself, as in a real save."""
+    payload = struct.pack("<i", len(entities)) + b"".join(entities)
     return struct.pack("<q", len(payload)) + payload

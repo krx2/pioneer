@@ -13,6 +13,9 @@ from dataclasses import dataclass
 class ItemAmount:
     item_id: str
     amount_per_minute: float
+    """Units per minute for solid items, m³ per minute for liquids and gases — the same numbers
+    the game's own UI shows. (The `Docs.json` export stores fluids in litres; normalizing that is
+    the Knowledge Base loader's job, see its module docstring.)"""
 
 
 @dataclass(frozen=True)

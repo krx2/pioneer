@@ -25,6 +25,75 @@
         "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronRod/Desc_IronRod.Desc_IronRod_C'\",Amount=1))",
         "mManufactoringDuration": "4.000000",
         "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Build_ConstructorMk1.Build_ConstructorMk1_C\")"
+      },
+      {
+        "ClassName": "Recipe_ResidualPlastic_C",
+        "mDisplayName": "Residual Plastic",
+        "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/PolymerResin/Desc_PolymerResin.Desc_PolymerResin_C'\",Amount=6),(ItemClass=\"/Game/FactoryGame/Resource/RawResources/Water/Desc_Water.Desc_Water_C'\",Amount=2000))",
+        "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/Plastic/Desc_Plastic.Desc_Plastic_C'\",Amount=2))",
+        "mManufactoringDuration": "6.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/OilRefinery/Build_OilRefinery.Build_OilRefinery_C\")"
+      },
+      {
+        "ClassName": "Recipe_LiquidFuel_C",
+        "mDisplayName": "Fuel",
+        "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/RawResources/CrudeOil/Desc_LiquidOil.Desc_LiquidOil_C'\",Amount=6000))",
+        "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/LiquidFuel/Desc_LiquidFuel.Desc_LiquidFuel_C'\",Amount=4000),(ItemClass=\"/Game/FactoryGame/Resource/Parts/PolymerResin/Desc_PolymerResin.Desc_PolymerResin_C'\",Amount=3))",
+        "mManufactoringDuration": "6.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/OilRefinery/Build_OilRefinery.Build_OilRefinery_C\")"
+      },
+      {
+        "ClassName": "Recipe_NitricAcid_C",
+        "mDisplayName": "Nitric Acid",
+        "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/RawResources/NitrogenGas/Desc_NitrogenGas.Desc_NitrogenGas_C'\",Amount=12000))",
+        "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/NitricAcid/Desc_NitricAcid.Desc_NitricAcid_C'\",Amount=3000))",
+        "mManufactoringDuration": "6.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/OilRefinery/Build_OilRefinery.Build_OilRefinery_C\")"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGItemDescriptor'",
+    "Classes": [
+      {
+        "ClassName": "Desc_PolymerResin_C",
+        "mDisplayName": "Polymer Resin",
+        "mForm": "RF_SOLID"
+      },
+      {
+        "ClassName": "Desc_Plastic_C",
+        "mDisplayName": "Plastic",
+        "mForm": "RF_SOLID"
+      },
+      {
+        "ClassName": "Desc_LiquidFuel_C",
+        "mDisplayName": "Fuel",
+        "mForm": "RF_LIQUID"
+      },
+      {
+        "ClassName": "Desc_NitricAcid_C",
+        "mDisplayName": "Nitric Acid",
+        "mForm": "RF_LIQUID"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGResourceDescriptor'",
+    "Classes": [
+      {
+        "ClassName": "Desc_Water_C",
+        "mDisplayName": "Water",
+        "mForm": "RF_LIQUID"
+      },
+      {
+        "ClassName": "Desc_LiquidOil_C",
+        "mDisplayName": "Crude Oil",
+        "mForm": "RF_LIQUID"
+      },
+      {
+        "ClassName": "Desc_NitrogenGas_C",
+        "mDisplayName": "Nitrogen Gas",
+        "mForm": "RF_GAS"
       }
     ]
   },
@@ -40,6 +109,11 @@
         "ClassName": "Build_ConstructorMk1_C",
         "mDisplayName": "Constructor",
         "mPowerConsumption": "4.000000"
+      },
+      {
+        "ClassName": "Build_OilRefinery_C",
+        "mDisplayName": "Refinery",
+        "mPowerConsumption": "30.000000"
       }
     ]
   },

@@ -23,12 +23,14 @@ headers from it decodes cleanly with zero errors, and the recognizable results (
 buildings, vehicle classes, ...) match what's actually in each save — see
 test_real_saves_object_table.py.
 
-**Known gap:** the table's own declared `length` doesn't land exactly on the offset reached after
-reading `numObjects` headers (off by 29 bytes on one fixture, 177 on the other, out of several
-million) — some rare object variant likely has one field this module doesn't model. `numObjects`
-is what actually drives parsing (and every header across both real saves decodes without error),
-so this doesn't affect correctness of what gets read; `length` is only used to *locate* the table,
-never to bound the read.
+**The declared `length` covers more than the headers.** It doesn't land on the offset reached after
+reading `numObjects` headers (off by 29 bytes on one fixture, 177 on the other) because a trailing
+block follows them inside the same section: a persistent-level flag, the level name, and a list of
+"collected" object references. 29 bytes is exactly `int32` flag + `FString "Persistent_Level"` +
+`int32` zero collectables; the other fixture's 177 is the same plus its non-empty collectable list.
+`numObjects` drives header parsing, and `section_end_offset` (from that declared `length`) is what
+`entities.py` uses to skip the whole trailing block in one step — verified to land exactly on the
+entity section's own length prefix in both real saves.
 """
 
 from __future__ import annotations
@@ -68,6 +70,17 @@ class RawObjectHeader:
     they carry an `OuterPathName` instead, consumed here but not surfaced)."""
 
 
+@dataclass(frozen=True)
+class ObjectTable:
+    headers: tuple[RawObjectHeader, ...]
+    headers_end_offset: int
+    """Byte offset just past the last header — the start of the section's trailing block (see
+    module docstring)."""
+    section_end_offset: int
+    """Byte offset just past the whole objects section, from its own declared `length`. Where the
+    entity data section begins — see `entities.find_entity_spans`."""
+
+
 def find_and_read_object_table(
     body: bytes,
     search_from: int = 0,
@@ -75,6 +88,22 @@ def find_and_read_object_table(
     min_object_count: int = _DEFAULT_MIN_OBJECT_COUNT,
     min_table_length: int = _DEFAULT_MIN_TABLE_LENGTH,
 ) -> tuple[RawObjectHeader, ...]:
+    """Just the headers — see `find_object_table` when the section's byte offsets are needed too."""
+    return find_object_table(
+        body,
+        search_from,
+        min_object_count=min_object_count,
+        min_table_length=min_table_length,
+    ).headers
+
+
+def find_object_table(
+    body: bytes,
+    search_from: int = 0,
+    *,
+    min_object_count: int = _DEFAULT_MIN_OBJECT_COUNT,
+    min_table_length: int = _DEFAULT_MIN_TABLE_LENGTH,
+) -> ObjectTable:
     """Locates the object table in `body` (searching from `search_from` onward) and parses every
     entry in it. Raises `ValueError` if no plausible table is found.
 
@@ -135,11 +164,17 @@ def _validate_candidate(
     return length_offset
 
 
-def _read_object_table(body: bytes, table_start: int) -> tuple[RawObjectHeader, ...]:
+def _read_object_table(body: bytes, table_start: int) -> ObjectTable:
     reader = ByteReader(body, table_start)
-    reader.read_int64()  # table length -- only used to *locate* the table, see module docstring
+    section_length = reader.read_int64()
+    section_start = reader.offset  # the length counts everything *after* itself
     num_objects = reader.read_int32()
-    return tuple(_read_one_object_header(reader) for _ in range(num_objects))
+    headers = tuple(_read_one_object_header(reader) for _ in range(num_objects))
+    return ObjectTable(
+        headers=headers,
+        headers_end_offset=reader.offset,
+        section_end_offset=section_start + section_length,
+    )
 
 
 def _read_one_object_header(reader: ByteReader) -> RawObjectHeader:

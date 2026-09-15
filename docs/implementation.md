@@ -118,6 +118,10 @@ simplest/leaf-first), but no stage here is blocked on another finishing first.
   export (committed at `docs/en-US.json`) into the Stage 1 shapes.
 - Pure lookup functions: recipe(s) for output X, building for a recipe, prerequisites for a
   recipe/building.
+- Normalization of the export's own quirks into the units the rest of the project expects. The
+  significant one: liquid and gas amounts are stored in litres (×1000 vs the m³ the game's UI
+  shows), distinguishable only via the item descriptors' `mForm` field, so the loader indexes
+  those and scales fluids back down. See loader.py's module docstring for the full list.
 
 **Test fixtures:** a small hand-curated `Docs.json`-shaped export (`fixtures/mini_docs.json`)
 covering the iron chain from the source deck, plus one alternate recipe and one schematic that

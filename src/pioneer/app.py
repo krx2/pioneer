@@ -1,27 +1,91 @@
-"""Composition root — wires config, the real LLM transport, and the Orchestrator into a runnable
-assistant. Everything below this module is transport-agnostic and independently testable; this is
-the one place a concrete LLM backend actually gets picked (implementation.md Stage 16).
+"""Composition root — wires config, the real LLM transport, the game data and the Orchestrator into
+a runnable assistant. Everything below this module is transport-agnostic and independently testable;
+this is the one place a concrete LLM backend gets picked and real data gets loaded off disk
+(implementation.md Stage 16).
 
 Run as:
 
     python -m pioneer.app "I want to produce 10/min of Iron Plate"
 
 Requires a local OpenAI-compatible LLM server (Ollama, llama.cpp, vLLM, ...) reachable at
-`PIONEER_LLM_BASE_URL` -- see `.env.example`. Runs with an empty `OrchestratorContext` (no
-knowledge base / save / resource DB wired in yet), so every tool that needs game data reports that
-limitation gracefully rather than fabricating it -- wire a real `OrchestratorContext` once the
-Knowledge Base, Resource DB, Save Parser and Dedicated Server Client are loaded at startup.
+`PIONEER_LLM_BASE_URL` -- see `.env.example`.
+
+`build_context` loads the Knowledge Base from the game's own `docs/en-US.json` export and the
+player's factory from the newest save in `PIONEER_SAVE_DIR` (defaulting to the game's dedicated-
+server save folder). Each source degrades independently, per architecture.md invariant #5: a
+missing save leaves `existing_graph` unset and the expansion/diagnosis tools say so rather than
+inventing a factory, and a missing knowledge base leaves planning unavailable rather than guessing
+recipes. Nothing here raises on missing data -- only on a missing LLM endpoint, without which
+there's no assistant at all.
 """
 
 from __future__ import annotations
 
+import struct
 import sys
 import uuid
+import zlib
+from pathlib import Path
 
 from pioneer.config import settings
 from pioneer.contracts import ResponseArtifact
+from pioneer.knowledge_base import KnowledgeBase, load_from_file
 from pioneer.llm_client import chat_completion, tool_calling_chat_completion
 from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable, handle_query
+from pioneer.save_parser import SaveState, find_latest_save, load_save_state
+
+_DOCS_JSON = Path(__file__).parent.parent.parent / "docs" / "en-US.json"
+
+
+def load_knowledge_base() -> KnowledgeBase | None:
+    if not _DOCS_JSON.is_file():
+        return None
+    try:
+        return load_from_file(_DOCS_JSON)
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def load_latest_save_state() -> tuple[SaveState | None, Path | None]:
+    """The newest save's parsed state, plus which file it came from (for reporting). Both `None`
+    when no save directory is configured, none is found, or the file can't be parsed."""
+    if not settings.save_directory:
+        return None, None
+    save_path = find_latest_save(settings.save_directory)
+    if save_path is None:
+        return None, None
+    try:
+        return load_save_state(save_path), save_path
+    except (OSError, ValueError, struct.error, zlib.error) as error:
+        # A save being written as we read it, or from a game version this parser doesn't handle
+        # yet, degrades to "no factory state" rather than taking the whole assistant down.
+        print(f"warning: could not parse {save_path.name}: {error}", file=sys.stderr)
+        return None, save_path
+
+
+def build_context() -> tuple[OrchestratorContext, str]:
+    """The context plus a one-line summary of what actually got loaded, for the CLI to report."""
+    kb = load_knowledge_base()
+    state, save_path = load_latest_save_state()
+
+    notes = []
+    notes.append(f"{len(kb.recipes)} recipes" if kb else "no knowledge base")
+    if state is not None and save_path is not None:
+        machines = sum(node.machine_count for node in state.graph.nodes)
+        notes.append(
+            f"save {save_path.name}: {len(state.placements)} buildings, "
+            f"{machines} running {len(state.graph.nodes)} recipes"
+        )
+    else:
+        notes.append("no save loaded")
+
+    context = OrchestratorContext(
+        recipes=kb.recipes if kb else (),
+        buildings=kb.buildings if kb else (),
+        existing_graph=state.graph if state else None,
+        existing_placements=state.placements if state else (),
+    )
+    return context, " | ".join(notes)
 
 
 def ask(
@@ -32,11 +96,13 @@ def ask(
             "PIONEER_LLM_BASE_URL / PIONEER_LLM_MODEL are not set -- copy .env.example to .env "
             "and point them at your local Ollama/llama.cpp/vLLM server first."
         )
+    if context is None:
+        context, _ = build_context()
     return handle_query(
         tool_calling_chat_completion,
         chat_completion,
         question,
-        context or OrchestratorContext(),
+        context,
         llm_base_url=settings.llm_base_url,
         llm_model=settings.llm_model,
         llm_api_key=settings.llm_api_key,
@@ -48,8 +114,11 @@ def main() -> None:
     if len(sys.argv) < 2:
         print('usage: python -m pioneer.app "your question"')
         raise SystemExit(1)
-    question = " ".join(sys.argv[1:])
-    result = ask(question)
+
+    context, summary = build_context()
+    print(f"[{summary}]", file=sys.stderr)
+
+    result = ask(" ".join(sys.argv[1:]), context)
     if isinstance(result, OrchestratorUnavailable):
         print(f"Pioneer is unavailable: {result.reason}")
         raise SystemExit(1)

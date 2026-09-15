@@ -20,6 +20,13 @@ docs/implementation.md Stage 2 discussion) and encoded as deliberate choices bel
   game encodes milestone order via `mTechTier` and MAM unlocks via in-game item scanning,
   neither of which is prerequisite data we can parse out of this file. `Technology.prerequisites`
   is therefore genuinely empty for milestones/MAM, not a parsing gap.
+- **Fluid amounts are stored scaled by 1000.** The export writes liquid and gas quantities in
+  litres while the game's own UI (and every other tool) talks in m³ — `Recipe_LiquidFuel_C` lists
+  its crude oil ingredient as `60000`, meaning 60 m³/min. Solids are unscaled. Which items are
+  fluids comes from the item descriptors' `mForm` field (`RF_LIQUID`/`RF_GAS` vs `RF_SOLID`), so
+  `_load_item_forms` indexes every descriptor in the export and `_item_amount` divides fluid
+  amounts back down. Without this, anything touching oil, water, gas or their derivatives is off
+  by three orders of magnitude — machine counts, balance, power, anomaly severities.
 """
 
 from __future__ import annotations
@@ -58,6 +65,10 @@ _BUILDING_NATIVE_CLASSES = (
 # recipes) all can.
 _IRRELEVANT_SCHEMATIC_TYPES = frozenset({"EST_ResourceSink", "EST_Customization", "EST_Tutorial"})
 
+_FLUID_FORMS = frozenset({"RF_LIQUID", "RF_GAS"})
+_LITRES_PER_CUBIC_METRE = 1000.0
+"""Fluid amounts ship in litres; every consumer of this data works in m³ — see module docstring."""
+
 
 def load_from_file(path: Path | str) -> KnowledgeBase:
     with open(path, encoding="utf-16") as f:
@@ -68,7 +79,8 @@ def load_from_file(path: Path | str) -> KnowledgeBase:
 def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
     entries_by_native_class = _index_by_native_class(raw_docs)
 
-    recipes = _load_recipes(entries_by_native_class.get(_RECIPE_NATIVE_CLASS, []))
+    item_forms = _load_item_forms(entries_by_native_class)
+    recipes = _load_recipes(entries_by_native_class.get(_RECIPE_NATIVE_CLASS, []), item_forms)
     buildings = _load_buildings(entries_by_native_class, recipes)
     technologies, recipe_to_technology = _load_technologies(
         entries_by_native_class.get(_SCHEMATIC_NATIVE_CLASS, [])
@@ -85,22 +97,51 @@ def _index_by_native_class(raw_docs: list[dict[str, Any]]) -> dict[str, list[dic
     return {class_name_from_path(entry["NativeClass"]): entry["Classes"] for entry in raw_docs}
 
 
+def _load_item_forms(entries_by_native_class: dict[str, list[dict[str, Any]]]) -> dict[str, str]:
+    """`item_id -> mForm`, across every class in the export that declares one.
+
+    Scanned by field rather than from a fixed list of descriptor native classes (`FGItemDescriptor`,
+    `FGResourceDescriptor`, `FGItemDescriptorBiomass`, ...) — there are a dozen-odd of them and the
+    game adds more between versions, but they all carry `mForm`, so this keeps working.
+    """
+    return {
+        entry["ClassName"]: entry["mForm"]
+        for entries in entries_by_native_class.values()
+        for entry in entries
+        if "mForm" in entry and "ClassName" in entry
+    }
+
+
 def _rate_per_minute(amount: float, duration_seconds: float) -> float:
     if duration_seconds <= 0:
         return 0.0
     return amount / duration_seconds * 60.0
 
 
-def _load_recipes(entries: list[dict[str, Any]]) -> tuple[Recipe, ...]:
+def _item_amount(
+    item_id: str, amount: float, duration: float, item_forms: dict[str, str]
+) -> ItemAmount:
+    """One ingredient/product, in units (or m³ for fluids) per minute.
+
+    An item with no `mForm` in the export is treated as solid: an unknown item is far likelier to
+    be a descriptor type this parser hasn't seen than a secret fluid, and leaving an amount alone
+    is the harmless failure — scaling one that shouldn't be is not.
+    """
+    if item_forms.get(item_id) in _FLUID_FORMS:
+        amount /= _LITRES_PER_CUBIC_METRE
+    return ItemAmount(item_id=item_id, amount_per_minute=_rate_per_minute(amount, duration))
+
+
+def _load_recipes(entries: list[dict[str, Any]], item_forms: dict[str, str]) -> tuple[Recipe, ...]:
     recipes = []
     for entry in entries:
         duration = float(entry.get("mManufactoringDuration") or 0)
         inputs = tuple(
-            ItemAmount(item_id=item_id, amount_per_minute=_rate_per_minute(amount, duration))
+            _item_amount(item_id, amount, duration, item_forms)
             for item_id, amount in parse_item_amounts(entry.get("mIngredients", ""))
         )
         outputs = tuple(
-            ItemAmount(item_id=item_id, amount_per_minute=_rate_per_minute(amount, duration))
+            _item_amount(item_id, amount, duration, item_forms)
             for item_id, amount in parse_item_amounts(entry.get("mProduct", ""))
         )
         building_ids = parse_quoted_class_list(entry.get("mProducedIn", ""))

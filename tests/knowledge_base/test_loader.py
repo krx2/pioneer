@@ -33,6 +33,51 @@ def test_recipe_with_uneven_ratio(kb) -> None:
     assert recipe.outputs[0].amount_per_minute == pytest.approx(20.0)
 
 
+def test_liquid_ingredient_is_scaled_down_to_cubic_metres(kb) -> None:
+    """The export stores fluids in litres — 2000 per 6s craft is 20 m³/min, not 20000."""
+    recipe = next(r for r in kb.recipes if r.recipe_id == "Recipe_ResidualPlastic_C")
+    water = next(i for i in recipe.inputs if i.item_id == "Desc_Water_C")
+    assert water.amount_per_minute == pytest.approx(20.0)
+
+
+def test_solid_alongside_a_liquid_in_the_same_recipe_is_untouched(kb) -> None:
+    recipe = next(r for r in kb.recipes if r.recipe_id == "Recipe_ResidualPlastic_C")
+    resin = next(i for i in recipe.inputs if i.item_id == "Desc_PolymerResin_C")
+    plastic = next(o for o in recipe.outputs if o.item_id == "Desc_Plastic_C")
+    assert resin.amount_per_minute == pytest.approx(60.0)
+    assert plastic.amount_per_minute == pytest.approx(20.0)
+
+
+def test_liquid_product_is_scaled_down_too(kb) -> None:
+    recipe = next(r for r in kb.recipes if r.recipe_id == "Recipe_LiquidFuel_C")
+    oil = next(i for i in recipe.inputs if i.item_id == "Desc_LiquidOil_C")
+    fuel = next(o for o in recipe.outputs if o.item_id == "Desc_LiquidFuel_C")
+    resin = next(o for o in recipe.outputs if o.item_id == "Desc_PolymerResin_C")
+    assert oil.amount_per_minute == pytest.approx(60.0)
+    assert fuel.amount_per_minute == pytest.approx(40.0)
+    assert resin.amount_per_minute == pytest.approx(30.0)
+
+
+def test_gases_are_scaled_like_liquids(kb) -> None:
+    recipe = next(r for r in kb.recipes if r.recipe_id == "Recipe_NitricAcid_C")
+    nitrogen = next(i for i in recipe.inputs if i.item_id == "Desc_NitrogenGas_C")
+    assert nitrogen.amount_per_minute == pytest.approx(120.0)
+
+
+def test_item_with_no_descriptor_in_the_export_is_treated_as_solid(kb) -> None:
+    """The iron chain's items carry no `mForm` entry in this fixture — an unknown item must be
+    left alone, not scaled on the off-chance it's a fluid."""
+    recipe = next(r for r in kb.recipes if r.recipe_id == "Recipe_IngotIron_C")
+    assert recipe.inputs[0].item_id == "Desc_OreIron_C"
+    assert recipe.inputs[0].amount_per_minute == pytest.approx(30.0)
+
+
+def test_slots_come_from_the_widest_recipe_in_a_building(kb) -> None:
+    refinery = next(b for b in kb.buildings if b.building_id == "Build_OilRefinery_C")
+    # Residual Plastic has two inputs, Fuel has two outputs.
+    assert (refinery.input_slots, refinery.output_slots) == (2, 2)
+
+
 def test_recipe_building_ids(kb) -> None:
     recipe = next(r for r in kb.recipes if r.recipe_id == "Recipe_IronRod_C")
     assert recipe.building_ids == ("Build_ConstructorMk1_C",)

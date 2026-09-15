@@ -12,16 +12,21 @@ path instead, since the object table carries no equivalent field.
 uses for `Building.building_id`, so a `PlacementRecord` here and a `Building` from the Knowledge
 Base are keyed identically.
 
-`recipe_id` is always `None` here. Determining which recipe a manufacturer is currently running
-means reading its property data — see docs/implementation.md Stage 5 notes for why that's deferred
-(the property blob has no per-object length markers reliable enough yet to associate a recipe with
-a *specific* building with full confidence, unlike everything in `object_table.py`).
+`recipe_id` is filled in by `to_placement_records_with_recipes`, which reads each building's own
+`mCurrentRecipe` property out of its entity span (see entities.py for the framing and properties.py
+for the extraction). `to_placement_records` is the headers-only version, for callers that have no
+decompressed body to search — it leaves `recipe_id` as `None`, which is a real "not known", not
+"not running a recipe".
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pioneer.contracts import PlacementRecord
+from pioneer.save_parser.entities import EntitySpan
 from pioneer.save_parser.object_table import RawObjectHeader
+from pioneer.save_parser.properties import find_recipe_ids
 
 _BUILDABLE_PATH_MARKER = "/Buildable/"
 
@@ -41,7 +46,7 @@ def _building_id(class_name: str) -> str:
 
 
 def to_placement_records(headers: tuple[RawObjectHeader, ...]) -> tuple[PlacementRecord, ...]:
-    """Every placed building in `headers`, in TOC order."""
+    """Every placed building in `headers`, in TOC order, with `recipe_id` left unknown (`None`)."""
     records = []
     for header in headers:
         if not is_building(header):
@@ -49,5 +54,40 @@ def to_placement_records(headers: tuple[RawObjectHeader, ...]) -> tuple[Placemen
         assert header.position is not None  # guaranteed by is_building, for the type checker
         records.append(
             PlacementRecord(building_id=_building_id(header.class_name), position=header.position)
+        )
+    return tuple(records)
+
+
+def to_placement_records_with_recipes(
+    headers: tuple[RawObjectHeader, ...],
+    body: bytes,
+    spans: Sequence[EntitySpan],
+) -> tuple[PlacementRecord, ...]:
+    """Every placed building in `headers`, in TOC order, with `recipe_id` read from each one's own
+    entity span. `spans[i]` must be the span for `headers[i]` — the pairing `entities.
+    find_entity_spans` guarantees.
+
+    A building with no `mCurrentRecipe` keeps `recipe_id=None`: most buildings genuinely have no
+    recipe (belts, storage, poles, miners), and a manufacturer the player never configured hasn't
+    got one either. Where a span somehow holds more than one, the first is used — no such case
+    occurs in either real fixture save.
+    """
+    if len(spans) != len(headers):
+        raise ValueError(
+            f"got {len(spans)} entity spans for {len(headers)} object headers -- they must pair up"
+        )
+
+    records = []
+    for header, span in zip(headers, spans, strict=True):
+        if not is_building(header):
+            continue
+        assert header.position is not None  # guaranteed by is_building, for the type checker
+        recipe_ids = find_recipe_ids(body, start=span.start, end=span.end)
+        records.append(
+            PlacementRecord(
+                building_id=_building_id(header.class_name),
+                position=header.position,
+                recipe_id=recipe_ids[0] if recipe_ids else None,
+            )
         )
     return tuple(records)

@@ -1,9 +1,16 @@
 """Tests for mapping the raw object table into PlacementRecords, against hand-built
 `RawObjectHeader` tuples — no byte parsing involved here, see test_object_table.py for that."""
 
+import pytest
+from tests.save_parser.byte_builders import (
+    object_property_tag_bytes,
+    property_list_terminator_bytes,
+)
+
 from pioneer.contracts import Coordinates, PlacementRecord
+from pioneer.save_parser.entities import EntitySpan
 from pioneer.save_parser.object_table import RawObjectHeader
-from pioneer.save_parser.placements import to_placement_records
+from pioneer.save_parser.placements import to_placement_records, to_placement_records_with_recipes
 
 _SMELTER = RawObjectHeader(
     is_actor=True,
@@ -57,3 +64,66 @@ def test_preserves_toc_order_and_filters_mixed_list() -> None:
 def test_recipe_id_defaults_to_none() -> None:
     (record,) = to_placement_records((_SMELTER,))
     assert record.recipe_id is None
+
+
+def _body_with_spans(*payloads: bytes) -> tuple[bytes, tuple[EntitySpan, ...]]:
+    body = b""
+    spans = []
+    for payload in payloads:
+        spans.append(EntitySpan(start=len(body), end=len(body) + len(payload)))
+        body += payload
+    return body, tuple(spans)
+
+
+_RECIPE_TAG = (
+    object_property_tag_bytes(
+        name="mCurrentRecipe",
+        referenced_path="/Game/FactoryGame/Recipes/Recipe_IngotIron_C.Recipe_IngotIron_C",
+    )
+    + property_list_terminator_bytes()
+)
+
+
+def test_recipe_is_read_from_the_buildings_own_span() -> None:
+    body, spans = _body_with_spans(_RECIPE_TAG)
+
+    (record,) = to_placement_records_with_recipes((_SMELTER,), body, spans)
+
+    assert record.building_id == "Build_SmelterMk1_C"
+    assert record.recipe_id == "Recipe_IngotIron_C"
+
+
+def test_building_without_a_recipe_property_keeps_none() -> None:
+    body, spans = _body_with_spans(property_list_terminator_bytes())
+
+    (record,) = to_placement_records_with_recipes((_SMELTER,), body, spans)
+
+    assert record.recipe_id is None
+
+
+def test_a_neighbours_recipe_does_not_leak_across_spans() -> None:
+    body, spans = _body_with_spans(property_list_terminator_bytes(), _RECIPE_TAG)
+
+    first, second = to_placement_records_with_recipes((_SMELTER, _SMELTER), body, spans)
+
+    assert first.recipe_id is None
+    assert second.recipe_id == "Recipe_IngotIron_C"
+
+
+def test_spans_are_paired_with_headers_including_skipped_non_buildings() -> None:
+    """Spans pair with *every* object, not just buildings — so the recipe must follow the header
+    it belongs to even when a non-building sits between them."""
+    body, spans = _body_with_spans(property_list_terminator_bytes(), b"", _RECIPE_TAG)
+
+    headers = (_PLAYER, _INVENTORY_COMPONENT, _SMELTER)
+    records = to_placement_records_with_recipes(headers, body, spans)
+
+    assert len(records) == 1
+    assert records[0].recipe_id == "Recipe_IngotIron_C"
+
+
+def test_span_count_must_match_header_count() -> None:
+    body, spans = _body_with_spans(_RECIPE_TAG)
+
+    with pytest.raises(ValueError, match="must pair up"):
+        to_placement_records_with_recipes((_SMELTER, _SMELTER), body, spans)
