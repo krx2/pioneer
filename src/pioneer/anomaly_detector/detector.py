@@ -64,9 +64,7 @@ def detect_anomalies(
     records.extend(
         _deficits(item_balance, expected_raw, demand_by_item, consumers_by_item, rate_tolerance)
     )
-    records.extend(
-        _power_blackout(net_power_draw_mw, available_power_mw, rate_tolerance)
-    )
+    records.extend(_power_blackout(net_power_draw_mw, available_power_mw, rate_tolerance))
     records.extend(_congestion(flows, belt_capacity_per_minute, rate_tolerance))
     records.extend(_surpluses(item_balance, expected_output, rate_tolerance))
     return tuple(records)

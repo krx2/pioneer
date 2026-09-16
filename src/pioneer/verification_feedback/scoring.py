@@ -240,9 +240,7 @@ def score_response(
     if artifact.chat is not None:
         chat_score = check_rag_consistency(artifact.chat, cited_passages)
         if artifact.feedback is not None and artifact.feedback.qualitative_score is not None:
-            chat_score = replace(
-                chat_score, qualitative_score=artifact.feedback.qualitative_score
-            )
+            chat_score = replace(chat_score, qualitative_score=artifact.feedback.qualitative_score)
 
     graph_score = None
     if artifact.graph is not None:

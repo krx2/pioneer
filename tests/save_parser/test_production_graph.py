@@ -24,6 +24,20 @@ def test_one_node_per_recipe_counting_machines() -> None:
     assert counts == {"Recipe_IngotIron_C": 2, "Recipe_IngotCopper_C": 1}
 
 
+def test_machine_count_is_the_sum_of_clock_speeds() -> None:
+    """Three constructors underclocked to 50% make what 1.5 would."""
+    underclocked = PlacementRecord(
+        building_id="Build_ConstructorMk1_C",
+        position=Coordinates(x=0.0, y=0.0, z=0.0),
+        recipe_id="Recipe_IronPlate_C",
+        clock_speed=0.5,
+    )
+
+    (node,) = to_production_graph((underclocked, underclocked, underclocked)).nodes
+
+    assert node.machine_count == 1.5
+
+
 def test_placements_without_a_recipe_are_skipped() -> None:
     graph = to_production_graph((_placement(None, "Build_ConveyorBeltMk1_C"), _placement(None)))
 

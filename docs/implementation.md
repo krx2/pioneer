@@ -122,6 +122,13 @@ simplest/leaf-first), but no stage here is blocked on another finishing first.
   significant one: liquid and gas amounts are stored in litres (×1000 vs the m³ the game's UI
   shows), distinguishable only via the item descriptors' `mForm` field, so the loader indexes
   those and scales fluids back down. See loader.py's module docstring for the full list.
+- Only *factory* recipes are kept — 291 of the export's 872; the rest are build-gun, Equipment
+  Workshop and Craft Bench recipes no module can plan, place or count. Each `Item` records whether
+  it's a raw resource (the export's `FGResourceDescriptor`s) and each `Recipe` whether the game
+  presents it as an alternate ("Alternate: ..."). Recipes alone can't answer either question on
+  real data: 1.0's Converter has recipes *producing* ores, so a planner that treats "has a
+  recipe" as "crafted" walks ore -> ore -> ore in a circle.
+- `find_items` resolves the in-game names a player (or the LLM) uses into item ids.
 
 **Test fixtures:** a small hand-curated `Docs.json`-shaped export (`fixtures/mini_docs.json`)
 covering the iron chain from the source deck, plus one alternate recipe and one schematic that
@@ -184,6 +191,13 @@ Parser to generate them, write them by hand.
 - Parser for the `.sav` format (or the relevant subset).
 - Mapping from parsed data into the Stage 1 shapes. Recipe IDs are resolved against a **fixture**
   recipe list for this module's own tests — not a live call into the Stage 2 module.
+- Per placed building: its recipe (`mCurrentRecipe`), clock speed (`mCurrentPotential` — absent
+  means 100%, since the game doesn't save defaults) and, for generators, fuel
+  (`mCurrentFuelClass`). The existing-factory graph's `machine_count` is clock-scaled: effective
+  machines at 100%, so it can be fractional.
+- Not recoverable from a save, by design or by format: belt routing (the graph's `flows` stay
+  empty — see production_graph.py), and resource node purity/type (resource node actors carry only
+  `mResourcesLeft`), which has to come from Stage 3's static data instead.
 
 **Test fixtures:** one or two real (or hand-constructed) sample `.sav` files with known contents.
 
@@ -222,6 +236,14 @@ resources to X via graph search over recipe data.
 - BFS/graph-search implementation over `Recipe` data.
 - Alternate-recipe awareness: expose the choice when multiple recipes produce the same output
   rather than silently picking one.
+- Found on real data, not in the fixtures: expansion stops at raw resources (passed in by the
+  caller — the game has recipes *producing* ores), the default recipe choice prefers standard
+  recipes, primary outputs and shallow chains, and a candidate that loops back on the item being
+  planned is skipped (Fuel <- unpackaging <- Packaged Fuel <- Fuel). `tests/end_to_end/` plans
+  every craftable item in the real Knowledge Base to keep it that way.
+- `available_supply`: demand already covered from outside the plan — an existing factory's spare
+  output — gets no new machines, and neither does anything upstream of it. This is what the
+  Expansion Advisor (Stage 8) is fed.
 
 **Test fixtures:** a small hand-written `Recipe` set covering the iron chain (own `fixtures/`,
 don't import Stage 2's loader or read `docs/en-US.json` from here) plus hand-verified expected
@@ -238,11 +260,18 @@ call to the Verifier required to pass this module's own tests.
 **Goal:** given a new target and an *existing* production state, compute the minimal delta —
 which factories to extend, what new stage to add — instead of planning from scratch.
 
-**Contract:** consumes an existing `ProductionGraph` + a target "from-scratch" `ProductionGraph`,
-produces a `ChangeSet`.
+**Contract:** consumes an existing `ProductionGraph` + the Stage 7 plan of *additions* (planned
+with the existing factory's surplus as `available_supply`), produces a `ChangeSet`.
 
 **Deliverables:**
-- Diff logic between the two graphs.
+- Mapping each addition onto the existing factory: `EXTEND` a node already running its recipe,
+  `ADD` otherwise, with the plan's flows rewired onto the resulting node ids.
+
+**Revised after real-data testing:** the original design diffed a from-scratch plan against the
+existing factory's *gross* machine counts. On a real save that answered "5/min more Reinforced
+Iron Plate" with "nothing to build" for a factory already 30 Iron Ingot/min short — machines busy
+feeding the existing factory were counted as free. Spare capacity is now the Verifier's positive
+balance, consumed by the planner before any machine is planned.
 
 **Test fixtures:** hand-built "existing factories" graph + hand-built "from scratch" graph (you can
 copy a Stage 7 example output as a fixture, no live dependency), with a known-correct expected
@@ -389,6 +418,22 @@ plumbs it together.
   Knowledge Base and Stage 6 Server Client / Stage 5 Save Parser, end to end.
 - End-to-end tests (the example flow in architecture.md §5, run for real) become the top-level
   confidence check, on top of — not instead of — every module's own fixture-based test suite.
+
+**Status / decisions so far:**
+- Tool calling *is* the intent classification: which tool the model reaches for is the intent, so
+  there's no separate classification call and the `Intent` contract is currently unused.
+- Tools take in-game item names as well as ids (`find_item`, `list_recipes_for_item`, and name
+  resolution inside every other tool, with closest-match suggestions on a miss).
+- No tool failure escapes `handle_query`: expected and unexpected errors alike come back to the
+  model as an error result it can explain.
+- Diagnosis judges the existing factory against every *placed* building — extractors, pumps and
+  generators, which its recipe graph never contains — counts generator fuel burn as consumption,
+  and treats raw resources and hand-gathered items (no factory recipe) as inputs, not shortfalls.
+- `tests/end_to_end/test_real_data.py` runs the real Knowledge Base and both fixture saves through
+  `app.build_context` with a scripted model standing in for the LLM.
+- Still open: resource node data (Stage 3) for the Map channel and the Location Advisor, a Q&A
+  corpus, the live Server Client transport, the Stage 15 verification pass inside the loop, and a
+  real UI instead of the CLI.
 
 **Done when:** "I want to produce 10/min of X" goes in through Chat and comes back out as a
 verified Chat + Graph + Map response, built entirely from real module calls, with no fixtures left

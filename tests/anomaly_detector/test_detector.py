@@ -32,9 +32,7 @@ _SHORT_GRAPH = ProductionGraph(
             source_node_id="smelters",
             target_node_id="plates",
         ),
-        MaterialFlow(
-            item_id="Desc_IronPlate_C", amount_per_minute=60, source_node_id="plates"
-        ),
+        MaterialFlow(item_id="Desc_IronPlate_C", amount_per_minute=60, source_node_id="plates"),
     ),
 )
 _SHORT_BALANCE = {
@@ -152,9 +150,7 @@ def test_congestion_on_an_over_capacity_flow() -> None:
 def test_record_ordering_is_deficits_then_power_then_congestion_then_surplus() -> None:
     graph = ProductionGraph(
         nodes=(),
-        flows=(
-            MaterialFlow(item_id="belt_item", amount_per_minute=1000, target_node_id="n"),
-        ),
+        flows=(MaterialFlow(item_id="belt_item", amount_per_minute=1000, target_node_id="n"),),
     )
     balance = {"short_item": -10.0, "extra_item": 10.0}
 

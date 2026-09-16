@@ -16,7 +16,7 @@
         "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronIngot/Desc_IronIngot.Desc_IronIngot_C'\",Amount=3))",
         "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronPlate/Desc_IronPlate.Desc_IronPlate_C'\",Amount=2))",
         "mManufactoringDuration": "6.000000",
-        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Build_ConstructorMk1.Build_ConstructorMk1_C\")"
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Build_ConstructorMk1.Build_ConstructorMk1_C\",\"/Game/FactoryGame/Buildable/-Shared/WorkBench/BP_WorkBenchComponent.BP_WorkBenchComponent_C\",\"/Script/FactoryGame.FGBuildableAutomatedWorkBench\")"
       },
       {
         "ClassName": "Recipe_IronRod_C",
@@ -25,6 +25,14 @@
         "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronRod/Desc_IronRod.Desc_IronRod_C'\",Amount=1))",
         "mManufactoringDuration": "4.000000",
         "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Build_ConstructorMk1.Build_ConstructorMk1_C\")"
+      },
+      {
+        "ClassName": "Recipe_Alternate_PureIronIngot_C",
+        "mDisplayName": "Alternate: Pure Iron Ingot",
+        "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/RawResources/OreIron/Desc_OreIron.Desc_OreIron_C'\",Amount=7),(ItemClass=\"/Game/FactoryGame/Resource/RawResources/Water/Desc_Water.Desc_Water_C'\",Amount=4000))",
+        "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronIngot/Desc_IronIngot.Desc_IronIngot_C'\",Amount=13))",
+        "mManufactoringDuration": "12.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/OilRefinery/Build_OilRefinery.Build_OilRefinery_C\")"
       },
       {
         "ClassName": "Recipe_ResidualPlastic_C",
@@ -49,6 +57,14 @@
         "mProduct": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/NitricAcid/Desc_NitricAcid.Desc_NitricAcid_C'\",Amount=3000))",
         "mManufactoringDuration": "6.000000",
         "mProducedIn": "(\"/Game/FactoryGame/Buildable/Factory/OilRefinery/Build_OilRefinery.Build_OilRefinery_C\")"
+      },
+      {
+        "ClassName": "Recipe_ConstructorMk1_C",
+        "mDisplayName": "Constructor",
+        "mIngredients": "((ItemClass=\"/Game/FactoryGame/Resource/Parts/IronPlateReinforced/Desc_IronPlateReinforced.Desc_IronPlateReinforced_C'\",Amount=2),(ItemClass=\"/Game/FactoryGame/Resource/Parts/Cable/Desc_Cable.Desc_Cable_C'\",Amount=8))",
+        "mProduct": "((ItemClass=\"/Game/FactoryGame/Buildable/Factory/ConstructorMk1/Desc_ConstructorMk1.Desc_ConstructorMk1_C'\",Amount=1))",
+        "mManufactoringDuration": "1.000000",
+        "mProducedIn": "(\"/Game/FactoryGame/Equipment/BuildGun/BP_BuildGun.BP_BuildGun_C\",\"/Script/FactoryGame.FGBuildGun\")"
       }
     ]
   },
@@ -68,7 +84,8 @@
       {
         "ClassName": "Desc_LiquidFuel_C",
         "mDisplayName": "Fuel",
-        "mForm": "RF_LIQUID"
+        "mForm": "RF_LIQUID",
+        "mEnergyValue": "0.750000"
       },
       {
         "ClassName": "Desc_NitricAcid_C",
@@ -98,6 +115,16 @@
     ]
   },
   {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildingDescriptor'",
+    "Classes": [
+      {
+        "ClassName": "Desc_ConstructorMk1_C",
+        "mDisplayName": "Constructor",
+        "mForm": "RF_INVALID"
+      }
+    ]
+  },
+  {
     "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableManufacturer'",
     "Classes": [
       {
@@ -118,12 +145,34 @@
     ]
   },
   {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableManufacturerVariablePower'",
+    "Classes": [
+      {
+        "ClassName": "Build_Converter_C",
+        "mDisplayName": "Converter",
+        "mPowerConsumption": "0.000000",
+        "mEstimatedMininumPowerConsumption": "100.000000",
+        "mEstimatedMaximumPowerConsumption": "400.000000"
+      }
+    ]
+  },
+  {
     "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableResourceExtractor'",
     "Classes": [
       {
         "ClassName": "Build_MinerMk1_C",
         "mDisplayName": "Miner Mk.1",
         "mPowerConsumption": "5.000000"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableWaterPump'",
+    "Classes": [
+      {
+        "ClassName": "Build_WaterPump_C",
+        "mDisplayName": "Water Extractor",
+        "mPowerConsumption": "20.000000"
       }
     ]
   },
@@ -135,6 +184,19 @@
         "mDisplayName": "Biomass Burner",
         "mPowerConsumption": "0.000000",
         "mPowerProduction": "30.000000"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorGeoThermal'",
+    "Classes": [
+      {
+        "ClassName": "Build_GeneratorGeoThermal_C",
+        "mDisplayName": "Geothermal Generator",
+        "mPowerConsumption": "0.000000",
+        "mPowerProduction": "0.000000",
+        "mVariablePowerProductionConstant": "0.000000",
+        "mVariablePowerProductionFactor": "200.000000"
       }
     ]
   },
@@ -166,7 +228,12 @@
             "mRequireAllSchematicsToBePurchased": "True"
           }
         ],
-        "mUnlocks": []
+        "mUnlocks": [
+          {
+            "Class": "BP_UnlockRecipe_C",
+            "mRecipes": "(\"/Game/FactoryGame/Recipes/AlternateRecipes/Recipe_Alternate_PureIronIngot.Recipe_Alternate_PureIronIngot_C\")"
+          }
+        ]
       },
       {
         "ClassName": "Schematic_ResourceSinkBonus_C",

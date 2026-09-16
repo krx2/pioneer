@@ -5,6 +5,22 @@ Depends only on `pioneer.contracts`; tested against hand-built fixture productio
 known-correct expected results.
 """
 
-from pioneer.verifier.calculations import balance, distance, machine_count, power_balance
+from pioneer.verifier.calculations import (
+    balance,
+    distance,
+    generator_fuel_demand,
+    machine_count,
+    placed_generation_capacity_mw,
+    placed_power_consumption_mw,
+    power_balance,
+)
 
-__all__ = ["balance", "distance", "machine_count", "power_balance"]
+__all__ = [
+    "balance",
+    "distance",
+    "generator_fuel_demand",
+    "machine_count",
+    "placed_generation_capacity_mw",
+    "placed_power_consumption_mw",
+    "power_balance",
+]

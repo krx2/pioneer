@@ -4,16 +4,21 @@ style (implementation.md Stage 16): known tool-call sequences must route to the 
 module and land in the right `ResponseArtifact` field, and an unreachable/misbehaving LLM must
 come back as a typed `OrchestratorUnavailable`, never a raised exception."""
 
+import json
 from typing import Any
 
 from pioneer.contracts import (
+    Building,
     Coordinates,
+    Item,
     ItemAmount,
+    PlacementRecord,
     ProductionGraph,
     ProductionNode,
     Purity,
     Recipe,
     ResourceNode,
+    ResponseArtifact,
 )
 from pioneer.orchestrator.orchestrator import (
     OrchestratorContext,
@@ -33,6 +38,37 @@ _RECIPES = (
         inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
         outputs=(ItemAmount(item_id="Desc_IronPlate_C", amount_per_minute=20),),
     ),
+)
+_IRON_INGOT = Recipe(
+    recipe_id="Recipe_IngotIron_C",
+    name="Iron Ingot",
+    building_ids=("Build_SmelterMk1_C",),
+    inputs=(ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=30),),
+    outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
+)
+_PURE_IRON_INGOT = Recipe(
+    recipe_id="Recipe_Alternate_PureIronIngot_C",
+    name="Alternate: Pure Iron Ingot",
+    building_ids=("Build_OilRefinery_C",),
+    inputs=(
+        ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=35),
+        ItemAmount(item_id="Desc_Water_C", amount_per_minute=20),
+    ),
+    outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=65),),
+    is_alternate=True,
+)
+_ORE_FROM_LIMESTONE = Recipe(
+    recipe_id="Recipe_Iron_Limestone_C",
+    name="Iron Ore (Limestone)",
+    building_ids=("Build_Converter_C",),
+    inputs=(ItemAmount(item_id="Desc_Stone_C", amount_per_minute=120),),
+    outputs=(ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=60),),
+)
+_ITEMS = (
+    Item(item_id="Desc_IronPlate_C", name="Iron Plate"),
+    Item(item_id="Desc_IronIngot_C", name="Iron Ingot"),
+    Item(item_id="Desc_OreIron_C", name="Iron Ore", is_raw_resource=True),
+    Item(item_id="Desc_Stone_C", name="Limestone", is_raw_resource=True),
 )
 
 _QA_CORPUS = (
@@ -74,6 +110,31 @@ def _fake_qa_chat_completion(reply: str):
 
 def _tool_call(call_id: str, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return {"id": call_id, "name": name, "arguments": arguments}
+
+
+def _run_single_tool(
+    context: OrchestratorContext, name: str, arguments: dict[str, Any]
+) -> tuple[Any, dict[str, Any]]:
+    """One turn where the model calls `name` once, then answers "done". Returns the
+    `handle_query` result and the tool's parsed result as the model saw it."""
+    llm = _scripted_tool_calling_llm(
+        [
+            {"content": None, "tool_calls": [_tool_call("call_1", name, arguments)]},
+            {"content": "done", "tool_calls": []},
+        ]
+    )
+    result = handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "question",
+        context,
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="resp",
+    )
+    messages = llm.calls[1]["messages"]  # type: ignore[attr-defined]
+    tool_message = next(m for m in messages if m["role"] == "tool")
+    return result, json.loads(tool_message["content"])
 
 
 def test_immediate_answer_with_no_tool_calls() -> None:
@@ -270,7 +331,7 @@ def test_diagnose_factory_problems_detects_a_real_deficit() -> None:
         llm,
         _fake_qa_chat_completion(""),
         "what's wrong with my factory?",
-        OrchestratorContext(recipes=_RECIPES, existing_graph=graph),
+        OrchestratorContext(recipes=_RECIPES + (_IRON_INGOT,), existing_graph=graph),
         llm_base_url=_BASE_URL,
         llm_model=_MODEL,
         response_id="resp-6",
@@ -349,3 +410,291 @@ def test_unknown_tool_name_reports_error_without_crashing() -> None:
     )
 
     assert result.chat == "Sorry, I can't do that."
+
+
+def test_a_module_failing_mid_tool_is_reported_not_raised() -> None:
+    """The Verifier raises on a building it wasn't given. That must reach the model as a tool
+    error -- and the unverifiable plan must not be published -- rather than escape handle_query."""
+    smelter_only = (
+        Building(
+            building_id="Build_SmelterMk1_C",
+            name="Smelter",
+            power_consumption_mw=4,
+            input_slots=1,
+            output_slots=1,
+        ),
+    )
+    context = OrchestratorContext(recipes=_RECIPES, buildings=smelter_only)
+
+    result, tool_result = _run_single_tool(
+        context,
+        "plan_production",
+        {"target_item_id": "Desc_IronPlate_C", "target_rate_per_minute": 20},
+    )
+
+    assert isinstance(result, ResponseArtifact)
+    assert "Build_ConstructorMk1_C" in tool_result["error"]
+    assert result.graph is None
+
+
+def test_item_names_resolve_and_planning_stops_at_raw_resources() -> None:
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_ORE_FROM_LIMESTONE, _IRON_INGOT), items=_ITEMS
+    )
+
+    result, tool_result = _run_single_tool(
+        context, "plan_production", {"target_item_id": "iron plate", "target_rate_per_minute": 20}
+    )
+
+    assert "error" not in tool_result
+    assert {n.recipe_id for n in result.graph.nodes} == {
+        "Recipe_IronPlate_C",
+        "Recipe_IngotIron_C",
+    }
+
+
+def test_unknown_item_is_reported_with_the_closest_matches() -> None:
+    context = OrchestratorContext(recipes=_RECIPES, items=_ITEMS)
+
+    result, tool_result = _run_single_tool(
+        context, "plan_production", {"target_item_id": "Iron Plat", "target_rate_per_minute": 20}
+    )
+
+    assert result.graph is None
+    assert tool_result["error"] == "unknown item 'Iron Plat'"
+    assert tool_result["did_you_mean"][0]["item_id"] == "Desc_IronPlate_C"
+
+
+def test_plan_production_honours_recipe_choices_given_by_item_name() -> None:
+    context = OrchestratorContext(recipes=_RECIPES + (_IRON_INGOT, _PURE_IRON_INGOT), items=_ITEMS)
+
+    result, _ = _run_single_tool(
+        context,
+        "plan_production",
+        {
+            "target_item_id": "Iron Plate",
+            "target_rate_per_minute": 20,
+            "recipe_choices": {"Iron Ingot": "Recipe_Alternate_PureIronIngot_C"},
+        },
+    )
+
+    assert "Recipe_Alternate_PureIronIngot_C" in {n.recipe_id for n in result.graph.nodes}
+
+
+def test_find_item_tool_lists_matching_items() -> None:
+    _, tool_result = _run_single_tool(
+        OrchestratorContext(items=_ITEMS), "find_item", {"query": "iron"}
+    )
+
+    item_ids = [item["item_id"] for item in tool_result["items"]]
+    assert item_ids[0] == "Desc_OreIron_C"  # shortest name first among equally good matches
+    assert set(item_ids) == {"Desc_OreIron_C", "Desc_IronPlate_C", "Desc_IronIngot_C"}
+
+
+def test_find_item_without_a_knowledge_base_says_so() -> None:
+    _, tool_result = _run_single_tool(OrchestratorContext(), "find_item", {"query": "iron"})
+    assert "no knowledge base" in tool_result["error"]
+
+
+def test_list_recipes_for_item_flags_alternates() -> None:
+    context = OrchestratorContext(recipes=(_IRON_INGOT, _PURE_IRON_INGOT), items=_ITEMS)
+
+    _, tool_result = _run_single_tool(context, "list_recipes_for_item", {"item": "Iron Ingot"})
+
+    assert [(r["recipe_id"], r["alternate"]) for r in tool_result["recipes"]] == [
+        ("Recipe_IngotIron_C", False),
+        ("Recipe_Alternate_PureIronIngot_C", True),
+    ]
+    assert tool_result["recipes"][1]["inputs_per_machine_per_minute"] == {
+        "Desc_OreIron_C": 35,
+        "Desc_Water_C": 20,
+    }
+
+
+def _existing_iron(*, smelters: float, constructors: float) -> ProductionGraph:
+    return ProductionGraph(
+        nodes=(
+            ProductionNode(
+                node_id="save_Recipe_IngotIron_C",
+                recipe_id="Recipe_IngotIron_C",
+                building_id="Build_SmelterMk1_C",
+                machine_count=smelters,
+                is_existing=True,
+            ),
+            ProductionNode(
+                node_id="save_Recipe_IronPlate_C",
+                recipe_id="Recipe_IronPlate_C",
+                building_id="Build_ConstructorMk1_C",
+                machine_count=constructors,
+                is_existing=True,
+            ),
+        ),
+        flows=(),
+    )
+
+
+def test_expansion_draws_on_the_existing_factorys_surplus_first() -> None:
+    """2 smelters make 60 ingot/min and 1 constructor eats 30 of them making 20 plates: 30 ingots
+    and 20 plates spare. 40 more plates/min then takes just one more constructor -- fed by the
+    spare ingots, so no new smelter."""
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,),
+        items=_ITEMS,
+        existing_graph=_existing_iron(smelters=2, constructors=1),
+    )
+
+    result, tool_result = _run_single_tool(
+        context,
+        "expand_existing_factory",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
+    )
+
+    assert tool_result["changes"] == [
+        {
+            "action": "extend",
+            "recipe_id": "Recipe_IronPlate_C",
+            "additional_machine_count": 1,
+            "target_node_id": "save_Recipe_IronPlate_C",
+        }
+    ]
+    assert tool_result["drawn_from_existing_surplus_per_minute"] == {
+        "Desc_IronPlate_C": 20,
+        "Desc_IronIngot_C": 30,
+    }
+    assert tool_result["existing_shortfalls_per_minute"] == {}
+    (extended,) = result.graph.nodes
+    assert extended.machine_count == 2  # 1 existing + 1 new
+
+
+def test_expansion_reports_shortfalls_the_existing_factory_already_has() -> None:
+    """1 smelter (30 ingot/min) under 2 constructors (60/min): already 30 ingot/min short."""
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,),
+        items=_ITEMS,
+        existing_graph=_existing_iron(smelters=1, constructors=2),
+    )
+
+    _, tool_result = _run_single_tool(
+        context,
+        "expand_existing_factory",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 60},
+    )
+
+    assert tool_result["existing_shortfalls_per_minute"] == {"Desc_IronIngot_C": 30}
+    assert {c["recipe_id"]: c["additional_machine_count"] for c in tool_result["changes"]} == {
+        "Recipe_IronPlate_C": 1,
+        "Recipe_IngotIron_C": 1,
+    }
+
+
+_REFINERY_FUEL = Recipe(
+    recipe_id="Recipe_LiquidFuel_C",
+    name="Fuel",
+    building_ids=("Build_OilRefinery_C",),
+    inputs=(ItemAmount(item_id="Desc_LiquidOil_C", amount_per_minute=60),),
+    outputs=(
+        ItemAmount(item_id="Desc_LiquidFuel_C", amount_per_minute=40),
+        ItemAmount(item_id="Desc_PolymerResin_C", amount_per_minute=30),
+    ),
+)
+_POWER_BUILDINGS = (
+    Building(
+        building_id="Build_OilRefinery_C",
+        name="Refinery",
+        power_consumption_mw=30,
+        input_slots=1,
+        output_slots=2,
+    ),
+    Building(
+        building_id="Build_GeneratorFuel_C",
+        name="Fuel Generator",
+        power_consumption_mw=-250,
+        input_slots=1,
+        output_slots=0,
+    ),
+)
+_FUEL_ITEMS = (
+    Item(item_id="Desc_LiquidOil_C", name="Crude Oil", is_fluid=True, is_raw_resource=True),
+    Item(item_id="Desc_LiquidFuel_C", name="Fuel", is_fluid=True, energy_value_mj=750),
+)
+
+
+def _placed(building_id: str, **fields: Any) -> PlacementRecord:
+    return PlacementRecord(building_id=building_id, position=Coordinates(x=0, y=0), **fields)
+
+
+def test_diagnosis_counts_generators_burning_the_factorys_own_fuel() -> None:
+    """One refinery makes 40 m³/min of Fuel and two Fuel Generators burn exactly that: nothing is
+    overproduced, crude oil is a raw input, and 500 MW of generation covers 30 MW of draw."""
+    refinery_node = ProductionNode(
+        node_id="save_Recipe_LiquidFuel_C",
+        recipe_id="Recipe_LiquidFuel_C",
+        building_id="Build_OilRefinery_C",
+        machine_count=1,
+        is_existing=True,
+    )
+    context = OrchestratorContext(
+        recipes=(_REFINERY_FUEL,),
+        buildings=_POWER_BUILDINGS,
+        items=_FUEL_ITEMS,
+        existing_graph=ProductionGraph(nodes=(refinery_node,), flows=()),
+        existing_placements=(
+            _placed("Build_OilRefinery_C", recipe_id="Recipe_LiquidFuel_C"),
+            _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_LiquidFuel_C"),
+            _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_LiquidFuel_C"),
+        ),
+    )
+
+    _, tool_result = _run_single_tool(context, "diagnose_factory_problems", {})
+
+    assert tool_result["power_draw_mw"] == 30
+    assert tool_result["power_capacity_mw"] == 500
+    flagged = {anomaly["item_id"] for anomaly in tool_result["anomalies"]}
+    assert "Desc_LiquidFuel_C" not in flagged
+    assert "Desc_LiquidOil_C" not in flagged
+
+
+def test_diagnosis_flags_a_blackout_judged_from_the_placed_buildings() -> None:
+    context = OrchestratorContext(
+        recipes=(_REFINERY_FUEL,),
+        buildings=_POWER_BUILDINGS,
+        items=_FUEL_ITEMS,
+        existing_graph=ProductionGraph(nodes=(), flows=()),
+        existing_placements=tuple(_placed("Build_OilRefinery_C") for _ in range(10)),
+    )
+
+    _, tool_result = _run_single_tool(context, "diagnose_factory_problems", {})
+
+    assert tool_result["power_capacity_mw"] == 0
+    assert [anomaly["kind"] for anomaly in tool_result["anomalies"]] == ["power_blackout"]
+
+
+def test_diagnosis_treats_items_no_recipe_makes_as_gathered_not_short() -> None:
+    """Leaves come from the player's chainsaw, not from any factory -- never a "deficit"."""
+    biomass = Recipe(
+        recipe_id="Recipe_Biomass_Leaves_C",
+        name="Biomass (Leaves)",
+        building_ids=("Build_ConstructorMk1_C",),
+        inputs=(ItemAmount(item_id="Desc_Leaves_C", amount_per_minute=120),),
+        outputs=(ItemAmount(item_id="Desc_GenericBiomass_C", amount_per_minute=60),),
+    )
+    graph = ProductionGraph(
+        nodes=(
+            ProductionNode(
+                node_id="save_Recipe_Biomass_Leaves_C",
+                recipe_id="Recipe_Biomass_Leaves_C",
+                building_id="Build_ConstructorMk1_C",
+                machine_count=1,
+                is_existing=True,
+            ),
+        ),
+        flows=(),
+    )
+
+    _, tool_result = _run_single_tool(
+        OrchestratorContext(recipes=(biomass,), existing_graph=graph),
+        "diagnose_factory_problems",
+        {},
+    )
+
+    assert "Desc_Leaves_C" not in {anomaly["item_id"] for anomaly in tool_result["anomalies"]}

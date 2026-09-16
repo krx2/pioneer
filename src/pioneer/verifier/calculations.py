@@ -4,13 +4,32 @@ Every function here is pure and takes Stage 1 contract data straight from its ca
 Knowledge Base or Resource DB, this module owns no aggregate of its own — there's no `Verifier`
 container, just functions — since it has no data to load, only calculations to run over whatever
 `Recipe`/`Building` list the caller (eventually the real Knowledge Base) hands it.
+
+Power has two views. `power_balance` is a production graph's own draw — what a *plan* needs.
+`placed_power_consumption_mw`, `placed_generation_capacity_mw` and `generator_fuel_demand` work
+over a save's placements instead — every building actually standing, including the extractors,
+pumps and generators a recipe graph never contains — which is what checking an existing factory
+for blackouts, or for fuel its generators burn, has to look at.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator, Sequence
 
-from pioneer.contracts import Building, Coordinates, ProductionGraph, Recipe
+from pioneer.contracts import (
+    Building,
+    Coordinates,
+    Item,
+    PlacementRecord,
+    ProductionGraph,
+    Recipe,
+)
+
+_OVERCLOCK_POWER_EXPONENT = 1.321929
+"""How power draw scales with clock speed — the game's `mPowerConsumptionExponent` for production
+buildings and extractors: at 250% a machine draws 2.5 ** 1.32 ≈ 3.4x its rated power, not 2.5x.
+Generator output, by contrast, scales linearly with clock speed."""
 
 
 def distance(a: Coordinates, b: Coordinates) -> float:
@@ -62,6 +81,62 @@ def power_balance(graph: ProductionGraph, buildings: tuple[Building, ...]) -> fl
         building = _building_by_id(buildings, node.building_id)
         total += building.power_consumption_mw * node.machine_count
     return total
+
+
+def placed_power_consumption_mw(
+    placements: Sequence[PlacementRecord], buildings: tuple[Building, ...]
+) -> float:
+    """Rated draw of every placed power consumer, at its clock speed (see
+    `_OVERCLOCK_POWER_EXPONENT`). Placements `buildings` has no entry for are skipped rather than
+    raising, unlike in `power_balance`: most placed buildings — belts, foundations, storage, poles —
+    draw nothing and appear in no building list."""
+    return sum(
+        building.power_consumption_mw * placement.clock_speed**_OVERCLOCK_POWER_EXPONENT
+        for placement, building in _placed_buildings(placements, buildings)
+        if building.power_consumption_mw > 0
+    )
+
+
+def placed_generation_capacity_mw(
+    placements: Sequence[PlacementRecord], buildings: tuple[Building, ...]
+) -> float:
+    """Rated output of every placed generator at its clock speed — what the grid could supply with
+    every generator fueled, not a guarantee that it is."""
+    return sum(
+        -building.power_consumption_mw * placement.clock_speed
+        for placement, building in _placed_buildings(placements, buildings)
+        if building.power_consumption_mw < 0
+    )
+
+
+def generator_fuel_demand(
+    placements: Sequence[PlacementRecord],
+    buildings: tuple[Building, ...],
+    items: Sequence[Item],
+) -> dict[str, float]:
+    """Per fuel item, how fast the placed generators burn it, in units (m³ for fluids) per minute:
+    output in MW — MJ per second — over the fuel's `Item.energy_value_mj`, times 60. A Fuel
+    Generator's 250 MW on 750 MJ/m³ Fuel is 20 m³/min, as in game. Generators with no fuel recorded,
+    or burning an item with no known energy value, are left out."""
+    energy = {item.item_id: item.energy_value_mj for item in items if item.energy_value_mj > 0}
+    demand: dict[str, float] = {}
+    for placement, building in _placed_buildings(placements, buildings):
+        fuel = placement.fuel_item_id
+        if building.power_consumption_mw >= 0 or fuel is None or fuel not in energy:
+            continue
+        output_mw = -building.power_consumption_mw * placement.clock_speed
+        demand[fuel] = demand.get(fuel, 0.0) + output_mw / energy[fuel] * 60.0
+    return demand
+
+
+def _placed_buildings(
+    placements: Sequence[PlacementRecord], buildings: tuple[Building, ...]
+) -> Iterator[tuple[PlacementRecord, Building]]:
+    by_id = {building.building_id: building for building in buildings}
+    for placement in placements:
+        building = by_id.get(placement.building_id)
+        if building is not None:
+            yield placement, building
 
 
 def _recipe_by_id(recipes: tuple[Recipe, ...], recipe_id: str) -> Recipe:

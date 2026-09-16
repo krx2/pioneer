@@ -42,6 +42,7 @@ rather than one generic reader; framing plus a bounded search needs none of it.
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass
 
 from pioneer.save_parser.binary_reader import ByteReader
@@ -160,6 +161,34 @@ def find_recipe_ids(
         _class_name_from_path(path)
         for path in find_recipe_paths(body, start=start, end=end, property_name=property_name)
     )
+
+
+def read_float_property(
+    body: bytes, property_name: str, *, start: int = 0, end: int | None = None
+) -> float | None:
+    """The value of the first `FloatProperty` named `property_name` in the `[start, end)` byte
+    range, or `None` if there is none — which, for a property like `mCurrentPotential`, means the
+    default: the game only saves a property when it differs from its default.
+
+    Layout, confirmed against both real fixture saves (every `mCurrentPotential` in them): the tag
+    (see `read_property_tag`) with `Size` 4, then a one-byte `HasPropertyGuid` flag — 0 in every
+    occurrence seen; a 16-byte GUID would follow if it were set — then the 4-byte float itself.
+    """
+    needle = _fstring_needle(property_name)
+    search_end = len(body) if end is None else end
+    offset = body.find(needle, start, search_end)
+    while offset != -1:
+        reader = ByteReader(body, offset)
+        try:
+            tag = read_property_tag(reader)
+            if tag is not None and tag.type_name == "FloatProperty" and tag.size == 4:
+                if reader.read_byte():
+                    reader.read_bytes(16)  # the property GUID
+                return reader.read_float()
+        except (UnicodeDecodeError, IndexError, struct.error):
+            pass  # bytes that merely look like the name -- keep searching
+        offset = body.find(needle, offset + 1, search_end)
+    return None
 
 
 def _fstring_needle(value: str) -> bytes:

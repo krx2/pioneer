@@ -1,6 +1,6 @@
 """Knowledge base module (implementation.md Stage 2).
 
-Static, queryable data set of recipes, buildings, and technologies. Depends only on
+Static, queryable data set of items, recipes, buildings, and technologies. Depends only on
 `pioneer.contracts`; tested against its own `fixtures/`, never against the real game data files.
 
 The real data source is a Satisfactory `Docs.json`-style export, committed at `docs/en-US.json`
@@ -13,7 +13,10 @@ from pioneer.knowledge_base.loader import load_from_dict, load_from_file
 from pioneer.knowledge_base.queries import (
     KnowledgeBase,
     building_for,
+    find_items,
+    item_by_id,
     prerequisites_for_technology,
+    raw_resource_ids,
     recipe_by_id,
     recipes_for_output,
     technology_by_id,
@@ -23,9 +26,12 @@ from pioneer.knowledge_base.queries import (
 __all__ = [
     "KnowledgeBase",
     "building_for",
+    "find_items",
+    "item_by_id",
     "load_from_dict",
     "load_from_file",
     "prerequisites_for_technology",
+    "raw_resource_ids",
     "recipe_by_id",
     "recipes_for_output",
     "technology_by_id",

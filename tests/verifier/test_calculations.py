@@ -7,12 +7,22 @@ import pytest
 from pioneer.contracts import (
     Building,
     Coordinates,
+    Item,
     ItemAmount,
+    PlacementRecord,
     ProductionGraph,
     ProductionNode,
     Recipe,
 )
-from pioneer.verifier.calculations import balance, distance, machine_count, power_balance
+from pioneer.verifier.calculations import (
+    balance,
+    distance,
+    generator_fuel_demand,
+    machine_count,
+    placed_generation_capacity_mw,
+    placed_power_consumption_mw,
+    power_balance,
+)
 
 _SMELTER = Building(
     building_id="Build_SmelterMk1_C",
@@ -45,6 +55,36 @@ _RECIPE_ROD = Recipe(
 RECIPES = (_RECIPE_INGOT, _RECIPE_ROD)
 BUILDINGS = (_SMELTER, _CONSTRUCTOR)
 
+# Rated values as the game's own export lists them.
+_PLACED_BUILDINGS = (
+    _SMELTER,
+    Building(
+        building_id="Build_MinerMk1_C",
+        name="Miner Mk.1",
+        power_consumption_mw=5,
+        input_slots=0,
+        output_slots=1,
+    ),
+    Building(
+        building_id="Build_GeneratorCoal_C",
+        name="Coal Generator",
+        power_consumption_mw=-75,
+        input_slots=1,
+        output_slots=0,
+    ),
+    Building(
+        building_id="Build_GeneratorFuel_C",
+        name="Fuel Generator",
+        power_consumption_mw=-250,
+        input_slots=1,
+        output_slots=0,
+    ),
+)
+_FUELS = (
+    Item(item_id="Desc_Coal_C", name="Coal", is_raw_resource=True, energy_value_mj=300),
+    Item(item_id="Desc_LiquidFuel_C", name="Fuel", is_fluid=True, energy_value_mj=750),
+)
+
 
 def _graph(*, smelters: float, constructors: float) -> ProductionGraph:
     return ProductionGraph(
@@ -63,6 +103,17 @@ def _graph(*, smelters: float, constructors: float) -> ProductionGraph:
             ),
         ),
         flows=(),
+    )
+
+
+def _placed(
+    building_id: str, *, clock_speed: float = 1.0, fuel_item_id: str | None = None
+) -> PlacementRecord:
+    return PlacementRecord(
+        building_id=building_id,
+        position=Coordinates(x=0, y=0),
+        clock_speed=clock_speed,
+        fuel_item_id=fuel_item_id,
     )
 
 
@@ -141,3 +192,54 @@ def test_power_balance_unknown_building_raises() -> None:
     )
     with pytest.raises(ValueError, match="does_not_exist"):
         power_balance(graph, BUILDINGS)
+
+
+def test_placed_power_consumption_counts_consumers_only() -> None:
+    placements = (
+        _placed("Build_SmelterMk1_C"),
+        _placed("Build_MinerMk1_C"),
+        _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C"),
+    )
+    assert placed_power_consumption_mw(placements, _PLACED_BUILDINGS) == pytest.approx(9.0)
+
+
+def test_overclocking_raises_draw_faster_than_linearly() -> None:
+    draw = placed_power_consumption_mw(
+        (_placed("Build_MinerMk1_C", clock_speed=2.5),), _PLACED_BUILDINGS
+    )
+    assert draw == pytest.approx(5 * 2.5**1.321929)  # ~16.8 MW, not 12.5
+
+
+def test_placed_buildings_no_list_knows_are_skipped_rather_than_raising() -> None:
+    placements = (_placed("Build_ConveyorBeltMk1_C"), _placed("Build_SmelterMk1_C"))
+    assert placed_power_consumption_mw(placements, _PLACED_BUILDINGS) == pytest.approx(4.0)
+
+
+def test_generation_capacity_scales_linearly_with_clock_speed() -> None:
+    placements = (
+        _placed("Build_GeneratorCoal_C"),
+        _placed("Build_GeneratorFuel_C", clock_speed=0.5),
+        _placed("Build_SmelterMk1_C"),
+    )
+    assert placed_generation_capacity_mw(placements, _PLACED_BUILDINGS) == pytest.approx(75 + 125)
+
+
+def test_generator_fuel_demand_matches_in_game_burn_rates() -> None:
+    placements = (
+        _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C"),
+        _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_LiquidFuel_C"),
+        _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_LiquidFuel_C", clock_speed=0.5),
+    )
+
+    demand = generator_fuel_demand(placements, _PLACED_BUILDINGS, _FUELS)
+
+    # Coal Generator: 15 coal/min. Fuel Generator: 20 m³/min, 10 at half clock.
+    assert demand == pytest.approx({"Desc_Coal_C": 15.0, "Desc_LiquidFuel_C": 30.0})
+
+
+def test_unfueled_generators_and_unknown_fuels_burn_nothing() -> None:
+    placements = (
+        _placed("Build_GeneratorCoal_C"),
+        _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_Mystery_C"),
+    )
+    assert generator_fuel_demand(placements, _PLACED_BUILDINGS, _FUELS) == {}

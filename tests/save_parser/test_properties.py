@@ -3,6 +3,7 @@ buffers (`byte_builders.object_property_tag_bytes`) — no real save file involv
 test_real_saves_properties.py for the bonus real-file check."""
 
 from tests.save_parser.byte_builders import (
+    float_property_tag_bytes,
     fstring,
     object_property_tag_bytes,
     property_list_terminator_bytes,
@@ -12,6 +13,7 @@ from pioneer.save_parser.binary_reader import ByteReader
 from pioneer.save_parser.properties import (
     find_recipe_ids,
     find_recipe_paths,
+    read_float_property,
     read_object_reference_value,
     read_property_tag,
 )
@@ -103,3 +105,39 @@ def test_find_recipe_ids_skips_an_occurrence_with_no_resolvable_value() -> None:
     body = fstring("mCurrentRecipe") + fstring("ObjectProperty") + b"\x00" * 300  # no path anywhere
 
     assert find_recipe_ids(body, property_name="mCurrentRecipe") == ()
+
+
+def test_read_float_property_reads_the_value() -> None:
+    body = b"\xaa\xbb" + float_property_tag_bytes(name="mCurrentPotential", value=2.5)
+
+    assert read_float_property(body, "mCurrentPotential") == 2.5
+
+
+def test_read_float_property_skips_a_property_guid() -> None:
+    body = float_property_tag_bytes(
+        name="mCurrentPotential", value=0.75, property_guid=b"\x07" * 16
+    )
+
+    assert read_float_property(body, "mCurrentPotential") == 0.75
+
+
+def test_read_float_property_absent_is_none() -> None:
+    body = float_property_tag_bytes(name="mPendingPotential", value=2.0)
+
+    assert read_float_property(body, "mCurrentPotential") is None
+
+
+def test_read_float_property_stays_inside_the_given_range() -> None:
+    first = property_list_terminator_bytes()
+    body = first + float_property_tag_bytes(name="mCurrentPotential", value=2.0)
+
+    assert read_float_property(body, "mCurrentPotential", end=len(first)) is None
+    assert read_float_property(body, "mCurrentPotential", start=len(first)) == 2.0
+
+
+def test_read_float_property_ignores_a_same_named_property_of_another_type() -> None:
+    body = object_property_tag_bytes(
+        name="mCurrentPotential", referenced_path="/Game/Whatever.Whatever_C"
+    ) + float_property_tag_bytes(name="mCurrentPotential", value=1.5)
+
+    assert read_float_property(body, "mCurrentPotential") == 1.5

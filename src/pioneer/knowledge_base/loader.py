@@ -1,4 +1,4 @@
-"""Loads recipes, buildings, and technologies from a Satisfactory `Docs.json`-shaped export.
+"""Loads items, recipes, buildings, and technologies from a Satisfactory `Docs.json`-shaped export.
 
 `load_from_dict` is the pure entry point every test in `tests/knowledge_base/test_loader.py`
 exercises, against `fixtures/mini_docs.json`. `load_from_file` is the thin I/O wrapper around it
@@ -9,12 +9,32 @@ file as a bonus confidence check.
 Known limitations of the source data, discovered by inspecting the real export (see
 docs/implementation.md Stage 2 discussion) and encoded as deliberate choices below:
 
-- `mProducedIn` often lists more than one building for a recipe (e.g. a manual Workbench
-  recipe that's also automatable in a Constructor) -> `Recipe.building_ids` is a tuple.
+- **Only factory recipes are kept.** Two thirds of the export's recipes (581 of 872) run only in
+  the build gun (the cost of placing a building), the Equipment Workshop (gear) or the Craft
+  Bench — manual stations, none of which is a `Building` this project can plan, place or count.
+  `mProducedIn` also lists those stations next to the real machine for many factory recipes (Iron
+  Plate: Constructor *and* Craft Bench), so `Recipe.building_ids` keeps only the
+  `FGBuildableManufacturer*` buildings a recipe runs in, and a recipe left with none is dropped.
+- **Raw resources** are the `FGResourceDescriptor` items (ores, water, crude oil, nitrogen gas,
+  SAM, ...), flagged on `Item.is_raw_resource`. Recipes alone can't identify them: 1.0's Converter
+  turns ores into other ores and unpackaging yields crude oil, so most raw resources *have* a
+  recipe producing them — a planner walking recipes backwards would never stop.
+- **Alternates** are recipes whose display name the game prefixes with "Alternate:" — exactly
+  the ones it presents to the player as alternates. Neither structural signal agrees with that:
+  `EST_Alternate` (hard-drive) schematics also unlock the standard Turbofuel packaging recipes,
+  some alternates (Compacted Coal, Polyester Fabric) come from MAM research instead, and class
+  names are unreliable in both directions (`Recipe_Alternate_Turbofuel_C` is the plain,
+  MAM-unlocked "Turbofuel"; `Recipe_PureAluminumIngot_C` is "Alternate: Pure Aluminum Ingot").
 - Building input/output slot counts aren't present as data anywhere in the export. They're
   derived from the max ingredient/product count across recipes that use each building; for
-  buildings with no matching recipe (extractors, generators) a small documented fallback is
+  buildings with no matching recipe (extractors, generators, ...) a small documented fallback is
   used instead of inventing precision the source data doesn't have.
+- **Variable-power buildings have no fixed rating.** The Particle Accelerator, Converter and
+  Quantum Encoder list `mPowerConsumption` 0 because their draw cycles between
+  `mEstimatedMininumPowerConsumption` (sic) and `mEstimatedMaximumPowerConsumption`; the midpoint
+  is used. The Geothermal Generator likewise lists `mPowerProduction` 0 — its output cycles too,
+  and `mVariablePowerProductionConstant + mVariablePowerProductionFactor` comes to 200 MW, the
+  game's stated average on a normal geyser, which is what's used.
 - `mSchematicDependencies` (technology prerequisites) is populated for alternate-recipe and
   custom schematics, but is empty for every milestone and MAM schematic in the export — the
   game encodes milestone order via `mTechTier` and MAM unlocks via in-game item scanning,
@@ -24,9 +44,9 @@ docs/implementation.md Stage 2 discussion) and encoded as deliberate choices bel
   litres while the game's own UI (and every other tool) talks in m³ — `Recipe_LiquidFuel_C` lists
   its crude oil ingredient as `60000`, meaning 60 m³/min. Solids are unscaled. Which items are
   fluids comes from the item descriptors' `mForm` field (`RF_LIQUID`/`RF_GAS` vs `RF_SOLID`), so
-  `_load_item_forms` indexes every descriptor in the export and `_item_amount` divides fluid
-  amounts back down. Without this, anything touching oil, water, gas or their derivatives is off
-  by three orders of magnitude — machine counts, balance, power, anomaly severities.
+  `_load_items` indexes every descriptor in the export and `_item_amount` divides fluid amounts
+  back down. Without this, anything touching oil, water, gas or their derivatives is off by three
+  orders of magnitude — machine counts, balance, power, anomaly severities.
 """
 
 from __future__ import annotations
@@ -36,7 +56,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from pioneer.contracts import Building, ItemAmount, Recipe, Technology
+from pioneer.contracts import Building, Item, ItemAmount, Recipe, Technology
 from pioneer.knowledge_base.parsing import (
     class_name_from_path,
     parse_item_amounts,
@@ -46,25 +66,48 @@ from pioneer.knowledge_base.queries import KnowledgeBase
 
 _RECIPE_NATIVE_CLASS = "FGRecipe"
 _SCHEMATIC_NATIVE_CLASS = "FGSchematic"
+_RAW_RESOURCE_NATIVE_CLASS = "FGResourceDescriptor"
 _MANUFACTURING_BUILDING_NATIVE_CLASSES = (
     "FGBuildableManufacturer",
     "FGBuildableManufacturerVariablePower",
 )
-_EXTRACTOR_NATIVE_CLASSES = ("FGBuildableResourceExtractor",)
+_EXTRACTOR_NATIVE_CLASSES = (
+    "FGBuildableResourceExtractor",
+    "FGBuildableWaterPump",
+    "FGBuildableFrackingExtractor",
+)
 _GENERATOR_NATIVE_CLASSES = (
     "FGBuildableGeneratorFuel",
     "FGBuildableGeneratorNuclear",
     "FGBuildableGeneratorGeoThermal",
 )
-_BUILDING_NATIVE_CLASSES = (
-    _MANUFACTURING_BUILDING_NATIVE_CLASSES + _EXTRACTOR_NATIVE_CLASSES + _GENERATOR_NATIVE_CLASSES
+_OTHER_POWERED_NATIVE_CLASSES = (
+    "FGBuildableFrackingActivator",  # the Resource Well Pressurizer
+    "FGBuildablePowerStorage",
+    "FGBuildableResourceSink",
 )
+_BUILDING_NATIVE_CLASSES = (
+    _MANUFACTURING_BUILDING_NATIVE_CLASSES
+    + _EXTRACTOR_NATIVE_CLASSES
+    + _GENERATOR_NATIVE_CLASSES
+    + _OTHER_POWERED_NATIVE_CLASSES
+)
+_FALLBACK_SLOTS: dict[str, tuple[int, int]] = {
+    **dict.fromkeys(_EXTRACTOR_NATIVE_CLASSES, (0, 1)),
+    **dict.fromkeys(_GENERATOR_NATIVE_CLASSES, (1, 0)),
+    "FGBuildableResourceSink": (1, 0),
+}
+"""(input, output) slots for buildings no recipe runs in — see module docstring. Anything not
+listed (the pressurizer, power storage) moves no items at all."""
 
 # Schematic categories that never gate a production recipe: cosmetics, resource-sink point
 # unlocks, and the tutorial. Milestones, MAM research, alternates, and custom (e.g. the starting
 # recipes) all can.
 _IRRELEVANT_SCHEMATIC_TYPES = frozenset({"EST_ResourceSink", "EST_Customization", "EST_Tutorial"})
+_ALTERNATE_NAME_PREFIX = "Alternate:"
 
+_ITEM_FORMS = frozenset({"RF_SOLID", "RF_LIQUID", "RF_GAS"})
+"""`mForm` values of real items — building and vehicle descriptors carry `RF_INVALID`."""
 _FLUID_FORMS = frozenset({"RF_LIQUID", "RF_GAS"})
 _LITRES_PER_CUBIC_METRE = 1000.0
 """Fluid amounts ship in litres; every consumer of this data works in m³ — see module docstring."""
@@ -79,8 +122,17 @@ def load_from_file(path: Path | str) -> KnowledgeBase:
 def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
     entries_by_native_class = _index_by_native_class(raw_docs)
 
-    item_forms = _load_item_forms(entries_by_native_class)
-    recipes = _load_recipes(entries_by_native_class.get(_RECIPE_NATIVE_CLASS, []), item_forms)
+    items = _load_items(entries_by_native_class)
+    manufacturing_building_ids = frozenset(
+        entry["ClassName"]
+        for native_class in _MANUFACTURING_BUILDING_NATIVE_CLASSES
+        for entry in entries_by_native_class.get(native_class, [])
+    )
+    recipes = _load_recipes(
+        entries_by_native_class.get(_RECIPE_NATIVE_CLASS, []),
+        fluid_item_ids=frozenset(item.item_id for item in items if item.is_fluid),
+        manufacturing_building_ids=manufacturing_building_ids,
+    )
     buildings = _load_buildings(entries_by_native_class, recipes)
     technologies, recipe_to_technology = _load_technologies(
         entries_by_native_class.get(_SCHEMATIC_NATIVE_CLASS, [])
@@ -90,26 +142,43 @@ def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
         for recipe in recipes
     )
 
-    return KnowledgeBase(recipes=recipes, buildings=buildings, technologies=technologies)
+    return KnowledgeBase(
+        recipes=recipes, buildings=buildings, technologies=technologies, items=items
+    )
 
 
 def _index_by_native_class(raw_docs: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     return {class_name_from_path(entry["NativeClass"]): entry["Classes"] for entry in raw_docs}
 
 
-def _load_item_forms(entries_by_native_class: dict[str, list[dict[str, Any]]]) -> dict[str, str]:
-    """`item_id -> mForm`, across every class in the export that declares one.
+def _load_items(entries_by_native_class: dict[str, list[dict[str, Any]]]) -> tuple[Item, ...]:
+    """Every item descriptor in the export, across all of its descriptor native classes.
 
-    Scanned by field rather than from a fixed list of descriptor native classes (`FGItemDescriptor`,
-    `FGResourceDescriptor`, `FGItemDescriptorBiomass`, ...) — there are a dozen-odd of them and the
-    game adds more between versions, but they all carry `mForm`, so this keeps working.
+    Scanned by `mForm` rather than from a fixed list of descriptor native classes
+    (`FGItemDescriptor`, `FGResourceDescriptor`, `FGItemDescriptorBiomass`, ...) — there are a
+    dozen-odd of them and the game adds more between versions, but every real item carries a
+    solid/liquid/gas form.
     """
-    return {
-        entry["ClassName"]: entry["mForm"]
-        for entries in entries_by_native_class.values()
+    return tuple(
+        Item(
+            item_id=entry["ClassName"],
+            name=entry.get("mDisplayName") or entry["ClassName"],
+            is_fluid=entry["mForm"] in _FLUID_FORMS,
+            is_raw_resource=native_class == _RAW_RESOURCE_NATIVE_CLASS,
+            energy_value_mj=_energy_value_mj(entry),
+        )
+        for native_class, entries in entries_by_native_class.items()
         for entry in entries
-        if "mForm" in entry and "ClassName" in entry
-    }
+        if entry.get("mForm") in _ITEM_FORMS and "ClassName" in entry
+    )
+
+
+def _energy_value_mj(entry: dict[str, Any]) -> float:
+    """`mEnergyValue` is per unit for solids but per *litre* for fluids — the same litres-vs-m³
+    split as recipe amounts (see module docstring) — so a fluid's scales up to MJ per m³: Fuel's
+    0.75 MJ/L is 750 MJ/m³, which a 250 MW Fuel Generator burns at 20 m³/min, as in game."""
+    energy = float(entry.get("mEnergyValue") or 0)
+    return energy * _LITRES_PER_CUBIC_METRE if entry["mForm"] in _FLUID_FORMS else energy
 
 
 def _rate_per_minute(amount: float, duration_seconds: float) -> float:
@@ -119,39 +188,53 @@ def _rate_per_minute(amount: float, duration_seconds: float) -> float:
 
 
 def _item_amount(
-    item_id: str, amount: float, duration: float, item_forms: dict[str, str]
+    item_id: str, amount: float, duration: float, fluid_item_ids: frozenset[str]
 ) -> ItemAmount:
     """One ingredient/product, in units (or m³ for fluids) per minute.
 
-    An item with no `mForm` in the export is treated as solid: an unknown item is far likelier to
-    be a descriptor type this parser hasn't seen than a secret fluid, and leaving an amount alone
-    is the harmless failure — scaling one that shouldn't be is not.
+    An item with no descriptor in the export is treated as solid: an unknown item is far likelier
+    to be a descriptor type this parser hasn't seen than a secret fluid, and leaving an amount
+    alone is the harmless failure — scaling one that shouldn't be is not.
     """
-    if item_forms.get(item_id) in _FLUID_FORMS:
+    if item_id in fluid_item_ids:
         amount /= _LITRES_PER_CUBIC_METRE
     return ItemAmount(item_id=item_id, amount_per_minute=_rate_per_minute(amount, duration))
 
 
-def _load_recipes(entries: list[dict[str, Any]], item_forms: dict[str, str]) -> tuple[Recipe, ...]:
+def _load_recipes(
+    entries: list[dict[str, Any]],
+    *,
+    fluid_item_ids: frozenset[str],
+    manufacturing_building_ids: frozenset[str],
+) -> tuple[Recipe, ...]:
     recipes = []
     for entry in entries:
+        building_ids = tuple(
+            building_id
+            for building_id in parse_quoted_class_list(entry.get("mProducedIn", ""))
+            if building_id in manufacturing_building_ids
+        )
+        if not building_ids:
+            continue  # build gun / Workshop / Craft Bench only -- see module docstring
+
         duration = float(entry.get("mManufactoringDuration") or 0)
         inputs = tuple(
-            _item_amount(item_id, amount, duration, item_forms)
+            _item_amount(item_id, amount, duration, fluid_item_ids)
             for item_id, amount in parse_item_amounts(entry.get("mIngredients", ""))
         )
         outputs = tuple(
-            _item_amount(item_id, amount, duration, item_forms)
+            _item_amount(item_id, amount, duration, fluid_item_ids)
             for item_id, amount in parse_item_amounts(entry.get("mProduct", ""))
         )
-        building_ids = parse_quoted_class_list(entry.get("mProducedIn", ""))
+        name = entry.get("mDisplayName") or entry["ClassName"]
         recipes.append(
             Recipe(
                 recipe_id=entry["ClassName"],
-                name=entry.get("mDisplayName") or entry["ClassName"],
+                name=name,
                 building_ids=building_ids,
                 inputs=inputs,
                 outputs=outputs,
+                is_alternate=name.startswith(_ALTERNATE_NAME_PREFIX),
             )
         )
     return tuple(recipes)
@@ -167,6 +250,23 @@ def _slots_from_recipes(building_id: str, recipes: tuple[Recipe, ...]) -> tuple[
     )
 
 
+def _power_consumption_mw(entry: dict[str, Any]) -> float:
+    """Net draw, signed the way `Building.power_consumption_mw` wants it. See the module docstring
+    for the variable-power buildings, whose fixed ratings read 0."""
+    consumption = float(entry.get("mPowerConsumption") or 0)
+    if consumption == 0 and "mEstimatedMaximumPowerConsumption" in entry:
+        low = float(entry.get("mEstimatedMininumPowerConsumption") or 0)
+        high = float(entry.get("mEstimatedMaximumPowerConsumption") or 0)
+        consumption = (low + high) / 2
+
+    production = float(entry.get("mPowerProduction") or 0)
+    if production == 0 and "mVariablePowerProductionFactor" in entry:
+        production = float(entry.get("mVariablePowerProductionConstant") or 0) + float(
+            entry.get("mVariablePowerProductionFactor") or 0
+        )
+    return consumption - production
+
+
 def _load_buildings(
     entries_by_native_class: dict[str, list[dict[str, Any]]], recipes: tuple[Recipe, ...]
 ) -> tuple[Building, ...]:
@@ -174,19 +274,14 @@ def _load_buildings(
     for native_class in _BUILDING_NATIVE_CLASSES:
         for entry in entries_by_native_class.get(native_class, []):
             building_id = entry["ClassName"]
-            consumption = float(entry.get("mPowerConsumption") or 0)
-            production = float(entry.get("mPowerProduction") or 0)
             input_slots, output_slots = _slots_from_recipes(building_id, recipes)
             if input_slots == 0 and output_slots == 0:
-                if native_class in _EXTRACTOR_NATIVE_CLASSES:
-                    input_slots, output_slots = 0, 1
-                elif native_class in _GENERATOR_NATIVE_CLASSES:
-                    input_slots, output_slots = 1, 0
+                input_slots, output_slots = _FALLBACK_SLOTS.get(native_class, (0, 0))
             buildings.append(
                 Building(
                     building_id=building_id,
                     name=entry.get("mDisplayName") or building_id,
-                    power_consumption_mw=consumption - production,
+                    power_consumption_mw=_power_consumption_mw(entry),
                     input_slots=input_slots,
                     output_slots=output_slots,
                 )

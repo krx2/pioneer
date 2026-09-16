@@ -134,6 +134,17 @@ def object_property_tag_bytes(
     return out
 
 
+def float_property_tag_bytes(
+    *, name: str, value: float, property_guid: bytes | None = None
+) -> bytes:
+    """One `FloatProperty` tag as `properties.read_float_property` reads it:
+    `[Name][Type="FloatProperty"][ArrayIndex=0][Size=4]`, the `HasPropertyGuid` byte (followed by
+    the 16-byte GUID when one is given), then the float itself."""
+    out = fstring(name) + fstring("FloatProperty") + struct.pack("<ii", 0, 4)
+    out += b"\x00" if property_guid is None else b"\x01" + property_guid
+    return out + struct.pack("<f", value)
+
+
 def property_list_terminator_bytes() -> bytes:
     """The `"None"` tag that ends a property list — just its name `FString`, per
     `properties.read_property_tag`."""

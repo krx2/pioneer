@@ -1,83 +1,98 @@
-"""Diffs an existing production state against a from-scratch target plan and returns the minimal
-`ChangeSet` to get from one to the other — extend factories that just need more machines, add
-brand-new stages only where nothing exists yet.
+"""Turns a plan of *additional* machines into the `ChangeSet` an existing factory needs: extend the
+factories that already run a recipe, add new stages only where none does.
 
-**Matching is by `recipe_id`.** An existing node and a target node running the same recipe are
-"the same factory": the existing one gets extended by the shortfall rather than a second parallel
-factory being proposed. Producing the same *item* via a different recipe (an alternate) does not
-match — feed Stage 7 the right `recipe_choices` if you want an alternate-recipe factory extended.
+**The input is a delta plan, not a from-scratch one.** `additions` is what the Production Planner
+returns when run with the existing factory's spare output as `available_supply` (the Verifier's
+positive balance over the existing graph): it already holds only machines that have to be built —
+demand the existing surplus covers is gone from it, along with everything upstream of that
+demand. That's what makes the answer right. Comparing a from-scratch plan against the existing
+factory's *gross* machine counts instead counts machines already busy feeding the existing factory
+as free, and tells a player who is already short of Iron Ingot that their smelters cover a new
+Reinforced Iron Plate line.
 
-**"Prefer extension when numerically sufficient"** (architecture.md §5): if existing capacity for
-a recipe already meets or exceeds what the target needs, nothing is emitted for it at all. If it
-falls short, a single `EXTEND` covers the deficit, anchored to the first existing node running
-that recipe (existing capacity is summed across all nodes running it, but the change points at
-one). Only when there is no existing node for a recipe is an `ADD` emitted.
+**Matching is by `recipe_id`.** An addition running a recipe some existing node already runs is an
+`EXTEND` of that node (the first one, if several run it): more of the same machine, where it
+already stands. Anything else is an `ADD`. Producing the same *item* via a different recipe (an
+alternate) does not match — feed Stage 7 the right `recipe_choices` if you want an
+alternate-recipe factory extended.
 
-`resulting_graph` is the merged end state: carried-over nodes (normalized to `is_existing=True`,
-extended ones with their bumped `machine_count`) plus the newly added nodes (`is_existing=False`),
-so Stage 13 can highlight new vs. existing straight off the flag. Its `flows` are taken from the
-target plan as the intended final routing — reconciling flow endpoints across the two graphs'
-node-id namespaces is left to whoever renders it.
+`resulting_graph` is the production chain for the request after the change: every extended node
+(`is_existing=True`, `machine_count` bumped by the addition) and every added node
+(`is_existing=False`), with the plan's flows rewired onto those node ids — so every flow endpoint is
+a node in the graph, or `None` for material entering from outside (raw resources, or the existing
+factory's surplus). Existing nodes the change doesn't touch are left out: they're the rest of the
+factory, not part of this chain.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import replace
 
-from pioneer.contracts import ChangeAction, ChangeItem, ChangeSet, ProductionGraph, ProductionNode
+from pioneer.contracts import (
+    ChangeAction,
+    ChangeItem,
+    ChangeSet,
+    MaterialFlow,
+    ProductionGraph,
+    ProductionNode,
+)
 
 
-def advise_expansion(existing: ProductionGraph, target: ProductionGraph) -> ChangeSet:
-    existing_by_recipe: dict[str, list[ProductionNode]] = defaultdict(list)
+def advise_expansion(existing: ProductionGraph, additions: ProductionGraph) -> ChangeSet:
+    anchors: dict[str, ProductionNode] = {}
     for node in existing.nodes:
-        existing_by_recipe[node.recipe_id].append(node)
-    capacity = {
-        recipe_id: sum(n.machine_count for n in nodes)
-        for recipe_id, nodes in existing_by_recipe.items()
-    }
+        anchors.setdefault(node.recipe_id, node)
+    existing_ids = {node.node_id for node in existing.nodes}
 
     changes: list[ChangeItem] = []
-    result_nodes: dict[str, ProductionNode] = {
-        node.node_id: replace(node, is_existing=True) for node in existing.nodes
-    }
+    result_nodes: dict[str, ProductionNode] = {}
+    rewired: dict[str, str] = {}  # additions' node id -> its node id in resulting_graph
 
-    for target_node in target.nodes:
-        recipe_id = target_node.recipe_id
-        deficit = target_node.machine_count - capacity.get(recipe_id, 0.0)
-        if deficit <= 0:
-            continue  # existing capacity already covers this stage
-
-        anchors = existing_by_recipe.get(recipe_id)
-        if anchors:
-            anchor_id = anchors[0].node_id
+    for node in additions.nodes:
+        if node.machine_count <= 0:
+            continue
+        anchor = anchors.get(node.recipe_id)
+        if anchor is not None:
             changes.append(
                 ChangeItem(
                     action=ChangeAction.EXTEND,
-                    recipe_id=recipe_id,
-                    additional_machine_count=deficit,
-                    target_node_id=anchor_id,
+                    recipe_id=node.recipe_id,
+                    additional_machine_count=node.machine_count,
+                    target_node_id=anchor.node_id,
                 )
             )
-            bumped = result_nodes[anchor_id]
-            result_nodes[anchor_id] = replace(
-                bumped, machine_count=bumped.machine_count + deficit
+            extended = result_nodes.get(anchor.node_id, replace(anchor, is_existing=True))
+            result_nodes[anchor.node_id] = replace(
+                extended, machine_count=extended.machine_count + node.machine_count
             )
+            rewired[node.node_id] = anchor.node_id
         else:
             changes.append(
                 ChangeItem(
                     action=ChangeAction.ADD,
-                    recipe_id=recipe_id,
-                    additional_machine_count=deficit,
+                    recipe_id=node.recipe_id,
+                    additional_machine_count=node.machine_count,
                     target_node_id=None,
                 )
             )
-            new_id = _unique_id(target_node.node_id, result_nodes.keys())
-            result_nodes[new_id] = replace(target_node, node_id=new_id, is_existing=False)
+            new_id = _unique_id(node.node_id, existing_ids | result_nodes.keys())
+            result_nodes[new_id] = replace(node, node_id=new_id, is_existing=False)
+            rewired[node.node_id] = new_id
 
-    resulting_graph = ProductionGraph(nodes=tuple(result_nodes.values()), flows=target.flows)
+    flows = tuple(_rewire(flow, rewired) for flow in additions.flows)
+    resulting_graph = ProductionGraph(nodes=tuple(result_nodes.values()), flows=flows)
     return ChangeSet(changes=tuple(changes), resulting_graph=resulting_graph)
+
+
+def _rewire(flow: MaterialFlow, rewired: dict[str, str]) -> MaterialFlow:
+    source = flow.source_node_id
+    target = flow.target_node_id
+    return replace(
+        flow,
+        source_node_id=rewired.get(source, source) if source is not None else None,
+        target_node_id=rewired.get(target, target) if target is not None else None,
+    )
 
 
 def _unique_id(preferred: str, taken: Iterable[str]) -> str:

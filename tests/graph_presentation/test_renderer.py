@@ -148,6 +148,41 @@ def test_a_node_with_no_flows_at_all_defaults_to_layer_zero() -> None:
     assert data["nodes"][0]["layer"] == 0
 
 
+def test_a_flow_to_an_unknown_node_becomes_a_boundary_not_a_dangling_link() -> None:
+    graph = ProductionGraph(
+        nodes=(
+            ProductionNode(
+                node_id="node_known",
+                recipe_id="Recipe_Whatever_C",
+                building_id="Build_Whatever_C",
+                machine_count=1,
+            ),
+        ),
+        flows=(
+            MaterialFlow(
+                item_id="Desc_In_C",
+                amount_per_minute=1,
+                source_node_id="node_gone",
+                target_node_id="node_known",
+            ),
+            MaterialFlow(
+                item_id="Desc_Out_C",
+                amount_per_minute=1,
+                source_node_id="node_known",
+                target_node_id="node_also_gone",
+            ),
+        ),
+    )
+
+    data = graph_to_d3_data(graph)
+
+    node_ids = {n["id"] for n in data["nodes"]}
+    for link in data["links"]:
+        assert link["source"] in node_ids
+        assert link["target"] in node_ids
+    assert {n["kind"] for n in data["nodes"]} == {"machine", "boundary-in", "boundary-out"}
+
+
 def test_render_page_embeds_the_data_and_loads_d3() -> None:
     page = render_page(_GRAPH)
 

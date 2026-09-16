@@ -26,9 +26,7 @@ def render_message(text: str | None, *, role: Role = "assistant") -> str:
     return f'<div class="message message-{role}">{paragraphs}</div>'
 
 
-def render_page(
-    messages: Sequence[tuple[Role, str | None]], *, title: str = "Pioneer"
-) -> str:
+def render_page(messages: Sequence[tuple[Role, str | None]], *, title: str = "Pioneer") -> str:
     body = "\n".join(render_message(text, role=role) for role, text in messages)
     return f"""<!doctype html>
 <html lang="en">

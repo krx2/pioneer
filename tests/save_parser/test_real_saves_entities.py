@@ -100,13 +100,31 @@ def test_load_save_state_produces_a_usable_existing_factory_graph() -> None:
     assert len(with_recipes) == 500
     assert all(p.building_id in _MANUFACTURER_IDS for p in with_recipes)
 
-    # One node per distinct recipe, machine counts summing back to the buildings that carry one.
+    # One node per distinct recipe. Its machine_count is clock-scaled -- effective machines, see
+    # production_graph.py -- so it sums the clock speeds of the buildings carrying that recipe.
     assert state.graph.nodes
-    assert sum(n.machine_count for n in state.graph.nodes) == len(with_recipes)
     assert len({n.recipe_id for n in state.graph.nodes}) == len(state.graph.nodes)
     assert all(n.is_existing for n in state.graph.nodes)
     assert state.graph.flows == ()
 
     by_recipe = Counter(p.recipe_id for p in with_recipes)
+    assert {n.recipe_id for n in state.graph.nodes} == set(by_recipe)
     for node in state.graph.nodes:
-        assert node.machine_count == by_recipe[node.recipe_id]
+        clock_speeds = [p.clock_speed for p in with_recipes if p.recipe_id == node.recipe_id]
+        assert len(clock_speeds) == by_recipe[node.recipe_id]
+        assert abs(node.machine_count - sum(clock_speeds)) < 1e-9
+    # This save really does run machines off 100% -- underclocked constructors, among others.
+    assert any(p.clock_speed != 1.0 for p in with_recipes)
+
+
+def test_generators_report_their_fuel_and_buildings_their_clock_speed() -> None:
+    state = load_save_state(_FIXTURES_DIR / "stal_mielec.sav")
+
+    fuels = Counter((p.building_id, p.fuel_item_id) for p in state.placements if p.fuel_item_id)
+    assert fuels == {
+        ("Build_GeneratorCoal_C", "Desc_Coal_C"): 36,
+        ("Build_GeneratorFuel_C", "Desc_LiquidFuel_C"): 15,
+        ("Build_GeneratorIntegratedBiomass_C", "Desc_GenericBiomass_C"): 2,
+    }
+    water_pumps = [p.clock_speed for p in state.placements if p.building_id == "Build_WaterPump_C"]
+    assert water_pumps.count(0.75) == 18

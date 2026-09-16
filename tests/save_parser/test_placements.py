@@ -3,6 +3,7 @@
 
 import pytest
 from tests.save_parser.byte_builders import (
+    float_property_tag_bytes,
     object_property_tag_bytes,
     property_list_terminator_bytes,
 )
@@ -19,6 +20,17 @@ _SMELTER = RawObjectHeader(
     path_name="Persistent_Level:PersistentLevel.Build_SmelterMk1_C_1",
     object_flags=8,
     position=Coordinates(x=1.0, y=2.0, z=3.0),
+)
+_GENERATOR = RawObjectHeader(
+    is_actor=True,
+    class_name=(
+        "/Game/FactoryGame/Buildable/Factory/GeneratorCoal/"
+        "Build_GeneratorCoal.Build_GeneratorCoal_C"
+    ),
+    level_name="Persistent_Level",
+    path_name="Persistent_Level:PersistentLevel.Build_GeneratorCoal_C_1",
+    object_flags=8,
+    position=Coordinates(x=4.0, y=5.0, z=6.0),
 )
 _PLAYER = RawObjectHeader(
     is_actor=True,
@@ -127,3 +139,21 @@ def test_span_count_must_match_header_count() -> None:
 
     with pytest.raises(ValueError, match="must pair up"):
         to_placement_records_with_recipes((_SMELTER, _SMELTER), body, spans)
+
+
+def test_clock_speed_and_fuel_are_read_from_the_buildings_own_span() -> None:
+    generator_properties = (
+        float_property_tag_bytes(name="mCurrentPotential", value=2.5)
+        + object_property_tag_bytes(
+            name="mCurrentFuelClass",
+            referenced_path="/Game/FactoryGame/Resource/RawResources/Coal/Desc_Coal.Desc_Coal_C",
+        )
+        + property_list_terminator_bytes()
+    )
+    body, spans = _body_with_spans(_RECIPE_TAG, generator_properties)
+
+    smelter, generator = to_placement_records_with_recipes((_SMELTER, _GENERATOR), body, spans)
+
+    assert (generator.clock_speed, generator.fuel_item_id) == (2.5, "Desc_Coal_C")
+    assert generator.recipe_id is None
+    assert (smelter.clock_speed, smelter.fuel_item_id) == (1.0, None)  # nothing saved: defaults

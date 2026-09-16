@@ -17,3 +17,9 @@ class PlacementRecord:
     position: Coordinates
     recipe_id: str | None = None
     """`None` for non-production buildings (storage, power, belts, ...)."""
+    clock_speed: float = 1.0
+    """The building's clock speed (`mCurrentPotential`): 1.0 is 100%; power shards take it up to
+    2.5, underclocking down to 0.01. What it produces and consumes scales with it."""
+    fuel_item_id: str | None = None
+    """What a generator is burning (`mCurrentFuelClass`). `None` for every other building, and for
+    a generator that has never been fueled."""

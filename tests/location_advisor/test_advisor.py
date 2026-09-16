@@ -89,9 +89,7 @@ def test_injected_distance_function_is_used() -> None:
 
     nodes = (_iron("n", Purity.PURE, x=123456),)
 
-    (result,) = rank_locations(
-        "Desc_OreIron_C", nodes, (), _ORIGIN, distance_fn=stub_distance
-    )
+    (result,) = rank_locations("Desc_OreIron_C", nodes, (), _ORIGIN, distance_fn=stub_distance)
 
     assert result.distance_to_reference == 42.0
     assert calls  # the stub, not the real euclidean, did the measuring
@@ -105,9 +103,7 @@ def test_claim_radius_boundary() -> None:
     # A placement 150 units from "inside" (claimed at radius 200) and far from "outside".
     placements = (_placement(x=250),)
 
-    result = rank_locations(
-        "Desc_OreIron_C", nodes, placements, _ORIGIN, claim_radius=200.0
-    )
+    result = rank_locations("Desc_OreIron_C", nodes, placements, _ORIGIN, claim_radius=200.0)
 
     assert [r.resource_node_id for r in result] == ["outside"]
 

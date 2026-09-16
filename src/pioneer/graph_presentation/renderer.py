@@ -54,9 +54,11 @@ def _compute_layers(node_ids: Iterable[str], links: list[dict[str, Any]]) -> dic
 
 
 def graph_to_d3_data(graph: ProductionGraph) -> dict[str, Any]:
-    """Machine nodes come straight from `graph.nodes`. Flows with no `source_node_id` (raw input)
-    or no `target_node_id` (final output) get a synthesized boundary node instead of a dangling
-    edge, so every link in the output has two real endpoints — D3 can't draw an edge to nothing."""
+    """Machine nodes come straight from `graph.nodes`. A flow endpoint that isn't one of them —
+    `None` (material entering from outside, or leaving as the final output), or an id no node in
+    the graph has — gets a synthesized boundary node instead of a dangling edge, so every link in
+    the output has two real endpoints: D3's `forceLink` throws on a link to an unknown node, which
+    blanks the whole diagram."""
     nodes: dict[str, dict[str, Any]] = {
         node.node_id: {
             "id": node.node_id,
@@ -67,20 +69,29 @@ def graph_to_d3_data(graph: ProductionGraph) -> dict[str, Any]:
         }
         for node in graph.nodes
     }
+    machine_ids = set(nodes)
 
     links: list[dict[str, Any]] = []
     for flow in graph.flows:
-        source = flow.source_node_id or _boundary_id("in", flow.item_id)
-        target = flow.target_node_id or _boundary_id("out", flow.item_id)
-        if flow.source_node_id is None and source not in nodes:
+        source = (
+            flow.source_node_id
+            if flow.source_node_id in machine_ids
+            else _boundary_id("in", flow.item_id)
+        )
+        target = (
+            flow.target_node_id
+            if flow.target_node_id in machine_ids
+            else _boundary_id("out", flow.item_id)
+        )
+        if source not in nodes:
             nodes[source] = {
                 "id": source,
-                "label": f"{flow.item_id} (raw input)",
+                "label": f"{flow.item_id} (input)",
                 "buildingId": None,
                 "existing": True,
                 "kind": "boundary-in",
             }
-        if flow.target_node_id is None and target not in nodes:
+        if target not in nodes:
             nodes[target] = {
                 "id": target,
                 "label": f"{flow.item_id} (output)",
