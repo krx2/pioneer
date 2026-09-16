@@ -128,3 +128,20 @@ def test_generators_report_their_fuel_and_buildings_their_clock_speed() -> None:
     }
     water_pumps = [p.clock_speed for p in state.placements if p.building_id == "Build_WaterPump_C"]
     assert water_pumps.count(0.75) == 18
+
+
+def test_extractors_name_the_node_or_water_volume_they_extract_from() -> None:
+    state = load_save_state(_FIXTURES_DIR / "stal_mielec.sav")
+
+    for placement in state.placements:
+        if placement.building_id in ("Build_MinerMk1_C", "Build_MinerMk2_C", "Build_OilPump_C"):
+            assert placement.resource_node_id is not None
+            assert placement.resource_node_id.startswith(
+                "Persistent_Level:PersistentLevel.BP_ResourceNode"
+            )
+        elif placement.building_id == "Build_WaterPump_C":
+            assert placement.resource_node_id is not None
+            assert "FGWaterVolume" in placement.resource_node_id
+        else:
+            assert placement.resource_node_id is None
+    assert sum(1 for p in state.placements if p.resource_node_id) == 61

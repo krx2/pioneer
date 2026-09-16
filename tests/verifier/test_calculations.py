@@ -12,11 +12,14 @@ from pioneer.contracts import (
     PlacementRecord,
     ProductionGraph,
     ProductionNode,
+    Purity,
     Recipe,
+    ResourceNode,
 )
 from pioneer.verifier.calculations import (
     balance,
     distance,
+    extraction_rates,
     generator_fuel_demand,
     machine_count,
     placed_generation_capacity_mw,
@@ -107,13 +110,18 @@ def _graph(*, smelters: float, constructors: float) -> ProductionGraph:
 
 
 def _placed(
-    building_id: str, *, clock_speed: float = 1.0, fuel_item_id: str | None = None
+    building_id: str,
+    *,
+    clock_speed: float = 1.0,
+    fuel_item_id: str | None = None,
+    resource_node_id: str | None = None,
 ) -> PlacementRecord:
     return PlacementRecord(
         building_id=building_id,
         position=Coordinates(x=0, y=0),
         clock_speed=clock_speed,
         fuel_item_id=fuel_item_id,
+        resource_node_id=resource_node_id,
     )
 
 
@@ -243,3 +251,57 @@ def test_unfueled_generators_and_unknown_fuels_burn_nothing() -> None:
         _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_Mystery_C"),
     )
     assert generator_fuel_demand(placements, _PLACED_BUILDINGS, _FUELS) == {}
+
+
+_MINER_MK2 = Building(
+    building_id="Build_MinerMk2_C",
+    name="Miner Mk.2",
+    power_consumption_mw=15,
+    input_slots=0,
+    output_slots=1,
+    extraction_rate_per_minute=120,
+)
+_WATER_EXTRACTOR = Building(
+    building_id="Build_WaterPump_C",
+    name="Water Extractor",
+    power_consumption_mw=20,
+    input_slots=0,
+    output_slots=1,
+    extraction_rate_per_minute=120,
+    fixed_resource_id="Desc_Water_C",
+)
+_NODES = (
+    ResourceNode(
+        node_id="node_pure_iron",
+        item_id="Desc_OreIron_C",
+        purity=Purity.PURE,
+        position=Coordinates(x=0, y=0),
+    ),
+    ResourceNode(
+        node_id="node_impure_copper",
+        item_id="Desc_OreCopper_C",
+        purity=Purity.IMPURE,
+        position=Coordinates(x=0, y=0),
+    ),
+)
+
+
+def test_extraction_rates_scale_with_purity_and_clock_speed() -> None:
+    placements = (
+        _placed("Build_MinerMk2_C", resource_node_id="node_pure_iron"),  # 120 * 2
+        _placed("Build_MinerMk2_C", resource_node_id="node_impure_copper", clock_speed=2.5),
+        _placed("Build_WaterPump_C", resource_node_id="Persistent_Level:PersistentLevel.Water1"),
+        _placed("Build_SmelterMk1_C"),
+    )
+
+    rates = extraction_rates(placements, (_SMELTER, _MINER_MK2, _WATER_EXTRACTOR), _NODES)
+
+    assert rates == pytest.approx(
+        {"Desc_OreIron_C": 240.0, "Desc_OreCopper_C": 150.0, "Desc_Water_C": 120.0}
+    )
+
+
+def test_a_miner_on_a_node_the_data_does_not_know_extracts_nothing_known() -> None:
+    placements = (_placed("Build_MinerMk2_C", resource_node_id="node_elsewhere"),)
+
+    assert extraction_rates(placements, (_MINER_MK2,), _NODES) == {}

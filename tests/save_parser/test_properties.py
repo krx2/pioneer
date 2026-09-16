@@ -5,6 +5,7 @@ test_real_saves_properties.py for the bonus real-file check."""
 from tests.save_parser.byte_builders import (
     float_property_tag_bytes,
     fstring,
+    level_object_reference_tag_bytes,
     object_property_tag_bytes,
     property_list_terminator_bytes,
 )
@@ -14,6 +15,7 @@ from pioneer.save_parser.properties import (
     find_recipe_ids,
     find_recipe_paths,
     read_float_property,
+    read_level_object_reference,
     read_object_reference_value,
     read_property_tag,
 )
@@ -141,3 +143,29 @@ def test_read_float_property_ignores_a_same_named_property_of_another_type() -> 
     ) + float_property_tag_bytes(name="mCurrentPotential", value=1.5)
 
     assert read_float_property(body, "mCurrentPotential") == 1.5
+
+
+_NODE_PATH = "Persistent_Level:PersistentLevel.BP_ResourceNode103"
+
+
+def test_read_level_object_reference_returns_the_objects_path() -> None:
+    body = b"\x01\x02" + level_object_reference_tag_bytes(
+        name="mExtractableResource", path=_NODE_PATH
+    )
+
+    assert read_level_object_reference(body, "mExtractableResource") == _NODE_PATH
+
+
+def test_read_level_object_reference_ignores_a_class_reference() -> None:
+    """A class reference's `Size` is 0, so its bytes can't pass for a level object's."""
+    body = object_property_tag_bytes(
+        name="mExtractableResource", referenced_path="/Game/Whatever.Whatever_C"
+    )
+
+    assert read_level_object_reference(body, "mExtractableResource") is None
+
+
+def test_read_level_object_reference_absent_is_none() -> None:
+    body = property_list_terminator_bytes()
+
+    assert read_level_object_reference(body, "mExtractableResource") is None

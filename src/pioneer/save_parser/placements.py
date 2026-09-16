@@ -12,9 +12,10 @@ path instead, since the object table carries no equivalent field.
 uses for `Building.building_id`, so a `PlacementRecord` here and a `Building` from the Knowledge
 Base are keyed identically.
 
-`recipe_id`, `clock_speed` and `fuel_item_id` are filled in by `to_placement_records_with_recipes`,
-which reads each building's own `mCurrentRecipe`, `mCurrentPotential` and `mCurrentFuelClass` out
-of its entity span (see entities.py for the framing and properties.py for the extraction).
+`recipe_id`, `clock_speed`, `fuel_item_id` and `resource_node_id` are filled in by
+`to_placement_records_with_recipes`, which reads each building's own `mCurrentRecipe`,
+`mCurrentPotential`, `mCurrentFuelClass` and `mExtractableResource` out of its entity span (see
+entities.py for the framing and properties.py for the extraction).
 `to_placement_records` is the headers-only version, for callers that have no decompressed body to
 search — it leaves `recipe_id` as `None`, which is a real "not known", not "not running a
 recipe", and the clock speed at its 100% default.
@@ -27,7 +28,11 @@ from collections.abc import Sequence
 from pioneer.contracts import PlacementRecord
 from pioneer.save_parser.entities import EntitySpan
 from pioneer.save_parser.object_table import RawObjectHeader
-from pioneer.save_parser.properties import find_recipe_ids, read_float_property
+from pioneer.save_parser.properties import (
+    find_recipe_ids,
+    read_float_property,
+    read_level_object_reference,
+)
 
 _BUILDABLE_PATH_MARKER = "/Buildable/"
 
@@ -64,9 +69,10 @@ def to_placement_records_with_recipes(
     body: bytes,
     spans: Sequence[EntitySpan],
 ) -> tuple[PlacementRecord, ...]:
-    """Every placed building in `headers`, in TOC order, with `recipe_id`, `clock_speed` and (for
-    generators) `fuel_item_id` read from each one's own entity span. `spans[i]` must be the span
-    for `headers[i]` — the pairing `entities.find_entity_spans` guarantees.
+    """Every placed building in `headers`, in TOC order, with `recipe_id`, `clock_speed`, and (for
+    generators) `fuel_item_id` or (for extractors) `resource_node_id` read from each one's own
+    entity span. `spans[i]` must be the span for `headers[i]` — the pairing
+    `entities.find_entity_spans` guarantees.
 
     A building with no `mCurrentRecipe` keeps `recipe_id=None`: most buildings genuinely have no
     recipe (belts, storage, poles, miners), and a manufacturer the player never configured hasn't
@@ -90,6 +96,9 @@ def to_placement_records_with_recipes(
             body, start=span.start, end=span.end, property_name="mCurrentFuelClass"
         )
         clock_speed = read_float_property(body, "mCurrentPotential", start=span.start, end=span.end)
+        extracts_from = read_level_object_reference(
+            body, "mExtractableResource", start=span.start, end=span.end
+        )
         records.append(
             PlacementRecord(
                 building_id=_building_id(header.class_name),
@@ -97,6 +106,7 @@ def to_placement_records_with_recipes(
                 recipe_id=recipe_ids[0] if recipe_ids else None,
                 clock_speed=1.0 if clock_speed is None else clock_speed,
                 fuel_item_id=fuel_ids[0] if fuel_ids else None,
+                resource_node_id=extracts_from,
             )
         )
     return tuple(records)

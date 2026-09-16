@@ -13,7 +13,13 @@ from typing import Any
 
 import pytest
 
-from pioneer.app import DOCS_JSON, build_context, load_knowledge_base
+from pioneer.app import (
+    DOCS_JSON,
+    RESOURCE_NODES_JSON,
+    build_context,
+    load_knowledge_base,
+    load_resource_nodes,
+)
 from pioneer.contracts import ResponseArtifact
 from pioneer.knowledge_base import KnowledgeBase, raw_resource_ids
 from pioneer.orchestrator import OrchestratorContext, handle_query
@@ -214,3 +220,100 @@ def test_diagnosis_of_a_real_save_flags_only_craftable_shortfalls(kb, save_name)
     assert deficits <= craftable
     assert "power_blackout" not in {a["kind"] for a in result["anomalies"]}
     assert result["power_capacity_mw"] > result["power_draw_mw"] > 0
+
+
+needs_node_data = pytest.mark.skipif(
+    not RESOURCE_NODES_JSON.exists(),
+    reason="docs/resource_nodes.json not present",
+)
+
+
+@needs_node_data
+@pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna"])
+def test_every_node_a_real_save_mines_is_in_the_node_data(save_name) -> None:
+    known = {node.node_id for node in load_resource_nodes(RESOURCE_NODES_JSON)}
+    state = load_save_state(_SAVES / f"{save_name}.sav")
+
+    mined = {
+        p.resource_node_id
+        for p in state.placements
+        if p.resource_node_id and "FGWaterVolume" not in p.resource_node_id
+    }
+
+    assert mined
+    assert mined <= known
+
+
+@needs_node_data
+def test_location_ranking_on_a_real_save_skips_the_nodes_it_already_mines(kb) -> None:
+    state = load_save_state(_SAVE)
+    context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
+
+    artifact, [result] = _ask(
+        context, ("rank_build_locations", {"item_id": "Iron Ore", "count": 200})
+    )
+
+    mined = {p.resource_node_id for p in state.placements if p.resource_node_id}
+    ranked = {location["resource_node_id"] for location in result["locations"]}
+    assert ranked
+    assert not ranked & mined
+    assert artifact.map_locations is not None
+    assert len(artifact.map_locations) == len(ranked)
+
+
+@needs_node_data
+@pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna"])
+def test_with_node_data_the_real_saves_power_and_ore_add_up(kb, save_name) -> None:
+    """With extraction known, ore gets judged like everything else; hand-gathered items still
+    don't, and neither save is in a blackout."""
+    state = load_save_state(_SAVES / f"{save_name}.sav")
+    context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
+
+    _, [result] = _ask(context, ("diagnose_factory_problems", {}))
+
+    craftable_or_raw = {o.item_id for r in kb.recipes for o in r.outputs} | raw_resource_ids(kb)
+    deficits = {a["item_id"] for a in result["anomalies"] if a["kind"] == "resource_deficit"}
+    assert deficits <= craftable_or_raw
+    assert "power_blackout" not in {a["kind"] for a in result["anomalies"]}
+
+
+def test_a_game_question_is_answered_from_the_real_corpus(context) -> None:
+    """The Q&A tool retrieves from the game's own text: a belt question finds the belt."""
+    answered = []
+
+    def qa_model(base_url, model, messages, api_key):
+        answered.append(messages[1]["content"])
+        return "Mk.1 belts move 60 items per minute."
+
+    question = "How many resources per minute does a Conveyor Belt Mk.1 move?"
+    rounds = [
+        {
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "name": "answer_game_question",
+                    "arguments": {"question": question},
+                }
+            ],
+        },
+        {"content": "done", "tool_calls": []},
+    ]
+    calls = []
+
+    def scripted_llm(base_url, model, messages, tools, api_key):
+        calls.append(messages)
+        return rounds[len(calls) - 1]
+
+    handle_query(
+        scripted_llm,
+        qa_model,
+        "question",
+        context,
+        llm_base_url="http://llm.invalid/v1",
+        llm_model="model",
+        response_id="e2e-qa",
+    )
+
+    assert answered
+    assert "Transports up to 60 resources per minute" in answered[0]

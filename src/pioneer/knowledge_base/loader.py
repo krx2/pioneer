@@ -1,4 +1,5 @@
-"""Loads items, recipes, buildings, and technologies from a Satisfactory `Docs.json`-shaped export.
+"""Loads items, recipes, buildings, technologies and the game's own descriptions from a
+Satisfactory `Docs.json`-shaped export.
 
 `load_from_dict` is the pure entry point every test in `tests/knowledge_base/test_loader.py`
 exercises, against `fixtures/mini_docs.json`. `load_from_file` is the thin I/O wrapper around it
@@ -56,7 +57,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from pioneer.contracts import Building, Item, ItemAmount, Recipe, Technology
+from pioneer.contracts import Building, ClassDescription, Item, ItemAmount, Recipe, Technology
 from pioneer.knowledge_base.parsing import (
     class_name_from_path,
     parse_item_amounts,
@@ -143,7 +144,11 @@ def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
     )
 
     return KnowledgeBase(
-        recipes=recipes, buildings=buildings, technologies=technologies, items=items
+        recipes=recipes,
+        buildings=buildings,
+        technologies=technologies,
+        items=items,
+        descriptions=_load_descriptions(entries_by_native_class),
     )
 
 
@@ -179,6 +184,29 @@ def _energy_value_mj(entry: dict[str, Any]) -> float:
     0.75 MJ/L is 750 MJ/m³, which a 250 MW Fuel Generator burns at 20 m³/min, as in game."""
     energy = float(entry.get("mEnergyValue") or 0)
     return energy * _LITRES_PER_CUBIC_METRE if entry["mForm"] in _FLUID_FORMS else energy
+
+
+def _load_descriptions(
+    entries_by_native_class: dict[str, list[dict[str, Any]]],
+) -> tuple[ClassDescription, ...]:
+    """Every class the export describes in words, whatever its kind — the text the Q&A Engine
+    answers from."""
+    return tuple(
+        ClassDescription(
+            class_id=entry["ClassName"],
+            name=_flatten(entry["mDisplayName"]),
+            text=_flatten(entry["mDescription"]),
+            category=native_class,
+        )
+        for native_class, entries in entries_by_native_class.items()
+        for entry in entries
+        if entry.get("mDescription") and entry.get("mDisplayName") and "ClassName" in entry
+    )
+
+
+def _flatten(ui_text: str) -> str:
+    """UI strings with their line breaks and (narrow) non-breaking spaces made plain spaces."""
+    return " ".join(ui_text.replace("\u202f", " ").replace("\xa0", " ").split())
 
 
 def _rate_per_minute(amount: float, duration_seconds: float) -> float:
@@ -277,6 +305,9 @@ def _load_buildings(
             input_slots, output_slots = _slots_from_recipes(building_id, recipes)
             if input_slots == 0 and output_slots == 0:
                 input_slots, output_slots = _FALLBACK_SLOTS.get(native_class, (0, 0))
+            extraction_rate, fixed_resource_id = (
+                _extraction(entry) if native_class in _EXTRACTOR_NATIVE_CLASSES else (0.0, None)
+            )
             buildings.append(
                 Building(
                     building_id=building_id,
@@ -284,9 +315,26 @@ def _load_buildings(
                     power_consumption_mw=_power_consumption_mw(entry),
                     input_slots=input_slots,
                     output_slots=output_slots,
+                    extraction_rate_per_minute=extraction_rate,
+                    fixed_resource_id=fixed_resource_id,
                 )
             )
     return tuple(buildings)
+
+
+def _extraction(entry: dict[str, Any]) -> tuple[float, str | None]:
+    """An extractor's rate at 100% clock on a normal node, and the one resource it's limited to,
+    if any (`mAllowedResources` lists exactly one; miners list none, meaning "whatever the node
+    has"). `mItemsPerCycle` is in litres for extractors that allow no solid form — the same
+    litres-vs-m³ split as recipe amounts — so a Water Extractor's 2000 per second is 120 m³/min."""
+    cycle_seconds = float(entry.get("mExtractCycleTime") or 0)
+    if cycle_seconds <= 0:
+        return 0.0, None
+    per_cycle = float(entry.get("mItemsPerCycle") or 0)
+    if "RF_SOLID" not in (entry.get("mAllowedResourceForms") or ""):
+        per_cycle /= _LITRES_PER_CUBIC_METRE
+    allowed = parse_quoted_class_list(entry.get("mAllowedResources") or "")
+    return per_cycle / cycle_seconds * 60.0, allowed[0] if len(allowed) == 1 else None
 
 
 def _parse_prerequisites(raw_dependencies: list[dict[str, Any]] | None) -> tuple[str, ...]:

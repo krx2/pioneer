@@ -15,7 +15,14 @@ from pioneer.contracts.locations import RankedLocation
 from pioneer.contracts.placement import PlacementRecord
 from pioneer.contracts.planning import ChangeAction, ChangeItem, ChangeSet
 from pioneer.contracts.production_graph import MaterialFlow, ProductionGraph, ProductionNode
-from pioneer.contracts.recipes import Building, Item, ItemAmount, Recipe, Technology
+from pioneer.contracts.recipes import (
+    Building,
+    ClassDescription,
+    Item,
+    ItemAmount,
+    Recipe,
+    Technology,
+)
 from pioneer.contracts.resources import Purity, ResourceNode
 from pioneer.contracts.responses import Feedback, ResponseArtifact
 
@@ -27,6 +34,7 @@ __all__ = [
     "ChangeAction",
     "ChangeItem",
     "ChangeSet",
+    "ClassDescription",
     "Coordinates",
     "Feedback",
     "GameState",

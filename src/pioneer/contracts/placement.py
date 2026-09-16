@@ -23,3 +23,7 @@ class PlacementRecord:
     fuel_item_id: str | None = None
     """What a generator is burning (`mCurrentFuelClass`). `None` for every other building, and for
     a generator that has never been fueled."""
+    resource_node_id: str | None = None
+    """What an extractor extracts from (`mExtractableResource`), as that object's path name —
+    for miners and oil/well extractors a resource node, keyed exactly as the resource database keys
+    nodes; for a Water Extractor the water volume it draws from. `None` for other buildings."""

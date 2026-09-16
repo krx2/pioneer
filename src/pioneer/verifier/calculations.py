@@ -6,10 +6,10 @@ container, just functions — since it has no data to load, only calculations to
 `Recipe`/`Building` list the caller (eventually the real Knowledge Base) hands it.
 
 Power has two views. `power_balance` is a production graph's own draw — what a *plan* needs.
-`placed_power_consumption_mw`, `placed_generation_capacity_mw` and `generator_fuel_demand` work
-over a save's placements instead — every building actually standing, including the extractors,
-pumps and generators a recipe graph never contains — which is what checking an existing factory
-for blackouts, or for fuel its generators burn, has to look at.
+`placed_power_consumption_mw`, `placed_generation_capacity_mw`, `generator_fuel_demand` and
+`extraction_rates` work over a save's placements instead — every building actually standing,
+including the extractors, pumps and generators a recipe graph never contains — which is what
+checking an existing factory for blackouts, fuel burn or ore supply has to look at.
 """
 
 from __future__ import annotations
@@ -23,13 +23,18 @@ from pioneer.contracts import (
     Item,
     PlacementRecord,
     ProductionGraph,
+    Purity,
     Recipe,
+    ResourceNode,
 )
 
 _OVERCLOCK_POWER_EXPONENT = 1.321929
 """How power draw scales with clock speed — the game's `mPowerConsumptionExponent` for production
 buildings and extractors: at 250% a machine draws 2.5 ** 1.32 ≈ 3.4x its rated power, not 2.5x.
 Generator output, by contrast, scales linearly with clock speed."""
+
+_PURITY_MULTIPLIER = {Purity.IMPURE: 0.5, Purity.NORMAL: 1.0, Purity.PURE: 2.0}
+"""How a node's purity scales an extractor's rate — the game's own ratios."""
 
 
 def distance(a: Coordinates, b: Coordinates) -> float:
@@ -127,6 +132,34 @@ def generator_fuel_demand(
         output_mw = -building.power_consumption_mw * placement.clock_speed
         demand[fuel] = demand.get(fuel, 0.0) + output_mw / energy[fuel] * 60.0
     return demand
+
+
+def extraction_rates(
+    placements: Sequence[PlacementRecord],
+    buildings: tuple[Building, ...],
+    resource_nodes: Sequence[ResourceNode],
+) -> dict[str, float]:
+    """Per resource, what the placed extractors pull out per minute (m³ for fluids): each one's
+    `Building.extraction_rate_per_minute`, times its node's purity multiplier (impure 0.5, normal 1,
+    pure 2) and its clock speed. The resource is the node's — or, for an extractor on no known node,
+    its `fixed_resource_id` at normal rate (a Water Extractor draws from a water volume, which has
+    no purity). An extractor that could extract several resources, on a node `resource_nodes`
+    doesn't know, is left out: without the node there's no telling what it extracts."""
+    nodes = {node.node_id: node for node in resource_nodes}
+    rates: dict[str, float] = {}
+    for placement, building in _placed_buildings(placements, buildings):
+        if building.extraction_rate_per_minute <= 0:
+            continue
+        node = nodes.get(placement.resource_node_id or "")
+        if node is not None:
+            item_id, multiplier = node.item_id, _PURITY_MULTIPLIER[node.purity]
+        elif building.fixed_resource_id is not None:
+            item_id, multiplier = building.fixed_resource_id, 1.0
+        else:
+            continue
+        rate = building.extraction_rate_per_minute * multiplier * placement.clock_speed
+        rates[item_id] = rates.get(item_id, 0.0) + rate
+    return rates
 
 
 def _placed_buildings(

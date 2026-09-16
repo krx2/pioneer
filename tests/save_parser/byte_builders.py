@@ -145,6 +145,17 @@ def float_property_tag_bytes(
     return out + struct.pack("<f", value)
 
 
+def level_object_reference_tag_bytes(
+    *, name: str, path: str, level: str = "Persistent_Level"
+) -> bytes:
+    """One `ObjectProperty` tag pointing at an object placed in the level, as
+    `properties.read_level_object_reference` reads it: the tag with `Size` covering the value, the
+    `HasPropertyGuid` byte, then the level name and the object's path name."""
+    value = fstring(level) + fstring(path)
+    out = fstring(name) + fstring("ObjectProperty") + struct.pack("<ii", 0, len(value))
+    return out + b"\x00" + value
+
+
 def property_list_terminator_bytes() -> bytes:
     """The `"None"` tag that ends a property list — just its name `FString`, per
     `properties.read_property_tag`."""

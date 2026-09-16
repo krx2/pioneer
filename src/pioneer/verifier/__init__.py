@@ -8,6 +8,7 @@ known-correct expected results.
 from pioneer.verifier.calculations import (
     balance,
     distance,
+    extraction_rates,
     generator_fuel_demand,
     machine_count,
     placed_generation_capacity_mw,
@@ -18,6 +19,7 @@ from pioneer.verifier.calculations import (
 __all__ = [
     "balance",
     "distance",
+    "extraction_rates",
     "generator_fuel_demand",
     "machine_count",
     "placed_generation_capacity_mw",

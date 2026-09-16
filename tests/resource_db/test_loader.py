@@ -38,3 +38,12 @@ def test_purity_values_are_parsed_for_every_node(db) -> None:
         "iron_node_impure_1": Purity.IMPURE,
         "copper_node_normal_1": Purity.NORMAL,
     }
+
+
+def test_nodes_can_come_wrapped_with_their_provenance() -> None:
+    with open(_FIXTURE_PATH, encoding="utf-8") as f:
+        raw_nodes = json.load(f)
+
+    db = load_from_dict({"source": "hand-written", "nodes": raw_nodes})
+
+    assert len(db.nodes) == 4

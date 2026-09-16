@@ -174,3 +174,32 @@ def test_resource_descriptors_are_the_raw_resources(kb) -> None:
 
 def test_building_descriptors_are_not_items(kb) -> None:
     assert "Desc_ConstructorMk1_C" not in {item.item_id for item in kb.items}
+
+
+def test_miner_extraction_rate_comes_from_its_cycle(kb) -> None:
+    miner = next(b for b in kb.buildings if b.building_id == "Build_MinerMk1_C")
+    assert miner.extraction_rate_per_minute == pytest.approx(60.0)
+    assert miner.fixed_resource_id is None  # whatever the node it stands on holds
+
+
+def test_fluid_extractor_rate_is_in_cubic_metres_and_its_resource_is_fixed(kb) -> None:
+    """2000 litres per 1 s cycle: 120 m³/min, and only ever water."""
+    extractor = next(b for b in kb.buildings if b.building_id == "Build_WaterPump_C")
+    assert extractor.extraction_rate_per_minute == pytest.approx(120.0)
+    assert extractor.fixed_resource_id == "Desc_Water_C"
+
+
+def test_non_extractors_extract_nothing(kb) -> None:
+    constructor = next(b for b in kb.buildings if b.building_id == "Build_ConstructorMk1_C")
+    assert constructor.extraction_rate_per_minute == 0.0
+    assert constructor.fixed_resource_id is None
+
+
+def test_described_classes_become_descriptions_with_flattened_whitespace(kb) -> None:
+    descriptions = {d.class_id: d for d in kb.descriptions}
+
+    constructor = descriptions["Build_ConstructorMk1_C"]
+    assert constructor.name == "Constructor"
+    assert constructor.text == "Crafts 1 part into another part. Can be automated."
+    assert constructor.category == "FGBuildableManufacturer"
+    assert "Desc_Plastic_C" not in descriptions  # the fixture gives it no description

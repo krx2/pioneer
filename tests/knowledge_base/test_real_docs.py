@@ -213,3 +213,27 @@ def test_iron_rod_is_unlocked_by_a_technology(kb) -> None:
 def test_some_technologies_have_real_prerequisites(kb) -> None:
     with_prerequisites = [t for t in kb.technologies if t.prerequisites]
     assert len(with_prerequisites) == 163
+
+
+def test_extractor_rates_match_the_game(kb) -> None:
+    expected = {
+        "Build_MinerMk1_C": (60.0, None),
+        "Build_MinerMk2_C": (120.0, None),
+        "Build_MinerMk3_C": (240.0, None),
+        "Build_OilPump_C": (120.0, "Desc_LiquidOil_C"),
+        "Build_WaterPump_C": (120.0, "Desc_Water_C"),
+        "Build_FrackingExtractor_C": (60.0, None),
+    }
+    actual = {}
+    for building_id in expected:
+        building = building_for(kb, building_id)
+        assert building is not None
+        actual[building_id] = (building.extraction_rate_per_minute, building.fixed_resource_id)
+    assert actual == expected
+
+
+def test_the_games_own_descriptions_are_loaded(kb) -> None:
+    descriptions = {d.class_id: d for d in kb.descriptions}
+
+    assert len(descriptions) > 700
+    assert "60 resources per minute" in descriptions["Build_ConveyorBeltMk1_C"].text

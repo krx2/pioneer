@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from pioneer.contracts import Building, Item, Recipe, Technology
+from pioneer.contracts import Building, ClassDescription, Item, Recipe, Technology
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class KnowledgeBase:
     buildings: tuple[Building, ...]
     technologies: tuple[Technology, ...]
     items: tuple[Item, ...] = ()
+    descriptions: tuple[ClassDescription, ...] = ()
 
 
 def recipe_by_id(kb: KnowledgeBase, recipe_id: str) -> Recipe | None:

@@ -4,6 +4,7 @@
 import pytest
 from tests.save_parser.byte_builders import (
     float_property_tag_bytes,
+    level_object_reference_tag_bytes,
     object_property_tag_bytes,
     property_list_terminator_bytes,
 )
@@ -31,6 +32,14 @@ _GENERATOR = RawObjectHeader(
     path_name="Persistent_Level:PersistentLevel.Build_GeneratorCoal_C_1",
     object_flags=8,
     position=Coordinates(x=4.0, y=5.0, z=6.0),
+)
+_MINER = RawObjectHeader(
+    is_actor=True,
+    class_name="/Game/FactoryGame/Buildable/Factory/MinerMK1/Build_MinerMk1.Build_MinerMk1_C",
+    level_name="Persistent_Level",
+    path_name="Persistent_Level:PersistentLevel.Build_MinerMk1_C_1",
+    object_flags=8,
+    position=Coordinates(x=7.0, y=8.0, z=9.0),
 )
 _PLAYER = RawObjectHeader(
     is_actor=True,
@@ -157,3 +166,18 @@ def test_clock_speed_and_fuel_are_read_from_the_buildings_own_span() -> None:
     assert (generator.clock_speed, generator.fuel_item_id) == (2.5, "Desc_Coal_C")
     assert generator.recipe_id is None
     assert (smelter.clock_speed, smelter.fuel_item_id) == (1.0, None)  # nothing saved: defaults
+
+
+def test_what_an_extractor_extracts_from_is_read_from_its_span() -> None:
+    miner_properties = (
+        level_object_reference_tag_bytes(
+            name="mExtractableResource", path="Persistent_Level:PersistentLevel.BP_ResourceNode103"
+        )
+        + property_list_terminator_bytes()
+    )
+    body, spans = _body_with_spans(_RECIPE_TAG, miner_properties)
+
+    smelter, miner = to_placement_records_with_recipes((_SMELTER, _MINER), body, spans)
+
+    assert miner.resource_node_id == "Persistent_Level:PersistentLevel.BP_ResourceNode103"
+    assert smelter.resource_node_id is None

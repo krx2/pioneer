@@ -45,6 +45,13 @@ class Building:
     buildings). A single signed field so the Verifier can sum it directly for a power balance."""
     input_slots: int
     output_slots: int
+    extraction_rate_per_minute: float = 0.0
+    """For an extractor: what one extracts per minute (m³ for fluids) at 100% clock speed on a
+    normal-purity node — impure halves that, pure doubles it. 0 for every other building."""
+    fixed_resource_id: str | None = None
+    """For an extractor that can only ever extract one resource (Water Extractor, Oil Extractor):
+    that resource. `None` where it depends on the node it's built on (miners, well extractors), and
+    for every other building."""
 
 
 @dataclass(frozen=True)
@@ -72,3 +79,16 @@ class Recipe:
     mostly hard drives, a few MAM nodes. The Production Planner only falls back to alternates for
     an item with no standard recipe, unless a caller explicitly picks one: the player may not have
     researched them."""
+
+
+@dataclass(frozen=True)
+class ClassDescription:
+    """The game's own description of one of its classes — an item, building, belt, piece of
+    equipment, schematic, ... — as its UI shows it: what the Q&A Engine answers "what is X / what
+    does X do" questions from."""
+
+    class_id: str
+    name: str
+    text: str
+    category: str
+    """The export's native class for it, e.g. `FGItemDescriptor` or `FGBuildableConveyorBelt`."""

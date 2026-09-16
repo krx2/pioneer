@@ -135,6 +135,7 @@
       {
         "ClassName": "Build_ConstructorMk1_C",
         "mDisplayName": "Constructor",
+        "mDescription": "Crafts 1\u00a0part into another part.\r\n\r\nCan be automated.",
         "mPowerConsumption": "4.000000"
       },
       {
@@ -162,7 +163,11 @@
       {
         "ClassName": "Build_MinerMk1_C",
         "mDisplayName": "Miner Mk.1",
-        "mPowerConsumption": "5.000000"
+        "mPowerConsumption": "5.000000",
+        "mExtractCycleTime": "1.000000",
+        "mItemsPerCycle": "1",
+        "mAllowedResourceForms": "(RF_SOLID)",
+        "mAllowedResources": ""
       }
     ]
   },
@@ -172,7 +177,11 @@
       {
         "ClassName": "Build_WaterPump_C",
         "mDisplayName": "Water Extractor",
-        "mPowerConsumption": "20.000000"
+        "mPowerConsumption": "20.000000",
+        "mExtractCycleTime": "1.000000",
+        "mItemsPerCycle": "2000",
+        "mAllowedResourceForms": "(RF_LIQUID)",
+        "mAllowedResources": "(\"/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/RawResources/Water/Desc_Water.Desc_Water_C'\")"
       }
     ]
   },
