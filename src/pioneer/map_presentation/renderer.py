@@ -1,15 +1,18 @@
-"""Renders resource nodes, existing buildings, and recommended locations on the static map
+"""Renders resource nodes, existing buildings, and recommended locations on the map
 (implementation.md Stage 14).
 
 Split the same way as `graph_presentation`: `build_markers` is a pure, unit-testable transform
-(contracts in, marker specs out); `render_page` lays those markers out as an SVG. There's no real
-map texture yet (per Stage 3, full map data can be filled in later) — the SVG background is a
-placeholder grid standing in for the in-game map image.
+(contracts in, marker specs out); `render_page` lays those markers out as an SVG, panned and
+zoomed by `MAP_SCRIPT` moving the SVG's own `viewBox` -- no D3 needed, since it's just a fixed
+set of markers rather than a force simulation. There's no real map texture yet (per Stage 3, full
+map data can be filled in later) — the SVG background is a placeholder grid standing in for the
+in-game map image.
 """
 
 from __future__ import annotations
 
 import html
+import re
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -18,6 +21,20 @@ from typing import Literal
 from pioneer.contracts import FactorySite, PlacementRecord, Purity, RankedLocation, ResourceNode
 
 MarkerKind = Literal["resource", "existing_building", "recommended", "factory"]
+
+_CLASS_ID_AFFIX = re.compile(r"^(?:Desc|Recipe|Build|BP|Schematic|Research)_|_C$")
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def readable_id(class_id: str) -> str:
+    """`Desc_IronPlate_C` -> `Iron Plate`. What a label falls back to for an id the knowledge base
+    has no name for -- the made-up geyser id the resource data carries, a modded save, or no
+    knowledge base at all. A pin on the player's map should name the thing, not its class id.
+    Deliberately a copy of `graph_presentation`'s: a module imports `contracts` and nothing else of
+    this project's (tests/test_architecture.py), and five lines is a cheap price for that."""
+    words = _CAMEL_BOUNDARY.sub(" ", _CLASS_ID_AFFIX.sub("", class_id)).replace("_", " ")
+    return " ".join(words.split()) or class_id
+
 
 _PURITY_COLOR = {
     Purity.IMPURE: "#a9702f",
@@ -46,12 +63,12 @@ def build_markers(
     names: Mapping[str, str] | None = None,
     factory_sites: tuple[FactorySite, ...] = (),
 ) -> tuple[MapMarker, ...]:
-    """`names` maps item, recipe and building ids to the names labels show; an id without one is
-    shown as it is. A factory site is labelled with its id and the recipes most of its buildings
-    run."""
+    """`names` maps item, recipe and building ids to the names labels show; an id without one
+    falls back to `readable_id`, never to the raw class id. A factory site is labelled with its id
+    and the recipes most of its buildings run."""
 
     def name(class_id: str) -> str:
-        return (names or {}).get(class_id, class_id)
+        return (names or {}).get(class_id) or readable_id(class_id)
 
     markers = [
         MapMarker(
@@ -73,12 +90,17 @@ def build_markers(
         )
         for placement in placements
     ]
+    # Which resource a recommended deposit holds comes from the node it points at: on a real
+    # save's map the resource pins are past `label_limit` and so unlabelled, leaving a green
+    # "#1 pure" that never says what the player would be mining there.
+    resource_of = {node.node_id: node.item_id for node in resource_nodes}
     markers += [
         MapMarker(
             x=location.position.x,
             y=location.position.y,
             kind="recommended",
-            label=f"#{rank} {location.purity.value}, score {location.score:.2f}",
+            label=f"#{rank} {_recommended_resource(location, resource_of, name)}"
+            f"{location.purity.value}, score {location.score:.2f}",
             color=_RECOMMENDED_COLOR,
             rank=rank,
         )
@@ -97,6 +119,15 @@ def build_markers(
         for site in factory_sites
     ]
     return tuple(markers)
+
+
+def _recommended_resource(
+    location: RankedLocation, resource_of: Mapping[str, str], name: Callable[[str], str]
+) -> str:
+    """`"Iron Ore, "` for a recommended deposit whose node the map was given, else `""` -- the
+    ranking alone doesn't carry the item, and a map drawn without the nodes can't name it."""
+    item_id = resource_of.get(location.resource_node_id)
+    return f"{name(item_id)}, " if item_id is not None else ""
 
 
 def _main_recipes(site: FactorySite, name: Callable[[str], str], shown: int = 3) -> str:
@@ -199,7 +230,7 @@ def render_page(
 <style>{STYLE}</style>
 </head>
 <body>
-<svg viewBox="{min_x} {min_y} {w} {h}" preserveAspectRatio="xMidYMid meet">
+<svg id="map" viewBox="{min_x} {min_y} {w} {h}" preserveAspectRatio="xMidYMid meet">
 {grid}
 {markers_svg}
 </svg>
@@ -211,6 +242,10 @@ def render_page(
   <span><i class="dot" style="background:{_RECOMMENDED_COLOR}"></i> recommended</span>
   <span><i class="sq" style="background:{_FACTORY_COLOR}"></i> factory to extend</span>
 </div>
+<script>
+const initialView = {{x: {min_x}, y: {min_y}, w: {w}, h: {h}}};
+{MAP_SCRIPT}
+</script>
 </body>
 </html>
 """
@@ -234,7 +269,8 @@ def _svg_grid(min_x: float, min_y: float, w: float, h: float, *, unit: float) ->
 STYLE = """
 :root { color-scheme: dark; }
 html, body { margin:0; height:100%; background:#0b0f14; font-family: system-ui, sans-serif; }
-svg { width:100%; height:100%; display:block; }
+svg { width:100%; height:100%; display:block; cursor:grab; touch-action:none; }
+svg.dragging { cursor:grabbing; }
 .grid-line { stroke:#1c2733; }
 .label { fill:#c7ced6; paint-order: stroke; stroke:#0b0f14; }
 .badge { fill:#0b0f14; font-weight:bold; }
@@ -245,4 +281,55 @@ svg { width:100%; height:100%; display:block; }
 }
 #legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
 #legend .sq { display:inline-block; width:10px; height:10px; margin-right:6px; }
+"""
+
+MAP_SCRIPT = """
+const svg = document.getElementById("map");
+let view = {...initialView};
+const minWidth = initialView.w * 0.04;
+const maxWidth = initialView.w * 6;
+
+function applyView() {
+  svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+}
+
+function toSvgPoint(clientX, clientY) {
+  const rect = svg.getBoundingClientRect();
+  return {
+    x: view.x + (clientX - rect.left) * (view.w / rect.width),
+    y: view.y + (clientY - rect.top) * (view.h / rect.height),
+  };
+}
+
+svg.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const point = toSvgPoint(event.clientX, event.clientY);
+  const factor = event.deltaY > 0 ? 1.15 : 1 / 1.15;
+  const newWidth = Math.min(Math.max(view.w * factor, minWidth), maxWidth);
+  const newHeight = newWidth * (initialView.h / initialView.w);
+  view.x = point.x - (point.x - view.x) * (newWidth / view.w);
+  view.y = point.y - (point.y - view.y) * (newHeight / view.h);
+  view.w = newWidth;
+  view.h = newHeight;
+  applyView();
+}, {passive: false});
+
+let drag = null;
+svg.addEventListener("pointerdown", (event) => {
+  drag = {startX: event.clientX, startY: event.clientY, viewX: view.x, viewY: view.y};
+  svg.setPointerCapture(event.pointerId);
+  svg.classList.add("dragging");
+});
+svg.addEventListener("pointermove", (event) => {
+  if (!drag) return;
+  const rect = svg.getBoundingClientRect();
+  view.x = drag.viewX - (event.clientX - drag.startX) * (view.w / rect.width);
+  view.y = drag.viewY - (event.clientY - drag.startY) * (view.h / rect.height);
+  applyView();
+});
+function endDrag() { drag = null; svg.classList.remove("dragging"); }
+svg.addEventListener("pointerup", endDrag);
+svg.addEventListener("pointercancel", endDrag);
+svg.addEventListener("pointerleave", endDrag);
+svg.addEventListener("dblclick", () => { view = {...initialView}; applyView(); });
 """

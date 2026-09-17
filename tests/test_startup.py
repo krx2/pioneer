@@ -161,13 +161,19 @@ def test_stopping_terminates_what_is_still_running() -> None:
     assert (running.terminated, finished.terminated) == (True, False)
 
 
+def _installed(name: str) -> str:
+    return f"/usr/bin/{name}"
+
+
 def test_the_model_service_points_at_the_configured_local_endpoint() -> None:
-    service = ollama_service("http://localhost:11500/v1", log=lambda message: None)
+    service = ollama_service(
+        "http://localhost:11500/v1", log=lambda message: None, find_executable=_installed
+    )
 
     assert service is not None
     assert (service.host, service.port) == ("localhost", 11500)
-    assert service.command[-1] == "serve"
-    assert service.command[0].endswith(("ollama", "ollama.exe", "ollama.EXE"))
+    assert service.command == ("/usr/bin/ollama", "serve")
+    assert service.ready_timeout > 0  # the assistant needs it, so it's worth waiting for
 
 
 def test_a_model_served_elsewhere_or_unset_is_not_ours_to_start() -> None:
@@ -177,6 +183,17 @@ def test_a_model_served_elsewhere_or_unset_is_not_ours_to_start() -> None:
     assert ollama_service(None, log=log.append) is None
     assert "gpu-box.lan isn't this machine -- leaving it alone" in log[0]
     assert "PIONEER_LLM_BASE_URL is not set" in log[1]
+
+
+def test_a_machine_without_ollama_is_told_to_start_its_own_model() -> None:
+    log: list[str] = []
+
+    service = ollama_service(
+        "http://127.0.0.1:11434/v1", log=log.append, find_executable=lambda name: None
+    )
+
+    assert service is None
+    assert "ollama isn't on PATH" in log[0]
 
 
 def test_the_game_server_is_found_by_folder_or_by_file(tmp_path: Path) -> None:

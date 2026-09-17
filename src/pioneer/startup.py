@@ -127,9 +127,15 @@ def _wait_until_listening(
     return listening(service.host, service.port)
 
 
-def ollama_service(base_url: str | None, log: Callable[[str], None] = print) -> Service | None:
+def ollama_service(
+    base_url: str | None,
+    log: Callable[[str], None] = print,
+    *,
+    find_executable: Callable[[str], str | None] = shutil.which,
+) -> Service | None:
     """The local model server named by `PIONEER_LLM_BASE_URL`, if that's a local one and Ollama is
-    installed. A model served elsewhere isn't this script's to start."""
+    installed. A model served elsewhere isn't this script's to start. `find_executable` is how
+    Ollama is looked for, injectable so tests don't depend on what's on the machine's PATH."""
     if not base_url:
         log("model: PIONEER_LLM_BASE_URL is not set -- see .env.example")
         return None
@@ -138,7 +144,7 @@ def ollama_service(base_url: str | None, log: Callable[[str], None] = print) -> 
     if host not in ("127.0.0.1", "localhost", "::1"):
         log(f"model: {host} isn't this machine -- leaving it alone")
         return None
-    executable = shutil.which("ollama")
+    executable = find_executable("ollama")
     if executable is None:
         log("model: ollama isn't on PATH -- start your model server yourself")
         return None

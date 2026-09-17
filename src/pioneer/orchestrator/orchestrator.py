@@ -59,6 +59,7 @@ real networking.
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from collections import defaultdict
@@ -124,13 +125,29 @@ _SYSTEM_PROMPT = (
     "balance, and distances are never something you compute or estimate yourself, only the tools "
     "do that. The same goes for facts about the game -- rates, capacities, recipes, unlock costs: "
     "call answer_game_question instead of recalling them, because what you remember about "
-    "Satisfactory is out of date. Tools accept items by id (e.g. Desc_IronPlate_C) or by in-game "
+    "Satisfactory is out of date. Never write a building, recipe, or item name, id, machine count, "
+    "or rate that a tool result didn't give you this conversation -- if you can't point to which "
+    "tool call it came from, it's a hallucination and it will get flagged as an unverified number. "
+    "This includes machine/building names: 'Wire Stripper MK2', 'Press MK2' and similar are not "
+    "real Satisfactory buildings unless list_recipes_for_item, plan_production, or "
+    "expand_existing_factory actually returned them -- do not invent plausible-sounding ones. "
+    "Tools accept items by id (e.g. Desc_IronPlate_C) or by in-game "
     "name (e.g. 'Iron Plate'); call find_item first if you're unsure which item the player means. "
-    "Tool results carry a `names` map from ids to in-game names: answer with the names. Call "
-    "whichever tool(s) match the player's request, then write one clear, concise answer "
-    "summarizing the tool results -- never invent numbers that didn't come from a tool. If a tool "
+    "Tool results carry a `names` map from ids to in-game names: always answer with those names, "
+    "and never show the player a raw id like Desc_IronPlate_C or Build_SmelterMk1_C -- if an id in "
+    "a tool result has no entry in `names`, describe it in plain words instead of pasting the id. "
+    "Call whichever tool(s) match the player's request, using their exact registered name and "
+    "parameter names, then write one clear, concise answer summarizing the tool results -- never "
+    "invent numbers that didn't come from a tool. If a tool "
     "reports an error (e.g. no save data loaded), explain that limitation to the player plainly "
-    "instead of guessing or making up factory state."
+    "instead of guessing or making up factory state.\n\n"
+    "Graph and map panels shown to the player come only from a tool call made in THIS turn: "
+    "plan_production, expand_existing_factory, and compare_recipes draw the production graph; "
+    "rank_build_locations draws the map. Numbers you already gave in an earlier turn don't carry "
+    "a panel with them. So whenever the player asks to see, draw, or visualize a graph or map -- "
+    "even as a follow-up to a plan you already described in text -- call the matching tool again "
+    "this turn (with the same target/rate as before if that's what they mean); answering from the "
+    "earlier text alone leaves the player with no panel at all."
 )
 
 _ITEM_DESCRIPTION = "Item id (e.g. Desc_IronPlate_C) or in-game name (e.g. 'Iron Plate')"
@@ -351,13 +368,48 @@ _TEXT_TOOL_CALL = re.compile(r"[\[{].*[\]}]", re.DOTALL)
 """A JSON object or list inside an answer -- local models like to wrap it in prose or fences."""
 
 
+_NAME_MATCH_CUTOFF = 0.6
+_ARGUMENT_MATCH_CUTOFF = 0.5
+
+
+def _resolve_tool_name(name: object, tools_by_name: Mapping[str, _Tool]) -> str | None:
+    """`name` if it's a real tool, else the closest real tool name it's a near-miss of --
+    'expand_factory' for `expand_existing_factory`, say. A model that gets the call itself right
+    but fumbles the exact registered spelling still shouldn't lose the whole tool call."""
+    if not isinstance(name, str):
+        return None
+    if name in tools_by_name:
+        return name
+    matches = difflib.get_close_matches(name, tools_by_name.keys(), n=1, cutoff=_NAME_MATCH_CUTOFF)
+    return matches[0] if matches else None
+
+
+def _normalize_arguments(arguments: dict[str, Any], tool: _Tool) -> dict[str, Any]:
+    """Remaps an argument key a model wrote under a plausible-but-wrong name ('item_id' for
+    `target_item_id`, 'target_amount_per_minute' for `target_rate_per_minute', ...) onto the
+    tool's actual parameter name, so a close-but-not-exact call still runs instead of failing on a
+    missing required key. A key close to none of them is passed through unchanged -- the handler,
+    not this heuristic, is what should reject it."""
+    declared = tool.parameters.get("properties", {})
+    if not declared:
+        return arguments
+    normalized: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if key in declared:
+            normalized[key] = value
+            continue
+        match = difflib.get_close_matches(key, declared.keys(), n=1, cutoff=_ARGUMENT_MATCH_CUTOFF)
+        normalized[match[0] if match else key] = value
+    return normalized
+
+
 def _tool_calls_written_as_text(
     content: str | None, tools_by_name: Mapping[str, _Tool]
 ) -> list[dict[str, Any]]:
     """Tool calls a model wrote into its answer instead of the API's `tool_calls` field -- local
     models do that often enough to be worth reading, rather than handing the player a line of JSON
-    as their answer. Only a call naming a real tool counts; anything else is just an answer that
-    happens to contain braces."""
+    as their answer. Only a call naming (or near-naming, see `_resolve_tool_name`) a real tool
+    counts; anything else is just an answer that happens to contain braces."""
     match = _TEXT_TOOL_CALL.search(content or "")
     if match is None:
         return []
@@ -370,10 +422,12 @@ def _tool_calls_written_as_text(
         if not isinstance(call, dict):
             continue
         call = call.get("function", call)
-        name = call.get("name")
+        resolved_name = _resolve_tool_name(call.get("name"), tools_by_name)
         arguments = call.get("arguments", call.get("parameters", {}))
-        if isinstance(name, str) and name in tools_by_name and isinstance(arguments, dict):
-            calls.append({"id": f"text_call_{index}", "name": name, "arguments": arguments})
+        if resolved_name is not None and isinstance(arguments, dict):
+            calls.append(
+                {"id": f"text_call_{index}", "name": resolved_name, "arguments": arguments}
+            )
     return calls
 
 
@@ -398,12 +452,15 @@ def _assistant_message(message: dict[str, Any], tool_calls: list[dict[str, Any]]
 def _execute_tool(
     call: dict[str, Any], tools_by_name: dict[str, _Tool], names: Mapping[str, str]
 ) -> dict[str, Any]:
-    """Runs one call and packages its result, with a `names` map for its ids, for the model."""
-    tool = tools_by_name.get(call["name"])
+    """Runs one call and packages its result, with a `names` map for its ids, for the model. The
+    name is resolved leniently (see `_resolve_tool_name`) because even the API's own `tool_calls`
+    field isn't always the exact registered name with every local backend."""
+    tool_name = _resolve_tool_name(call["name"], tools_by_name)
+    tool = tools_by_name.get(tool_name) if tool_name else None
     if tool is None:
         result: dict[str, Any] = {"error": f"unknown tool {call['name']!r}"}
     else:
-        result = _run_tool(tool, call.get("arguments") or {})
+        result = _run_tool(tool, _normalize_arguments(call.get("arguments") or {}, tool))
     mentioned = _names_mentioned(json.dumps(result), names)
     if mentioned:
         result = {**result, "names": mentioned}

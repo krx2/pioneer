@@ -92,7 +92,7 @@ def test_view_box_falls_back_when_nothing_to_show() -> None:
 def test_render_page_embeds_every_marker_label() -> None:
     page = render_page(_NODES, _PLACEMENTS, _RANKED)
 
-    assert "Recipe_IngotIron_C" in page
+    assert "Ingot Iron" in page  # no names given: the id reads as words
     assert "pure, score 0.90" in page
     assert "<!doctype html>" in page.lower()
 
@@ -119,7 +119,30 @@ def test_a_crowded_map_labels_only_the_recommendations() -> None:
     labels = re.findall(r'class="label"[^>]*>([^<]*)<', page)
     assert len(labels) == 2
     assert all(label.startswith("#") for label in labels)
-    assert "<title>Recipe_IngotIron_C</title>" in page  # still there on hover
+    assert "<title>Ingot Iron</title>" in page  # still there on hover
+
+
+def test_a_recommended_pin_names_the_resource_it_sits_on() -> None:
+    markers = build_markers(_NODES, (), _RANKED, names={"Desc_OreIron_C": "Iron Ore"})
+
+    recommended = {m.rank: m.label for m in markers if m.kind == "recommended"}
+    assert recommended[1] == "#1 Iron Ore, pure, score 0.90"
+    assert recommended[2] == "#2 Iron Ore, normal, score 0.60"
+
+
+def test_a_recommended_pin_without_its_node_still_reads_as_before() -> None:
+    (marker,) = build_markers((), (), _RANKED[1:])
+
+    assert marker.label == "#1 pure, score 0.90"
+
+
+def test_a_crowded_map_still_names_the_recommended_resource() -> None:
+    page = render_page(
+        _NODES, _PLACEMENTS, _RANKED, names={"Desc_OreIron_C": "Iron Ore"}, label_limit=2
+    )
+
+    labels = re.findall(r'class="label"[^>]*>([^<]*)<', page)
+    assert all("Iron Ore" in label for label in labels)
 
 
 def test_factory_sites_become_labelled_pins() -> None:
@@ -134,5 +157,5 @@ def test_factory_sites_become_labelled_pins() -> None:
 
     assert (marker.kind, marker.x, marker.y) == ("factory", 1500, 2200)
     assert marker.label == "site_2: Iron Ingot"
-    assert "site_2: Recipe_IngotIron_C" in page  # labelled even past the label limit
+    assert "site_2: Ingot Iron" in page  # labelled even past the label limit
     assert "factory to extend" in page

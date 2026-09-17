@@ -1546,6 +1546,39 @@ def test_a_tool_call_the_model_wrote_as_text_is_executed_anyway() -> None:
     assert result.graph.nodes[0].recipe_id == "Recipe_IronPlate_C"
 
 
+def test_a_near_miss_tool_name_and_argument_keys_written_as_text_still_runs() -> None:
+    """A model that gets the tool call itself right but drifts on the exact registered spelling --
+    'plan_the_production' instead of `plan_production`, 'item_id'/'amount_per_minute' instead of
+    `target_item_id`/`target_rate_per_minute` -- should still get its tool call executed rather
+    than have the raw JSON leak into the player's answer with no graph attached."""
+    written = json.dumps(
+        {
+            "name": "plan_the_production",
+            "arguments": {"item_id": "Iron Plate", "amount_per_minute": 20},
+        }
+    )
+    llm = _scripted_tool_calling_llm(
+        [
+            {"content": f"Let me check: {written}", "tool_calls": []},
+            {"content": "You need 1 Constructor.", "tool_calls": []},
+        ]
+    )
+
+    result = handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "20 plates a minute please",
+        OrchestratorContext(recipes=_RECIPES, items=_ITEMS),
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="r",
+    )
+
+    assert result.chat == "You need 1 Constructor."
+    assert result.graph is not None
+    assert result.graph.nodes[0].recipe_id == "Recipe_IronPlate_C"
+
+
 def test_an_answer_that_merely_contains_braces_stays_an_answer() -> None:
     llm = _scripted_tool_calling_llm(
         [{"content": 'Set it to {"clock": 250} in the UI.', "tool_calls": []}]

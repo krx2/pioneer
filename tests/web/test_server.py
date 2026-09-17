@@ -160,11 +160,11 @@ def test_a_map_shows_the_sites_their_resource_and_the_players_extractors() -> No
 
     page = client.get(_ask(client).json()["map_url"]).text
 
-    assert "#1 pure, score 1.50" in page
-    assert "Desc_OreIron_C (pure)" in page
-    assert "Desc_OreCopper_C" not in page
-    assert "Build_MinerMk1_C" in page
-    assert "Build_ConstructorMk1_C" not in page
+    assert "#1 Ore Iron, pure, score 1.50" in page
+    assert "Ore Iron (pure)" in page
+    assert "Ore Copper" not in page
+    assert "Miner Mk1" in page
+    assert "Constructor Mk1" not in page
 
 
 def test_answers_are_verified_and_logged(tmp_path) -> None:
@@ -262,7 +262,7 @@ def test_each_answer_is_built_verified_and_mapped_on_the_context_of_its_time() -
 
     assert seen == [("answer", before), ("verify", before)]
     assert "save two" in client.get("/api/status").json()["status"]
-    assert "Build_MinerMk1_C" in client.get(map_url).text
+    assert "Miner Mk1" in client.get(map_url).text
 
 
 def test_feedback_is_merged_field_by_field_and_kept(tmp_path) -> None:
@@ -322,7 +322,7 @@ def test_an_answer_pointing_at_factories_gets_a_map_of_them() -> None:
     page = client.get(body["map_url"]).text
 
     assert body["map_url"] == "/responses/r1/map"
-    assert "site_3: Recipe_IngotIron_C" in page
+    assert "site_3: Ingot Iron" in page
 
 
 def test_the_conversation_so_far_is_passed_on_and_bounded() -> None:

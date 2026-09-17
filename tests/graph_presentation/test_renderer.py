@@ -1,8 +1,10 @@
 """Tests for graph_to_d3_data, against a Reinforced Iron Plate production graph copied in as a
 static fixture (a Stage 7/8-style example output), per implementation.md Stage 13."""
 
+import pytest
+
 from pioneer.contracts import MaterialFlow, ProductionGraph, ProductionNode
-from pioneer.graph_presentation.renderer import graph_to_d3_data, render_page
+from pioneer.graph_presentation.renderer import graph_to_d3_data, readable_id, render_page
 
 _GRAPH = ProductionGraph(
     nodes=(
@@ -225,7 +227,7 @@ def test_render_page_handles_an_empty_graph() -> None:
     assert '"nodes": []' in page or '"nodes":[]' in page
 
 
-def test_labels_use_the_given_names_and_fall_back_to_ids() -> None:
+def test_labels_use_the_given_names_and_fall_back_to_readable_ids() -> None:
     names = {"Recipe_IngotIron_C": "Iron Ingot", "Desc_OreIron_C": "Iron Ore"}
 
     data = graph_to_d3_data(_GRAPH, names)
@@ -233,5 +235,29 @@ def test_labels_use_the_given_names_and_fall_back_to_ids() -> None:
     labels = {node["id"]: node["label"] for node in data["nodes"]}
     assert labels["node_smelter"] == "Iron Ingot ×4"
     assert labels["__in__Desc_OreIron_C"] == "Iron Ore (input)"
-    assert labels["node_plate"] == "Recipe_IronPlate_C ×3"
+    assert labels["node_plate"] == "Iron Plate ×3"  # no name for Recipe_IronPlate_C
     assert data["links"][0]["itemName"] == "Iron Ore"
+
+
+def test_no_label_shows_a_raw_class_id_even_with_no_names_at_all() -> None:
+    data = graph_to_d3_data(_GRAPH)
+
+    labelled = [node["label"] for node in data["nodes"]]
+    labelled += [link["itemName"] for link in data["links"]]
+    assert not [text for text in labelled if "_C" in text]
+    assert "Ore Iron (input)" in labelled
+
+
+@pytest.mark.parametrize(
+    ("class_id", "expected"),
+    [
+        ("Desc_IronPlate_C", "Iron Plate"),
+        ("Recipe_Alternate_CoatedIronPlate_C", "Alternate Coated Iron Plate"),
+        ("Build_SmelterMk1_C", "Smelter Mk1"),
+        ("Desc_SpaceElevatorPart_1_C", "Space Elevator Part 1"),
+        ("Desc_GunpowderMK2_C", "Gunpowder MK2"),
+        ("just a name", "just a name"),
+    ],
+)
+def test_readable_id_turns_a_class_id_into_words(class_id: str, expected: str) -> None:
+    assert readable_id(class_id) == expected
