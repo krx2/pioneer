@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pioneer.contracts.geometry import Coordinates
 from pioneer.contracts.locations import RankedLocation
 from pioneer.contracts.production_graph import ProductionGraph
 
@@ -30,6 +31,9 @@ class ResponseArtifact:
     chat: str | None = None
     graph: ProductionGraph | None = None
     map_locations: tuple[RankedLocation, ...] | None = None
+    map_reference: Coordinates | None = None
+    """The point `map_locations`' `distance_to_reference` is measured from — what the Map channel's
+    distances are checked against (architecture.md §6)."""
     feedback: Feedback | None = None
     question: str | None = None
     """The player's message this answers."""

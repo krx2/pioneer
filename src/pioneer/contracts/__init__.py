@@ -18,6 +18,7 @@ from pioneer.contracts.production_graph import MaterialFlow, ProductionGraph, Pr
 from pioneer.contracts.recipes import (
     Building,
     ClassDescription,
+    GeneratorFuel,
     Item,
     ItemAmount,
     Recipe,
@@ -38,6 +39,7 @@ __all__ = [
     "Coordinates",
     "Feedback",
     "GameState",
+    "GeneratorFuel",
     "Intent",
     "IntentKind",
     "Item",

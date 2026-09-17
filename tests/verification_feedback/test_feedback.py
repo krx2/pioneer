@@ -80,3 +80,15 @@ def test_the_response_log_writes_one_line_per_answer(tmp_path) -> None:
     assert first["score"] is None
     assert second["map_locations"] == []
     assert second["score"] == {"chat": None, "graph": None, "map": []}
+
+
+def test_the_response_log_lists_the_answers_it_holds(tmp_path) -> None:
+    path = tmp_path / "responses.jsonl"
+    assert ResponseLog(path).response_ids() == frozenset()
+
+    ResponseLog(path).append(ResponseArtifact(response_id="r1"), None)
+    ResponseLog(path).append(ResponseArtifact(response_id="r2"), None)
+    with path.open("a", encoding="utf-8") as file:
+        file.write('torn line\n{"no": "id"}\n')
+
+    assert ResponseLog(path).response_ids() == {"r1", "r2"}

@@ -30,8 +30,9 @@ An unrecognized item comes back as an error listing the closest matches, so the 
 itself on the next round.
 
 **The existing factory, as the Verifier sees it.** Expansion and diagnosis both start from the
-factory's net per-item balance: what its recipes make and its extractors mine, minus what its
-recipes and its generators consume. Expansion then plans only what that surplus doesn't cover (see
+factory's net per-item balance: what its recipes make, its extractors mine and its generators leave
+behind (nuclear waste), minus what its recipes and its generators consume — fuel, and the water
+coal and nuclear plants need besides. Expansion then plans only what that surplus doesn't cover (see
 expansion_advisor) and reports the raw resources the plan needs against spare extraction;
 diagnosis judges power against every placed building -- extractors and generators included, which
 the save's recipe graph never contains -- and ore supply too, once resource node data is loaded.
@@ -46,7 +47,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections import defaultdict
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -72,8 +74,11 @@ from pioneer.qa_engine import ChatCompletion, LLMUnavailable, NoRelevantPassages
 from pioneer.qa_engine import answer_question as qa_answer_question
 from pioneer.verifier import (
     balance,
+    consumption,
     extraction_rates,
+    generator_byproducts,
     generator_fuel_demand,
+    generator_supplemental_demand,
     placed_generation_capacity_mw,
     placed_power_consumption_mw,
     power_balance,
@@ -166,6 +171,7 @@ class _ArtifactAccumulator:
 
     graph: ProductionGraph | None = None
     map_locations: tuple[RankedLocation, ...] | None = None
+    map_reference: Coordinates | None = None
     grounding: list[str] = field(default_factory=list)
 
 
@@ -234,6 +240,7 @@ def handle_query(
                 chat=message.get("content") or "",
                 graph=accumulator.graph,
                 map_locations=accumulator.map_locations,
+                map_reference=accumulator.map_reference,
                 question=question,
                 grounding=tuple(accumulator.grounding),
             )
@@ -495,7 +502,7 @@ def _handle_plan_production(
     try:
         graph = plan_production(
             target_item_id,
-            float(args["target_rate_per_minute"]),
+            _target_rate(args),
             context.recipes,
             _recipe_choices(args, context),
             raw_item_ids=_raw_item_ids(context),
@@ -517,6 +524,7 @@ def _handle_expand_existing_factory(
             "expansion; offer a from-scratch plan instead, or tell the player to load a save"
         }
     target_item_id = _resolve_item_id(args["target_item_id"], context)
+    target_rate = _target_rate(args)
     raw_item_ids = _raw_item_ids(context)
     try:
         existing_balance = _existing_item_balance(context)
@@ -527,7 +535,7 @@ def _handle_expand_existing_factory(
         }
         additions = plan_production(
             target_item_id,
-            float(args["target_rate_per_minute"]),
+            target_rate,
             context.recipes,
             _recipe_choices(args, context),
             raw_item_ids=raw_item_ids,
@@ -537,7 +545,8 @@ def _handle_expand_existing_factory(
         return {"error": str(error)}
 
     change_set = advise_expansion(context.existing_graph, additions)
-    accumulator.graph = change_set.resulting_graph
+    if change_set.resulting_graph.nodes:  # nothing to build is nothing to draw
+        accumulator.graph = change_set.resulting_graph
     items_in_plan = {flow.item_id for flow in additions.flows}
     raw_needed = _per_item(
         flow
@@ -584,9 +593,12 @@ def _handle_rank_locations(
     item_id = _resolve_item_id(args["item_id"], context)
     reference = _reference_point(args, context)
     count = int(args.get("count", 5))
+    if count < 1:
+        raise _ToolError(f"count must be at least 1, got {count}")
     ranked = rank_locations(item_id, context.resource_nodes, context.existing_placements, reference)
     top = ranked[:count]
     accumulator.map_locations = top
+    accumulator.map_reference = reference
     return {
         "reference": {"x": reference.x, "y": reference.y, "z": reference.z},
         "locations": [
@@ -609,13 +621,18 @@ def _handle_diagnose_factory(args: dict[str, Any], context: OrchestratorContext)
     try:
         item_balance = _existing_item_balance(context)
         power_draw_mw, power_capacity_mw = _existing_power(context)
+        burned = _generator_consumption(context)
+        demand = consumption(context.existing_graph, context.recipes)
     except ValueError as error:
         return {"error": f"cannot diagnose: {error}"}
+    _add_rates(demand, burned)
     anomalies = detect_anomalies(
         context.existing_graph,
         item_balance,
         power_draw_mw,
         raw_item_ids=_inputs_from_outside(context, item_balance),
+        item_demand=demand,
+        item_consumers=_consuming_nodes(context, shared=burned.keys()),
         available_power_mw=power_capacity_mw,
     )
     return {
@@ -669,20 +686,47 @@ def _handle_answer_question(
 
 
 def _existing_item_balance(context: OrchestratorContext) -> dict[str, float]:
-    """The player's factory's net per-item rate: what its recipes make and its extractors pull out
-    of the ground, minus what its recipes and its generators consume -- a factory burning its own
-    Fuel isn't overproducing it."""
+    """The player's factory's net per-item rate: what its recipes make, its extractors pull out of
+    the ground and its generators leave behind, minus what its recipes and its generators consume
+    -- a factory burning its own Fuel isn't overproducing it, and the water its coal generators
+    drink isn't spare."""
     assert context.existing_graph is not None
+    placements, buildings = context.existing_placements, context.buildings
     net = balance(context.existing_graph, context.recipes)
-    extracted = extraction_rates(
-        context.existing_placements, context.buildings, context.resource_nodes
-    )
-    for item_id, rate in extracted.items():
-        net[item_id] = net.get(item_id, 0.0) + rate
-    burned = generator_fuel_demand(context.existing_placements, context.buildings, context.items)
-    for item_id, rate in burned.items():
-        net[item_id] = net.get(item_id, 0.0) - rate
+    _add_rates(net, extraction_rates(placements, buildings, context.resource_nodes))
+    _add_rates(net, generator_byproducts(placements, buildings, context.items))
+    _add_rates(net, _generator_consumption(context), sign=-1.0)
     return net
+
+
+def _generator_consumption(context: OrchestratorContext) -> dict[str, float]:
+    """What the placed generators consume per minute: their fuel and any supplemental water."""
+    placements, buildings = context.existing_placements, context.buildings
+    consumed = generator_fuel_demand(placements, buildings, context.items)
+    _add_rates(consumed, generator_supplemental_demand(placements, buildings))
+    return consumed
+
+
+def _add_rates(totals: dict[str, float], rates: Mapping[str, float], sign: float = 1.0) -> None:
+    for item_id, rate in rates.items():
+        totals[item_id] = totals.get(item_id, 0.0) + sign * rate
+
+
+def _consuming_nodes(
+    context: OrchestratorContext, *, shared: Collection[str]
+) -> dict[str, set[str]]:
+    """Per item, the existing graph's nodes whose recipe consumes it -- leaving out the `shared`
+    items something outside the graph (a generator) consumes too, which no node alone is to blame
+    for running short."""
+    assert context.existing_graph is not None
+    recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
+    consumers: dict[str, set[str]] = defaultdict(set)
+    for node in context.existing_graph.nodes:
+        recipe = recipes.get(node.recipe_id)
+        for ingredient in recipe.inputs if recipe is not None else ():
+            if ingredient.item_id not in shared:
+                consumers[ingredient.item_id].add(node.node_id)
+    return consumers
 
 
 def _existing_power(context: OrchestratorContext) -> tuple[float, float | None]:
@@ -764,6 +808,13 @@ def _resolve_item_id(raw: object, context: OrchestratorContext) -> str:
     raise _ToolError(
         f"unknown item {query!r}", did_you_mean=[_item_summary(item) for item in matches]
     )
+
+
+def _target_rate(args: dict[str, Any]) -> float:
+    rate = float(args["target_rate_per_minute"])
+    if not rate > 0:
+        raise _ToolError(f"target_rate_per_minute must be a positive rate, got {rate:g}")
+    return rate
 
 
 def _recipe_choices(args: dict[str, Any], context: OrchestratorContext) -> dict[str, str] | None:

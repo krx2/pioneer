@@ -129,6 +129,10 @@ simplest/leaf-first), but no stage here is blocked on another finishing first.
   real data: 1.0's Converter has recipes *producing* ores, so a planner that treats "has a
   recipe" as "crafted" walks ore -> ore -> ore in a circle.
 - `find_items` resolves the in-game names a player (or the LLM) uses into item ids.
+- Generators carry what they consume besides fuel and what they leave behind (`Building.fuels`,
+  `Building.supplemental_per_minute_per_mw`): coal and nuclear plants need water — 45 and 240
+  m³/min — and fuel rods leave waste. Counting only the fuel made a real save's 36 coal generators
+  look like 1620 m³/min of spare water.
 
 **Test fixtures:** a small hand-curated `Docs.json`-shaped export (`fixtures/mini_docs.json`)
 covering the iron chain from the source deck, plus one alternate recipe and one schematic that
@@ -328,6 +332,11 @@ numerically sufficient — matching the worked example in architecture.md §5.
 
 **Done when:** the fixture produces the expected anomaly list.
 
+**Found on real data:** a save's graph has no flows, so a deficit's severity and the node it's
+pinned on can't come from them — every one came out MEDIUM, pinned on nothing. The caller now
+passes `item_demand` (gross consumption, `verifier.consumption` plus generator fuel and water) and
+`item_consumers`, and those stand in for what the flows would say.
+
 ---
 
 ## Stage 11 — Q&A Engine / RAG (module)
@@ -420,6 +429,18 @@ The LLM-as-a-judge hooks have real implementations in `llm_client.judges` (used 
 `PIONEER_LLM_JUDGE` is set — they cost a model call each), and `JsonlFeedbackStore` / `ResponseLog`
 keep player feedback and a record of every answer under `data/`.
 
+**What the checks settled on, after running them on real answers:**
+- Chat: consistency is decided by the numbers — every number the answer states must be in its
+  grounding, allowing for the rounding it was written with (or 1%). Word overlap is still
+  reported, but a correct answer in plain sentences scored under 50% against its JSON tool result,
+  while one with made-up numbers scored barely lower: it can't judge anything on its own.
+- Graph: an expansion is scored on the machines it adds (`verifier.added_machines`), its draw is
+  held against the power the save's grid has to spare, and its distance from optimum is measured
+  against the same plan in fractional, underclocked machines (`verifier.minimal_machine_graph`).
+- Map: a site is checked for its position and purity against the node data, its distance against
+  the reference point the answer used (`ResponseArtifact.map_reference`), and against the save
+  already extracting from that node.
+
 ---
 
 ## Stage 16 — Integration: LLM Orchestrator + final wiring
@@ -451,8 +472,10 @@ plumbs it together.
 - No tool failure escapes `handle_query`: expected and unexpected errors alike come back to the
   model as an error result it can explain.
 - Diagnosis judges the existing factory against every *placed* building — extractors, pumps and
-  generators, which its recipe graph never contains — counts generator fuel burn as consumption,
-  and treats raw resources and hand-gathered items (no factory recipe) as inputs, not shortfalls.
+  generators, which its recipe graph never contains — counts generator fuel burn and the water
+  coal and nuclear plants need as consumption, and their waste as output, rates each shortfall
+  against the item's real demand, and treats raw resources and hand-gathered items (no factory
+  recipe) as inputs, not shortfalls.
 - `tests/end_to_end/test_real_data.py` runs the real Knowledge Base and both fixture saves through
   `app.build_context` with a scripted model standing in for the LLM.
 - Every answer carries its `question` and its `grounding` — each tool result (with a `names` map
@@ -462,9 +485,11 @@ plumbs it together.
   verification badges and the feedback buttons; `python -m pioneer.app "question"` is the CLI.
 - Still open: a run against a real local model (everything above is exercised with a scripted
   one), belt routing from saves (so a surplus can be told apart from items fed to storage or the
-  sink), a real map image behind the Map channel, multi-turn conversation, and the rest of the
-  architecture's scope — alternate-recipe recommendations, tech unlock order, power-grid and
-  logistics planning.
+  sink — until then diagnosis flags every end product as overproduced), reloading the save and
+  server state while the web UI runs (both are read once, at startup), tool results naming the
+  building each recipe runs in and an expansion's power, a real map image behind the Map channel,
+  multi-turn conversation, and the rest of the architecture's scope — alternate-recipe
+  recommendations, tech unlock order, power-grid and logistics planning.
 
 **Running it:**
 

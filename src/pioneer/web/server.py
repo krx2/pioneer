@@ -4,7 +4,8 @@ drive it with fakes, no model and no socket.
 
 Answers are kept in memory (the most recent `_KEPT_RESPONSES`) so their graph and map pages can be
 served after the fact; feedback goes to the feedback store, merged field by field, since the page
-sends each button press on its own.
+sends each button press on its own. Feedback is taken for any answer this server gave or the
+response log holds — also once its pages have been dropped from memory, or after a restart.
 """
 
 from __future__ import annotations
@@ -24,7 +25,13 @@ from pioneer.contracts import Feedback, ResponseArtifact
 from pioneer.graph_presentation import render_page as render_graph_page
 from pioneer.map_presentation import render_page as render_map_page
 from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable, display_names
-from pioneer.verification_feedback import FeedbackStore, JudgeVerdict, ResponseLog, ResponseScore
+from pioneer.verification_feedback import (
+    FeedbackStore,
+    JudgeVerdict,
+    MapScore,
+    ResponseLog,
+    ResponseScore,
+)
 from pioneer.web.page import render_chat_page
 
 Answer = Callable[[str], ResponseArtifact | OrchestratorUnavailable]
@@ -64,6 +71,7 @@ def create_app(
     answered: OrderedDict[str, AnsweredQuestion] = OrderedDict()
     lock = threading.Lock()  # FastAPI runs these sync handlers on a thread pool
     names = display_names(context)
+    known_ids = set(response_log.response_ids()) if response_log is not None else set()
 
     def find(response_id: str) -> AnsweredQuestion:
         with lock:
@@ -92,6 +100,7 @@ def create_app(
 
         with lock:
             answered[result.response_id] = AnsweredQuestion(artifact=result, score=score)
+            known_ids.add(result.response_id)
             while len(answered) > _KEPT_RESPONSES:
                 answered.popitem(last=False)
             if response_log is not None:
@@ -122,8 +131,9 @@ def create_app(
 
     @app.post("/api/responses/{response_id}/feedback")
     def record_feedback(response_id: str, request: FeedbackRequest) -> dict[str, Any]:
-        find(response_id)
         with lock:
+            if response_id not in known_ids:
+                raise HTTPException(status_code=404, detail="unknown response id")
             merged = replace(
                 feedback.get(response_id) or Feedback(), **request.model_dump(exclude_none=True)
             )
@@ -158,21 +168,41 @@ def _verification_summary(score: ResponseScore | None) -> dict[str, Any] | None:
         summary["chat"] = {
             "grounded_fraction": round(score.chat.grounded_fraction, 2),
             "consistent": score.chat.consistent,
+            "ungrounded_numbers": list(score.chat.ungrounded_numbers),
             "judge": _verdict(score.chat.judge_verdict),
         }
     if score.graph is not None:
+        graph = score.graph
+        deviation = graph.deviation_from_optimum_pct
         summary["graph"] = {
-            "passed": score.graph.passed,
-            "balanced": score.graph.balanced,
-            "power_ok": score.graph.power_ok,
+            "passed": graph.passed,
+            "balanced": graph.balanced,
+            "power_ok": graph.power_ok,
+            "power_draw_mw": round(graph.power_draw_mw, 1),
+            "spare_power_mw": (
+                round(graph.available_power_mw, 1) if graph.available_power_mw is not None else None
+            ),
+            "over_optimum_pct": round(deviation, 1) if deviation is not None else None,
         }
     if score.map is not None:
         summary["map"] = {
             "passed": all(site.passed for site in score.map),
             "checked": len(score.map),
+            "problems": _site_problems(score.map),
             "judge": [_verdict(site.judge_verdict) for site in score.map],
         }
     return summary
+
+
+def _site_problems(sites: tuple[MapScore, ...]) -> list[str]:
+    """Which checks some suggested site failed, in words for the page's badge."""
+    failed = {
+        "not where the node is": any(not site.position_ok for site in sites),
+        "wrong purity": any(not site.purity_ok for site in sites),
+        "wrong distance": any(site.distance_ok is False for site in sites),
+        "already taken": any(not site.still_free for site in sites),
+    }
+    return [problem for problem, found in failed.items() if found]
 
 
 def _verdict(verdict: JudgeVerdict | None) -> dict[str, Any] | None:

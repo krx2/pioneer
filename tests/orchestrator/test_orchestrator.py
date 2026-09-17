@@ -11,6 +11,7 @@ from pioneer.contracts import (
     Building,
     Coordinates,
     GameState,
+    GeneratorFuel,
     Item,
     ItemAmount,
     PlacementRecord,
@@ -567,6 +568,37 @@ def test_expansion_draws_on_the_existing_factorys_surplus_first() -> None:
     assert extended.machine_count == 2  # 1 existing + 1 new
 
 
+def test_an_expansion_the_surplus_covers_publishes_no_graph() -> None:
+    """20 plates/min spare: 10 more builds nothing, so there's no graph to show."""
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,),
+        items=_ITEMS,
+        existing_graph=_existing_iron(smelters=2, constructors=1),
+    )
+
+    result, tool_result = _run_single_tool(
+        context,
+        "expand_existing_factory",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 10},
+    )
+
+    assert tool_result["changes"] == []
+    assert result.graph is None
+
+
+def test_a_rate_that_is_not_positive_is_refused() -> None:
+    context = OrchestratorContext(recipes=_RECIPES + (_IRON_INGOT,), items=_ITEMS)
+
+    for rate in (0, -5):
+        result, tool_result = _run_single_tool(
+            context,
+            "plan_production",
+            {"target_item_id": "Iron Plate", "target_rate_per_minute": rate},
+        )
+        assert "positive" in tool_result["error"]
+        assert result.graph is None
+
+
 def test_expansion_reports_shortfalls_the_existing_factory_already_has() -> None:
     """1 smelter (30 ingot/min) under 2 constructors (60/min): already 30 ingot/min short."""
     context = OrchestratorContext(
@@ -653,6 +685,73 @@ def test_diagnosis_counts_generators_burning_the_factorys_own_fuel() -> None:
     flagged = {anomaly["item_id"] for anomaly in tool_result["anomalies"]}
     assert "Desc_LiquidFuel_C" not in flagged
     assert "Desc_LiquidOil_C" not in flagged
+
+
+_COAL_POWER = (
+    Building(
+        building_id="Build_GeneratorCoal_C",
+        name="Coal-Powered Generator",
+        power_consumption_mw=-75,
+        input_slots=1,
+        output_slots=0,
+        fuels=(GeneratorFuel(fuel_item_id="Desc_Coal_C", supplemental_item_id="Desc_Water_C"),),
+        supplemental_per_minute_per_mw=0.6,
+    ),
+    Building(
+        building_id="Build_WaterPump_C",
+        name="Water Extractor",
+        power_consumption_mw=20,
+        input_slots=0,
+        output_slots=1,
+        extraction_rate_per_minute=120,
+        fixed_resource_id="Desc_Water_C",
+    ),
+)
+_COAL_ITEMS = (
+    Item(item_id="Desc_Coal_C", name="Coal", is_raw_resource=True, energy_value_mj=300),
+    Item(item_id="Desc_Water_C", name="Water", is_fluid=True, is_raw_resource=True),
+)
+
+
+def test_diagnosis_counts_the_water_coal_generators_drink() -> None:
+    """Two coal generators take 90 m³ of water a minute, which one extractor at 75% supplies
+    exactly -- the water isn't overproduced, as it would be if only fuel were counted."""
+    context = OrchestratorContext(
+        buildings=_COAL_POWER,
+        items=_COAL_ITEMS,
+        existing_graph=ProductionGraph(nodes=(), flows=()),
+        existing_placements=(
+            _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C"),
+            _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C"),
+            _placed("Build_WaterPump_C", clock_speed=0.75),
+        ),
+    )
+
+    _, tool_result = _run_single_tool(context, "diagnose_factory_problems", {})
+
+    assert "Desc_Water_C" not in {anomaly["item_id"] for anomaly in tool_result["anomalies"]}
+
+
+def test_diagnosis_rates_a_water_shortfall_against_what_the_generators_drink() -> None:
+    """Three coal generators need 135 m³/min, one extractor gives 120: 15 short of 135 is minor,
+    and no single machine is to blame. (Raw supply is only judged with node data loaded.)"""
+    context = OrchestratorContext(
+        buildings=_COAL_POWER,
+        items=_COAL_ITEMS,
+        resource_nodes=_NODES,
+        existing_graph=ProductionGraph(nodes=(), flows=()),
+        existing_placements=(
+            *(_placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C") for _ in range(3)),
+            _placed("Build_WaterPump_C"),
+        ),
+    )
+
+    _, tool_result = _run_single_tool(context, "diagnose_factory_problems", {})
+
+    (water,) = [a for a in tool_result["anomalies"] if a["item_id"] == "Desc_Water_C"]
+    assert water["kind"] == "resource_deficit"
+    assert water["severity"] == "low"
+    assert water["node_id"] is None
 
 
 def test_diagnosis_flags_a_blackout_judged_from_the_placed_buildings() -> None:
@@ -753,6 +852,27 @@ def test_locations_are_measured_from_the_players_base_by_default() -> None:
     assert result.map_locations[0].resource_node_id.endswith("BP_ResourceNode2")
 
 
+def test_the_answer_keeps_the_point_its_distances_are_measured_from() -> None:
+    context = OrchestratorContext(items=_ITEMS, resource_nodes=_NODES)
+
+    result, _ = _run_single_tool(
+        context, "rank_build_locations", {"item_id": "Iron Ore", "reference_x": 500}
+    )
+
+    assert result.map_reference == Coordinates(x=500, y=0, z=0)
+
+
+def test_a_count_below_one_is_refused() -> None:
+    context = OrchestratorContext(items=_ITEMS, resource_nodes=_NODES)
+
+    result, tool_result = _run_single_tool(
+        context, "rank_build_locations", {"item_id": "Iron Ore", "count": 0}
+    )
+
+    assert "count must be at least 1" in tool_result["error"]
+    assert result.map_locations is None
+
+
 def test_geysers_can_be_asked_for_by_name() -> None:
     context = OrchestratorContext(items=_ITEMS, resource_nodes=_NODES)
 
@@ -786,6 +906,8 @@ def test_with_node_data_diagnosis_judges_ore_supply_too() -> None:
     ore = [a for a in tool_result["anomalies"] if a["item_id"] == "Desc_OreIron_C"]
     assert [anomaly["kind"] for anomaly in ore] == ["resource_deficit"]
     assert "short by 30/min" in ore[0]["description"]
+    assert ore[0]["severity"] == "low"  # 30 of the 150 the smelters eat
+    assert ore[0]["node_id"] == "save_Recipe_IngotIron_C"
 
 
 def test_expansion_reports_raw_resources_needed_against_spare_extraction() -> None:

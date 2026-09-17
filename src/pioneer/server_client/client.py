@@ -78,12 +78,14 @@ def query_server_state(
     if not isinstance(raw_game_state, dict):
         return ServerUnavailable(reason="malformed response: missing 'ServerGameState'")
 
-    return _parse_game_state(raw_game_state)
-
-
-def _parse_game_state(raw: dict[str, Any]) -> GameState:
+    try:
+        tech_tier = int(raw_game_state.get("TechTier", 0))
+    except (TypeError, ValueError):
+        return ServerUnavailable(
+            reason=f"malformed response: TechTier {raw_game_state.get('TechTier')!r}"
+        )
     return GameState(
-        phase=raw.get("GamePhase") or "None",
-        tech_tier=int(raw.get("TechTier", 0)),
-        session_name=raw.get("ActiveSessionName") or None,
+        phase=str(raw_game_state.get("GamePhase") or "None"),
+        tech_tier=tech_tier,
+        session_name=str(raw_game_state.get("ActiveSessionName") or "") or None,
     )

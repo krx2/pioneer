@@ -56,6 +56,7 @@ body { padding-bottom: 110px; }
 .meta .chosen { background: #2f6fed; }
 .badge { padding: 2px 8px; border-radius: 999px; background: #1f3a2b; color: #c7ced6; }
 .badge.bad { background: #5a2626; }
+.badge.info { background: #1c2733; color: #9aa4af; }
 .error { color: #f28b82; }
 .composer {
   position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 8px;
@@ -110,44 +111,80 @@ function addPanel(url, title) {
   append(frame);
 }
 
-async function sendFeedback(responseId, payload, control) {
+async function sendFeedback(responseId, payload, control, alternatives = []) {
   const response = await fetch(`/api/responses/${responseId}/feedback`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(payload),
   });
-  if (response.ok) control.classList.add("chosen");
+  if (!response.ok) return;
+  for (const other of alternatives) other.classList.remove("chosen");
+  control.classList.add("chosen");
 }
 
-function feedbackButton(label, responseId, payload) {
+function feedbackButton(label, responseId, payload, alternatives = []) {
   const button = element("button", "", label);
   button.type = "button";
-  button.addEventListener("click", () => sendFeedback(responseId, payload, button));
+  button.addEventListener("click", () => {
+    sendFeedback(responseId, payload, button, alternatives.filter((other) => other !== button));
+  });
   return button;
+}
+
+function badge(text, ok) {
+  // ok: true -> passed, false -> failed, null -> just information
+  const className = ok === false ? "badge bad" : ok === true ? "badge" : "badge info";
+  return element("span", className, text);
+}
+
+function addChecks(meta, checks) {
+  if (checks.chat) {
+    const numbers = checks.chat.ungrounded_numbers;
+    const chat = checks.chat.consistent
+      ? badge("numbers verified", true)
+      : badge(`unverified numbers: ${numbers.join(", ")}`, false);
+    if (checks.chat.judge) chat.title = checks.chat.judge.rationale;
+    meta.appendChild(chat);
+    const percent = Math.round(checks.chat.grounded_fraction * 100);
+    meta.appendChild(badge(`words grounded ${percent}%`, null));
+  }
+  if (checks.graph) {
+    const graph = checks.graph;
+    meta.appendChild(graph.balanced
+      ? badge("plan balances", true)
+      : badge("plan does not balance", false));
+    const spare = graph.spare_power_mw;
+    if (spare === null) {
+      meta.appendChild(badge(`needs ${graph.power_draw_mw} MW`, null));
+    } else if (spare < 0) {
+      meta.appendChild(badge(
+        `needs ${graph.power_draw_mw} MW; the grid is already ${-spare} MW short`, false));
+    } else {
+      meta.appendChild(badge(
+        `needs ${graph.power_draw_mw} MW of ${spare} MW spare`, graph.power_ok));
+    }
+    if (graph.over_optimum_pct) {
+      meta.appendChild(badge(
+        `${graph.over_optimum_pct}% more machines than the exact need (underclock to match)`,
+        null));
+    }
+  }
+  if (checks.map) {
+    meta.appendChild(checks.map.passed
+      ? badge("sites verified", true)
+      : badge(`site check failed: ${checks.map.problems.join(", ")}`, false));
+  }
 }
 
 function addMeta(answer) {
   const meta = element("div", "meta");
-  const checks = answer.verification || {};
-  if (checks.chat) {
-    const percent = Math.round(checks.chat.grounded_fraction * 100);
-    const badge = element("span", checks.chat.consistent ? "badge" : "badge bad");
-    badge.textContent = `grounded ${percent}%`;
-    if (checks.chat.judge) badge.title = checks.chat.judge.rationale;
-    meta.appendChild(badge);
-  }
-  if (checks.graph) {
-    const text = checks.graph.passed ? "plan verified" : "plan does not balance";
-    meta.appendChild(element("span", checks.graph.passed ? "badge" : "badge bad", text));
-  }
-  if (checks.map) {
-    const text = checks.map.passed ? "sites verified" : "site check failed";
-    meta.appendChild(element("span", checks.map.passed ? "badge" : "badge bad", text));
-  }
+  addChecks(meta, answer.verification || {});
 
   const id = answer.response_id;
-  meta.appendChild(feedbackButton("\\u{1F44D}", id, {thumbs_up: true}));
-  meta.appendChild(feedbackButton("\\u{1F44E}", id, {thumbs_up: false}));
+  const thumbs = [];
+  thumbs.push(feedbackButton("\\u{1F44D}", id, {thumbs_up: true}, thumbs));
+  thumbs.push(feedbackButton("\\u{1F44E}", id, {thumbs_up: false}, thumbs));
+  for (const button of thumbs) meta.appendChild(button);
   if (answer.graph_url) {
     meta.appendChild(feedbackButton("I applied this plan", id, {applied_plan: true}));
   }

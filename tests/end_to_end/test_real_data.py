@@ -8,6 +8,7 @@ circles through 1.0's ore-conversion recipes.
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -275,6 +276,23 @@ def test_with_node_data_the_real_saves_power_and_ore_add_up(kb, save_name) -> No
     deficits = {a["item_id"] for a in result["anomalies"] if a["kind"] == "resource_deficit"}
     assert deficits <= craftable_or_raw
     assert "power_blackout" not in {a["kind"] for a in result["anomalies"]}
+
+
+@needs_node_data
+def test_the_water_a_real_saves_coal_generators_drink_is_not_spare(kb) -> None:
+    """stal_mielec runs 36 coal generators, 45 m³ of water a minute each: counting only their coal
+    left 1620 m³/min of water looking overproduced."""
+    state = load_save_state(_SAVE)
+    context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
+
+    _, [result] = _ask(context, ("diagnose_factory_problems", {}))
+
+    water = [a for a in result["anomalies"] if a["item_id"] == "Desc_Water_C"]
+    for anomaly in water:
+        off_by = float(re.search(r"by ([-+.\de]+)/min", anomaly["description"]).group(1))
+        assert off_by < 45  # less than one generator's worth
+    severities = {a["severity"] for a in result["anomalies"] if a["kind"] == "resource_deficit"}
+    assert len(severities) > 1  # rated against real demand, not all the same for want of one
 
 
 def test_a_game_question_is_answered_from_the_real_corpus(context) -> None:

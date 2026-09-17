@@ -37,6 +37,21 @@ class ItemAmount:
 
 
 @dataclass(frozen=True)
+class GeneratorFuel:
+    """One fuel a generator can burn, and what burning it takes and leaves besides the fuel."""
+
+    fuel_item_id: str
+    supplemental_item_id: str | None = None
+    """What else the generator consumes while burning this fuel — water, for the Coal-Powered
+    Generator and the Nuclear Power Plant. At what rate is the building's
+    `Building.supplemental_per_minute_per_mw`."""
+    byproduct_item_id: str | None = None
+    """What burning it leaves behind — nuclear waste, for fuel rods."""
+    byproduct_per_fuel_unit: float = 0.0
+    """Units of `byproduct_item_id` per unit of fuel burned: 50 waste per Uranium Fuel Rod."""
+
+
+@dataclass(frozen=True)
 class Building:
     building_id: str
     name: str
@@ -52,6 +67,13 @@ class Building:
     """For an extractor that can only ever extract one resource (Water Extractor, Oil Extractor):
     that resource. `None` where it depends on the node it's built on (miners, well extractors), and
     for every other building."""
+    fuels: tuple[GeneratorFuel, ...] = ()
+    """For a generator: every fuel it can burn. Empty for every other building, and for generators
+    that burn nothing (geothermal)."""
+    supplemental_per_minute_per_mw: float = 0.0
+    """For a generator whose fuels need a supplemental resource: how much of it (m³ for fluids) it
+    consumes per minute per MW it generates — 0.6 for the Coal-Powered Generator, whose 75 MW take
+    45 m³ of water a minute. 0 for every other building."""
 
 
 @dataclass(frozen=True)

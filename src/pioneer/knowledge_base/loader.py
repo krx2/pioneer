@@ -48,6 +48,11 @@ docs/implementation.md Stage 2 discussion) and encoded as deliberate choices bel
   `_load_items` indexes every descriptor in the export and `_item_amount` divides fluid amounts
   back down. Without this, anything touching oil, water, gas or their derivatives is off by three
   orders of magnitude — machine counts, balance, power, anomaly severities.
+- **Generators consume more than fuel.** Each entry of a generator's `mFuel` names, per fuel, a
+  supplemental resource (water, for coal and nuclear) and a byproduct (nuclear waste, with
+  `mByproductAmount` per fuel unit). How much supplemental resource is consumed comes from the
+  building's `mSupplementalToPowerRatio`, which is in litres per MW per second for a fluid: the
+  Coal-Powered Generator's 10 makes 75 MW take 750 L/s, the game's 45 m³/min.
 """
 
 from __future__ import annotations
@@ -57,7 +62,15 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from pioneer.contracts import Building, ClassDescription, Item, ItemAmount, Recipe, Technology
+from pioneer.contracts import (
+    Building,
+    ClassDescription,
+    GeneratorFuel,
+    Item,
+    ItemAmount,
+    Recipe,
+    Technology,
+)
 from pioneer.knowledge_base.parsing import (
     class_name_from_path,
     parse_item_amounts,
@@ -124,6 +137,7 @@ def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
     entries_by_native_class = _index_by_native_class(raw_docs)
 
     items = _load_items(entries_by_native_class)
+    fluid_item_ids = frozenset(item.item_id for item in items if item.is_fluid)
     manufacturing_building_ids = frozenset(
         entry["ClassName"]
         for native_class in _MANUFACTURING_BUILDING_NATIVE_CLASSES
@@ -131,10 +145,10 @@ def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
     )
     recipes = _load_recipes(
         entries_by_native_class.get(_RECIPE_NATIVE_CLASS, []),
-        fluid_item_ids=frozenset(item.item_id for item in items if item.is_fluid),
+        fluid_item_ids=fluid_item_ids,
         manufacturing_building_ids=manufacturing_building_ids,
     )
-    buildings = _load_buildings(entries_by_native_class, recipes)
+    buildings = _load_buildings(entries_by_native_class, recipes, fluid_item_ids)
     technologies, recipe_to_technology = _load_technologies(
         entries_by_native_class.get(_SCHEMATIC_NATIVE_CLASS, [])
     )
@@ -296,7 +310,9 @@ def _power_consumption_mw(entry: dict[str, Any]) -> float:
 
 
 def _load_buildings(
-    entries_by_native_class: dict[str, list[dict[str, Any]]], recipes: tuple[Recipe, ...]
+    entries_by_native_class: dict[str, list[dict[str, Any]]],
+    recipes: tuple[Recipe, ...],
+    fluid_item_ids: frozenset[str],
 ) -> tuple[Building, ...]:
     buildings = []
     for native_class in _BUILDING_NATIVE_CLASSES:
@@ -308,6 +324,7 @@ def _load_buildings(
             extraction_rate, fixed_resource_id = (
                 _extraction(entry) if native_class in _EXTRACTOR_NATIVE_CLASSES else (0.0, None)
             )
+            fuels = _generator_fuels(entry) if native_class in _GENERATOR_NATIVE_CLASSES else ()
             buildings.append(
                 Building(
                     building_id=building_id,
@@ -317,9 +334,46 @@ def _load_buildings(
                     output_slots=output_slots,
                     extraction_rate_per_minute=extraction_rate,
                     fixed_resource_id=fixed_resource_id,
+                    fuels=fuels,
+                    supplemental_per_minute_per_mw=_supplemental_rate(entry, fuels, fluid_item_ids),
                 )
             )
     return tuple(buildings)
+
+
+def _generator_fuels(entry: dict[str, Any]) -> tuple[GeneratorFuel, ...]:
+    """Every fuel in a generator's `mFuel` list, with its supplemental resource and byproduct —
+    the export leaves an unused one as an empty string."""
+    return tuple(
+        GeneratorFuel(
+            fuel_item_id=class_name_from_path(fuel["mFuelClass"]),
+            supplemental_item_id=_class_name_or_none(fuel.get("mSupplementalResourceClass")),
+            byproduct_item_id=_class_name_or_none(fuel.get("mByproduct")),
+            byproduct_per_fuel_unit=float(fuel.get("mByproductAmount") or 0),
+        )
+        for fuel in entry.get("mFuel") or []
+        if fuel.get("mFuelClass")
+    )
+
+
+def _class_name_or_none(raw: str | None) -> str | None:
+    return class_name_from_path(raw) if raw else None
+
+
+def _supplemental_rate(
+    entry: dict[str, Any], fuels: tuple[GeneratorFuel, ...], fluid_item_ids: frozenset[str]
+) -> float:
+    """`mSupplementalToPowerRatio` as units (m³ for fluids) per minute per MW — see the module
+    docstring. 0 for a generator none of whose fuels needs a supplemental resource."""
+    supplemental = next(
+        (fuel.supplemental_item_id for fuel in fuels if fuel.supplemental_item_id), None
+    )
+    if supplemental is None:
+        return 0.0
+    per_second = float(entry.get("mSupplementalToPowerRatio") or 0)
+    if supplemental in fluid_item_ids:
+        per_second /= _LITRES_PER_CUBIC_METRE
+    return per_second * 60.0
 
 
 def _extraction(entry: dict[str, Any]) -> tuple[float, str | None]:

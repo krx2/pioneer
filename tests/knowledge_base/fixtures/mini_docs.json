@@ -193,6 +193,43 @@
         "mDisplayName": "Biomass Burner",
         "mPowerConsumption": "0.000000",
         "mPowerProduction": "30.000000"
+      },
+      {
+        "ClassName": "Build_GeneratorCoal_C",
+        "mDisplayName": "Coal-Powered Generator",
+        "mPowerConsumption": "0.000000",
+        "mPowerProduction": "75.000000",
+        "mFuel": [
+          {
+            "mFuelClass": "Desc_Coal_C",
+            "mSupplementalResourceClass": "Desc_Water_C",
+            "mByproduct": "",
+            "mByproductAmount": ""
+          }
+        ],
+        "mRequiresSupplementalResource": "True",
+        "mSupplementalToPowerRatio": "10.000000"
+      }
+    ]
+  },
+  {
+    "NativeClass": "/Script/CoreUObject.Class'/Script/FactoryGame.FGBuildableGeneratorNuclear'",
+    "Classes": [
+      {
+        "ClassName": "Build_GeneratorNuclear_C",
+        "mDisplayName": "Nuclear Power Plant",
+        "mPowerConsumption": "0.000000",
+        "mPowerProduction": "2500.000000",
+        "mFuel": [
+          {
+            "mFuelClass": "Desc_NuclearFuelRod_C",
+            "mSupplementalResourceClass": "Desc_Water_C",
+            "mByproduct": "Desc_NuclearWaste_C",
+            "mByproductAmount": "50"
+          }
+        ],
+        "mRequiresSupplementalResource": "True",
+        "mSupplementalToPowerRatio": "1.600000"
       }
     ]
   },

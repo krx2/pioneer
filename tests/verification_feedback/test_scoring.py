@@ -7,6 +7,7 @@ from pioneer.contracts import (
     Coordinates,
     Feedback,
     ItemAmount,
+    PlacementRecord,
     ProductionGraph,
     ProductionNode,
     Purity,
@@ -38,14 +39,63 @@ def test_chat_grounded_in_the_cited_passages_is_consistent() -> None:
     assert score.grounded_fraction == 1.0
 
 
-def test_chat_with_an_unsupported_claim_is_inconsistent() -> None:
+def test_words_the_passages_lack_lower_the_grounded_fraction_only() -> None:
     score = check_rag_consistency(
         "The Smelter converts Iron Ore into Iron Ingots, and also prints Turbofuel for free.",
         _PASSAGES,
     )
 
-    assert not score.consistent
     assert score.grounded_fraction < 1.0
+    assert score.consistent  # no number in it to get wrong
+
+
+_TOOL_RESULT = (
+    "Make 20 Plastic",
+    '{"machine_counts": {"Recipe_Plastic_C": 1}, "net_item_balance": {"Desc_Plastic_C": 20.0, '
+    '"Desc_HeavyOilResidue_C": 10.0, "Desc_LiquidOil_C": -30.0, "Desc_Water_C": 7.4999988}, '
+    '"net_power_draw_mw": 6518.3}',
+)
+
+
+def test_a_correct_answer_in_plain_words_is_consistent() -> None:
+    score = check_rag_consistency(
+        "Build 1 Refinery running Plastic: it takes 30 m³ of Crude Oil a minute and makes the 20 "
+        "Plastic you asked for, plus 10 Heavy Oil Residue.",
+        _TOOL_RESULT,
+    )
+
+    assert score.consistent
+    assert score.ungrounded_numbers == ()
+    assert score.grounded_fraction < 0.6  # plain words: why overlap can't decide consistency
+
+
+def test_made_up_numbers_are_inconsistent_and_listed() -> None:
+    score = check_rag_consistency(
+        "Build 4 Refineries: they take 95 m³ of Crude Oil and make 20 Plastic and 55 Heavy Oil "
+        "Residue, drawing 480 MW. Then build 4 more.",
+        _TOOL_RESULT,
+    )
+
+    assert not score.consistent
+    assert score.ungrounded_numbers == ("4", "95", "55", "480")
+
+
+def test_rounding_and_thousands_separators_are_allowed() -> None:
+    """7.4999988 said as 7.5 or about 7; 6518.3 as 6,518, 6518 or about 6,500."""
+    for chat in ("7.5 m³ of water", "about 7 m³", "6,518 MW", "6518 MW", "roughly 6,500 MW"):
+        assert check_rag_consistency(chat, _TOOL_RESULT).consistent, chat
+    assert not check_rag_consistency("7.4 m³ of water", _TOOL_RESULT).consistent
+
+
+def test_a_decimal_comma_reads_as_a_decimal() -> None:
+    assert check_rag_consistency("7,5 m³ wody na minutę", _TOOL_RESULT).consistent
+    assert not check_rag_consistency("7,9 m³ wody na minutę", _TOOL_RESULT).consistent
+
+
+def test_names_ranks_and_list_markers_are_not_numeric_claims() -> None:
+    chat = "1. Build a Miner Mk.3 on site #4.\n2. Feed it with Conveyor Belt Mk.5."
+
+    assert check_rag_consistency(chat, ()).consistent
 
 
 def test_empty_chat_is_trivially_consistent() -> None:
@@ -179,6 +229,18 @@ def test_no_power_budget_given_never_fails_on_power() -> None:
     assert score.power_ok
 
 
+def test_the_power_draw_and_budget_are_reported() -> None:
+    score = score_graph(
+        _single_smelter_graph(3),
+        _RECIPES,
+        _BUILDINGS,
+        raw_item_ids=("Desc_OreIron_C",),
+        available_power_mw=10,
+    )
+
+    assert (score.power_draw_mw, score.available_power_mw) == (12, 10)
+
+
 def test_deviation_from_optimum_is_none_without_a_reference_graph() -> None:
     graph = _single_smelter_graph(1)
 
@@ -210,7 +272,7 @@ _NODE = ResourceNode(
 _NODES = (_NODE,)
 
 
-def test_matching_distance_and_purity_passes() -> None:
+def test_matching_position_and_purity_passes() -> None:
     location = RankedLocation(
         resource_node_id="iron_pure_1",
         position=Coordinates(x=1000, y=2000),
@@ -221,9 +283,52 @@ def test_matching_distance_and_purity_passes() -> None:
 
     (result,) = score_map((location,), _NODES)
 
-    assert result.distance_ok
+    assert result.position_ok
     assert result.purity_ok
+    assert result.distance_ok is None  # no reference point to check it by
+    assert result.still_free
     assert result.passed
+
+
+def test_the_distance_is_recomputed_from_the_reference_point() -> None:
+    """The node sits 500 from (1000, 1500): a site claiming 500 passes, one claiming 50 doesn't."""
+    reference = Coordinates(x=1000, y=1500)
+    right, wrong = (
+        RankedLocation(
+            resource_node_id="iron_pure_1",
+            position=Coordinates(x=1000, y=2000),
+            purity=Purity.PURE,
+            distance_to_reference=claimed,
+            score=0.9,
+        )
+        for claimed in (500.0, 50.0)
+    )
+
+    first, second = score_map((right, wrong), _NODES, reference=reference)
+
+    assert first.distance_ok and first.passed
+    assert second.distance_ok is False
+    assert not second.passed
+
+
+def test_a_node_the_save_already_extracts_from_is_not_free() -> None:
+    location = RankedLocation(
+        resource_node_id="iron_pure_1",
+        position=Coordinates(x=1000, y=2000),
+        purity=Purity.PURE,
+        distance_to_reference=500.0,
+        score=0.9,
+    )
+    miner = PlacementRecord(
+        building_id="Build_MinerMk1_C",
+        position=Coordinates(x=1000, y=2000),
+        resource_node_id="iron_pure_1",
+    )
+
+    (result,) = score_map((location,), _NODES, placements=(miner,))
+
+    assert not result.still_free
+    assert not result.passed
 
 
 def test_mismatched_purity_fails() -> None:
@@ -241,7 +346,7 @@ def test_mismatched_purity_fails() -> None:
     assert not result.passed
 
 
-def test_position_far_from_the_real_node_fails_distance_check() -> None:
+def test_position_far_from_the_real_node_fails_the_position_check() -> None:
     location = RankedLocation(
         resource_node_id="iron_pure_1",
         position=Coordinates(x=5000, y=5000),  # nowhere near the real node
@@ -252,7 +357,7 @@ def test_position_far_from_the_real_node_fails_distance_check() -> None:
 
     (result,) = score_map((location,), _NODES)
 
-    assert not result.distance_ok
+    assert not result.position_ok
     assert not result.passed
 
 
@@ -267,8 +372,10 @@ def test_unknown_resource_node_id_fails_closed() -> None:
 
     (result,) = score_map((location,), _NODES)
 
-    assert not result.distance_ok
+    assert not result.position_ok
     assert not result.purity_ok
+    assert result.distance_ok is False
+    assert not result.still_free
     assert not result.passed
     assert result.judge_verdict is None
 

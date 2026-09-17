@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from pioneer.contracts import Item
+from pioneer.contracts import GeneratorFuel, Item
 from pioneer.knowledge_base.loader import load_from_dict
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mini_docs.json"
@@ -115,6 +115,37 @@ def test_generator_power_is_negative_net(kb) -> None:
     generator = next(b for b in kb.buildings if b.building_id == "Build_GeneratorBiomass_C")
     assert generator.power_consumption_mw == pytest.approx(-30.0)
     assert (generator.input_slots, generator.output_slots) == (1, 0)
+
+
+def test_generator_fuels_and_their_supplemental_water_are_loaded(kb) -> None:
+    """A ratio of 10 litres per MW per second: 75 MW take 45 m³ of water a minute."""
+    coal = next(b for b in kb.buildings if b.building_id == "Build_GeneratorCoal_C")
+    assert coal.fuels == (
+        GeneratorFuel(fuel_item_id="Desc_Coal_C", supplemental_item_id="Desc_Water_C"),
+    )
+    assert coal.supplemental_per_minute_per_mw * 75 == pytest.approx(45.0)
+
+
+def test_generator_fuel_byproduct_is_loaded_per_fuel_unit(kb) -> None:
+    nuclear = next(b for b in kb.buildings if b.building_id == "Build_GeneratorNuclear_C")
+    assert nuclear.power_consumption_mw == pytest.approx(-2500.0)
+    assert nuclear.fuels == (
+        GeneratorFuel(
+            fuel_item_id="Desc_NuclearFuelRod_C",
+            supplemental_item_id="Desc_Water_C",
+            byproduct_item_id="Desc_NuclearWaste_C",
+            byproduct_per_fuel_unit=50.0,
+        ),
+    )
+    assert nuclear.supplemental_per_minute_per_mw * 2500 == pytest.approx(240.0)
+
+
+def test_generators_without_fuel_data_consume_nothing_else(kb) -> None:
+    biomass = next(b for b in kb.buildings if b.building_id == "Build_GeneratorBiomass_C")
+    constructor = next(b for b in kb.buildings if b.building_id == "Build_ConstructorMk1_C")
+    for building in (biomass, constructor):
+        assert building.fuels == ()
+        assert building.supplemental_per_minute_per_mw == 0.0
 
 
 def test_variable_power_manufacturer_draws_its_midpoint(kb) -> None:

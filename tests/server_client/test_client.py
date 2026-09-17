@@ -98,6 +98,8 @@ def test_invalid_json_becomes_server_unavailable() -> None:
         {"data": {}},
         {"data": {"ServerGameState": "not a dict"}},
         {"data": "not a dict"},
+        {"data": {"ServerGameState": {"TechTier": None}}},
+        {"data": {"ServerGameState": {"TechTier": "six"}}},
     ],
 )
 def test_malformed_response_shapes_become_server_unavailable(response: dict[str, Any]) -> None:

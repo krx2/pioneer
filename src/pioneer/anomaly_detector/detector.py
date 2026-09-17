@@ -22,6 +22,11 @@ What it flags:
 
 Severity for deficits/power/congestion scales with how far over the line the number is (>=100%
 over -> HIGH, >=50% -> MEDIUM, else LOW); a deficit with no derivable demand falls back to MEDIUM.
+
+**Demand and consumers without flows.** A deficit's demand, and the node it's pinned on, come from
+the graph's flows — which a save's graph doesn't have. `item_demand` (gross consumption per item,
+e.g. `verifier.consumption`) and `item_consumers` (the node ids consuming each item) stand in for
+them, item by item: whatever they give wins over what the flows say.
 """
 
 from __future__ import annotations
@@ -45,6 +50,8 @@ def detect_anomalies(
     *,
     raw_item_ids: Collection[str] = (),
     output_item_ids: Collection[str] = (),
+    item_demand: Mapping[str, float] | None = None,
+    item_consumers: Mapping[str, Collection[str]] | None = None,
     available_power_mw: float | None = None,
     belt_capacity_per_minute: float = 780.0,
     rate_tolerance: float = 1e-6,
@@ -59,6 +66,8 @@ def detect_anomalies(
         if flow.target_node_id is not None:
             demand_by_item[flow.item_id] += flow.amount_per_minute
             consumers_by_item[flow.item_id].add(flow.target_node_id)
+    demand_by_item.update(item_demand or {})
+    consumers_by_item.update({item: set(nodes) for item, nodes in (item_consumers or {}).items()})
 
     records: list[AnomalyRecord] = []
     records.extend(

@@ -5,6 +5,11 @@ Kept out of `handle_query` so the caller decides when to pay for it — the LLM-
 cost a model call each — and so the routing loop stays about routing. A channel whose scoring
 can't run on the data at hand (no knowledge base, a graph on a building the knowledge base doesn't
 list) comes back unscored rather than costing the other channels theirs.
+
+A graph is scored for what it adds: an expansion's extended nodes count only their new machines.
+Those are held against the power the player's grid has to spare (when a save is loaded), and
+against the same plan in fractional machines — the optimum a whole-machine plan overshoots, which
+is its distance from optimum (architecture.md §6).
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from pioneer.contracts import ResponseArtifact
 from pioneer.orchestrator.orchestrator import (
     OrchestratorContext,
     _context_note,
+    _existing_power,
     _raw_item_ids,
     _reference_point,
 )
@@ -29,6 +35,7 @@ from pioneer.verification_feedback import (
     score_graph,
     score_map,
 )
+from pioneer.verifier import added_machines, minimal_machine_graph
 
 
 def verify_response(
@@ -69,10 +76,30 @@ def _graph_score(artifact: ResponseArtifact, context: OrchestratorContext) -> Gr
     from_outside = _raw_item_ids(context) | {
         flow.item_id for flow in graph.flows if flow.source_node_id is None
     }
+    added = added_machines(graph, context.existing_graph)
     try:
-        return score_graph(graph, context.recipes, context.buildings, raw_item_ids=from_outside)
+        return score_graph(
+            added,
+            context.recipes,
+            context.buildings,
+            optimal_graph=minimal_machine_graph(added, context.recipes),
+            available_power_mw=_spare_power_mw(context),
+            raw_item_ids=from_outside,
+        )
     except ValueError:
         return None
+
+
+def _spare_power_mw(context: OrchestratorContext) -> float | None:
+    """What the player's grid can still supply: its capacity minus its draw, from the save. `None`
+    with no save loaded, or no way to tell the capacity."""
+    if context.existing_graph is None:
+        return None
+    try:
+        draw, capacity = _existing_power(context)
+    except ValueError:
+        return None
+    return None if capacity is None else capacity - draw
 
 
 def _map_score(
@@ -83,6 +110,8 @@ def _map_score(
     return score_map(
         artifact.map_locations,
         context.resource_nodes,
+        reference=artifact.map_reference,
+        placements=context.existing_placements,
         judge=judge,
         judge_context=_terrain_context(context),
     )

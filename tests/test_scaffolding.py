@@ -84,3 +84,15 @@ def test_settings_read_values_from_env(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.dedicated_server_port == 7777
     assert settings.save_directory == "D:/saves"
     assert settings.llm_judge is True
+
+
+@pytest.mark.parametrize("port", ["abc", "0", "70000", "77.7"])
+def test_a_server_port_that_is_not_one_is_ignored_with_a_warning(
+    clean_env: pytest.MonkeyPatch, port: str
+) -> None:
+    clean_env.setenv("PIONEER_SERVER_PORT", port)
+
+    with pytest.warns(UserWarning, match="PIONEER_SERVER_PORT"):
+        settings = Settings.from_env()
+
+    assert settings.dedicated_server_port is None

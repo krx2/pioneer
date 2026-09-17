@@ -7,8 +7,10 @@ import pytest
 from pioneer.contracts import (
     Building,
     Coordinates,
+    GeneratorFuel,
     Item,
     ItemAmount,
+    MaterialFlow,
     PlacementRecord,
     ProductionGraph,
     ProductionNode,
@@ -17,11 +19,16 @@ from pioneer.contracts import (
     ResourceNode,
 )
 from pioneer.verifier.calculations import (
+    added_machines,
     balance,
+    consumption,
     distance,
     extraction_rates,
+    generator_byproducts,
     generator_fuel_demand,
+    generator_supplemental_demand,
     machine_count,
+    minimal_machine_graph,
     placed_generation_capacity_mw,
     placed_power_consumption_mw,
     power_balance,
@@ -251,6 +258,159 @@ def test_unfueled_generators_and_unknown_fuels_burn_nothing() -> None:
         _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_Mystery_C"),
     )
     assert generator_fuel_demand(placements, _PLACED_BUILDINGS, _FUELS) == {}
+
+
+_WATER_COOLED = (
+    Building(
+        building_id="Build_GeneratorCoal_C",
+        name="Coal-Powered Generator",
+        power_consumption_mw=-75,
+        input_slots=1,
+        output_slots=0,
+        fuels=(GeneratorFuel(fuel_item_id="Desc_Coal_C", supplemental_item_id="Desc_Water_C"),),
+        supplemental_per_minute_per_mw=0.6,
+    ),
+    Building(
+        building_id="Build_GeneratorNuclear_C",
+        name="Nuclear Power Plant",
+        power_consumption_mw=-2500,
+        input_slots=1,
+        output_slots=0,
+        fuels=(
+            GeneratorFuel(
+                fuel_item_id="Desc_NuclearFuelRod_C",
+                supplemental_item_id="Desc_Water_C",
+                byproduct_item_id="Desc_NuclearWaste_C",
+                byproduct_per_fuel_unit=50,
+            ),
+        ),
+        supplemental_per_minute_per_mw=0.096,
+    ),
+    Building(
+        building_id="Build_GeneratorFuel_C",
+        name="Fuel Generator",
+        power_consumption_mw=-250,
+        input_slots=1,
+        output_slots=0,
+        fuels=(GeneratorFuel(fuel_item_id="Desc_LiquidFuel_C"),),
+    ),
+)
+_FUEL_RODS = (
+    *_FUELS,
+    Item(item_id="Desc_NuclearFuelRod_C", name="Uranium Fuel Rod", energy_value_mj=750_000),
+)
+
+
+def test_generators_consume_water_as_in_game() -> None:
+    """Coal: 45 m³/min at 100%, half that underclocked to 50%. Nuclear: 240 m³/min."""
+    placements = (
+        _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C"),
+        _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C", clock_speed=0.5),
+        _placed("Build_GeneratorNuclear_C", fuel_item_id="Desc_NuclearFuelRod_C"),
+        _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_LiquidFuel_C"),
+    )
+
+    demand = generator_supplemental_demand(placements, _WATER_COOLED)
+
+    assert demand == pytest.approx({"Desc_Water_C": 45 + 22.5 + 240})
+
+
+def test_unfueled_generators_consume_no_water() -> None:
+    placements = (
+        _placed("Build_GeneratorCoal_C"),
+        _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_NotItsFuel_C"),
+    )
+    assert generator_supplemental_demand(placements, _WATER_COOLED) == {}
+
+
+def test_nuclear_waste_accumulates_per_fuel_rod_burned() -> None:
+    """2500 MW on 750 000 MJ rods burns 0.2 rods a minute; 50 waste each is 10 a minute."""
+    placements = (
+        _placed("Build_GeneratorNuclear_C", fuel_item_id="Desc_NuclearFuelRod_C"),
+        _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C"),
+    )
+
+    assert generator_byproducts(placements, _WATER_COOLED, _FUEL_RODS) == pytest.approx(
+        {"Desc_NuclearWaste_C": 10.0}
+    )
+
+
+def test_consumption_is_gross_demand_by_machine_count() -> None:
+    assert consumption(_graph(smelters=1, constructors=3), RECIPES) == pytest.approx(
+        {"Desc_OreIron_C": 30.0, "Desc_IronIngot_C": 45.0}
+    )
+
+
+def test_added_machines_keeps_only_what_an_expansion_builds() -> None:
+    existing = _graph(smelters=2, constructors=4)
+    expanded = ProductionGraph(
+        nodes=(
+            ProductionNode(
+                node_id="smelter_1",
+                recipe_id="Recipe_IngotIron_C",
+                building_id="Build_SmelterMk1_C",
+                machine_count=3,
+                is_existing=True,
+            ),
+            ProductionNode(
+                node_id="constructor_1",
+                recipe_id="Recipe_IronRod_C",
+                building_id="Build_ConstructorMk1_C",
+                machine_count=4,
+                is_existing=True,
+            ),
+            ProductionNode(
+                node_id="new_constructor",
+                recipe_id="Recipe_IronRod_C",
+                building_id="Build_ConstructorMk1_C",
+                machine_count=2,
+            ),
+        ),
+        flows=(MaterialFlow(item_id="Desc_IronRod_C", amount_per_minute=15),),
+    )
+
+    added = added_machines(expanded, existing)
+
+    assert {node.node_id: node.machine_count for node in added.nodes} == {
+        "smelter_1": 1,
+        "new_constructor": 2,
+    }
+    assert added.flows == expanded.flows
+    assert added_machines(expanded, None) is expanded
+
+
+def _rod_plan(*, smelters: float, constructors: float) -> ProductionGraph:
+    """20 Iron Rod/min, planned in whole machines: 2 constructors (1.33 needed) eat 30 ingots, which
+    1 smelter makes (0.67 needed for the 20 ingots 1.33 constructors would eat)."""
+    return ProductionGraph(
+        nodes=_graph(smelters=smelters, constructors=constructors).nodes,
+        flows=(
+            MaterialFlow(
+                item_id="Desc_OreIron_C", amount_per_minute=30, target_node_id="smelter_1"
+            ),
+            MaterialFlow(
+                item_id="Desc_IronIngot_C",
+                amount_per_minute=30,
+                source_node_id="smelter_1",
+                target_node_id="constructor_1",
+            ),
+            MaterialFlow(
+                item_id="Desc_IronRod_C", amount_per_minute=20, source_node_id="constructor_1"
+            ),
+        ),
+    )
+
+
+def test_minimal_machine_graph_is_fractional_all_the_way_back() -> None:
+    minimal = minimal_machine_graph(_rod_plan(smelters=1, constructors=2), RECIPES)
+
+    counts = {node.node_id: node.machine_count for node in minimal.nodes}
+    assert counts == pytest.approx({"constructor_1": 20 / 15, "smelter_1": 20 / 30})
+
+
+def test_minimal_machine_graph_leaves_nodes_without_outgoing_flows_alone() -> None:
+    graph = _graph(smelters=2, constructors=3)
+    assert minimal_machine_graph(graph, RECIPES) == graph
 
 
 _MINER_MK2 = Building(

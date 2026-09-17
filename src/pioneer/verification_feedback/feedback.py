@@ -62,6 +62,14 @@ class ResponseLog:
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path)
 
+    def response_ids(self) -> frozenset[str]:
+        """Every answer the log holds — what feedback can still be given on after a restart."""
+        return frozenset(
+            str(record["response_id"])
+            for record in _read_jsonl(self._path)
+            if record.get("response_id") is not None
+        )
+
     def append(self, artifact: ResponseArtifact, score: ResponseScore | None) -> None:
         locations = artifact.map_locations
         _append_jsonl(

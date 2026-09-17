@@ -91,6 +91,32 @@ def test_deficit_without_flow_info_needs_the_raw_hint() -> None:
     assert [a.item_id for a in with_hint] == ["Desc_IronIngot_C"]
 
 
+def test_supplied_demand_sets_severity_and_consumer_where_flows_are_missing() -> None:
+    """A save's graph has no flows: 60 short against 90 consumed is MEDIUM, 100 short against 50
+    is HIGH, and 10 short against 100 is LOW — not all MEDIUM for want of a demand."""
+    graph = ProductionGraph(
+        nodes=(_node("save_plates", "Recipe_IronPlate_C", 3), _node("save_rods", "R", 1)),
+        flows=(),
+    )
+    balance = {"Desc_IronIngot_C": -60.0, "Desc_Coal_C": -100.0, "Desc_Water_C": -10.0}
+
+    anomalies = detect_anomalies(
+        graph,
+        balance,
+        net_power_draw_mw=0,
+        item_demand={"Desc_IronIngot_C": 90.0, "Desc_Coal_C": 50.0, "Desc_Water_C": 100.0},
+        item_consumers={"Desc_IronIngot_C": {"save_plates"}, "Desc_Water_C": {"a", "b"}},
+    )
+
+    by_item = {a.item_id: a for a in anomalies}
+    assert by_item["Desc_IronIngot_C"].severity is AnomalySeverity.MEDIUM
+    assert by_item["Desc_IronIngot_C"].node_id == "save_plates"
+    assert by_item["Desc_Coal_C"].severity is AnomalySeverity.HIGH
+    assert by_item["Desc_Coal_C"].node_id is None
+    assert by_item["Desc_Water_C"].severity is AnomalySeverity.LOW
+    assert by_item["Desc_Water_C"].node_id is None  # two consumers: no single one to blame
+
+
 def test_surplus_of_unconsumed_intermediate() -> None:
     graph = ProductionGraph(nodes=(), flows=())
     balance = {"Desc_IronIngot_C": 40.0}

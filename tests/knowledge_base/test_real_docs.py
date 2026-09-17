@@ -177,6 +177,23 @@ def test_generator_power_is_negative_net(kb) -> None:
     assert generator.power_consumption_mw == pytest.approx(-30.0)
 
 
+def test_generators_consume_water_and_leave_waste_at_in_game_rates(kb) -> None:
+    """Coal-Powered Generator: 45 m³ of water a minute at 75 MW. Nuclear Power Plant: 240 m³ at
+    2500 MW, and 50 Uranium Waste per fuel rod."""
+    coal = building_for(kb, "Build_GeneratorCoal_C")
+    nuclear = building_for(kb, "Build_GeneratorNuclear_C")
+    assert coal is not None and nuclear is not None
+    assert coal.supplemental_per_minute_per_mw * 75 == pytest.approx(45.0)
+    assert nuclear.supplemental_per_minute_per_mw * 2500 == pytest.approx(240.0)
+    uranium = next(f for f in nuclear.fuels if f.fuel_item_id == "Desc_NuclearFuelRod_C")
+    assert uranium.supplemental_item_id == "Desc_Water_C"
+    assert uranium.byproduct_item_id == "Desc_NuclearWaste_C"
+    assert uranium.byproduct_per_fuel_unit == pytest.approx(50.0)
+    fuel_generator = building_for(kb, "Build_GeneratorFuel_C")
+    assert fuel_generator is not None
+    assert fuel_generator.supplemental_per_minute_per_mw == 0.0
+
+
 def test_variable_power_buildings_get_their_average_draw(kb) -> None:
     converter = building_for(kb, "Build_Converter_C")
     accelerator = building_for(kb, "Build_HadronCollider_C")

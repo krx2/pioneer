@@ -13,6 +13,7 @@ only needed if the local server is configured to require one — most local setu
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,13 +43,12 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        port = os.environ.get("PIONEER_SERVER_PORT")
         return cls(
             llm_base_url=os.environ.get("PIONEER_LLM_BASE_URL"),
             llm_model=os.environ.get("PIONEER_LLM_MODEL"),
             llm_api_key=os.environ.get("PIONEER_LLM_API_KEY"),
             dedicated_server_host=os.environ.get("PIONEER_SERVER_HOST"),
-            dedicated_server_port=int(port) if port else None,
+            dedicated_server_port=_port(os.environ.get("PIONEER_SERVER_PORT")),
             dedicated_server_api_token=os.environ.get("PIONEER_SERVER_API_TOKEN"),
             save_directory=os.environ.get("PIONEER_SAVE_DIR") or default_save_directory(),
             llm_judge=_flag(os.environ.get("PIONEER_LLM_JUDGE")),
@@ -57,6 +57,24 @@ class Settings:
 
 def _flag(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _port(value: str | None) -> int | None:
+    """A TCP port, or `None` when unset — or set to something that isn't one, which is warned
+    about rather than raised: this runs at import time, and a typo in `.env` shouldn't stop the
+    assistant from answering without the server (architecture.md invariant #5)."""
+    if not value or not value.strip():
+        return None
+    try:
+        port = int(value)
+    except ValueError:
+        port = 0
+    if not 0 < port < 65536:
+        warnings.warn(
+            f"PIONEER_SERVER_PORT={value!r} is not a port number -- ignoring it", stacklevel=2
+        )
+        return None
+    return port
 
 
 def default_save_directory() -> str | None:

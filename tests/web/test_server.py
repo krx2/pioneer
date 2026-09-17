@@ -17,7 +17,14 @@ from pioneer.contracts import (
     ResponseArtifact,
 )
 from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable
-from pioneer.verification_feedback import ChatScore, JsonlFeedbackStore, ResponseLog, ResponseScore
+from pioneer.verification_feedback import (
+    ChatScore,
+    GraphScore,
+    JsonlFeedbackStore,
+    MapScore,
+    ResponseLog,
+    ResponseScore,
+)
 from pioneer.web import create_app
 
 _GRAPH = ProductionGraph(
@@ -168,12 +175,58 @@ def test_answers_are_verified_and_logged(tmp_path) -> None:
     body = _ask(client).json()
 
     assert body["verification"] == {
-        "chat": {"grounded_fraction": 0.8, "consistent": True, "judge": None}
+        "chat": {
+            "grounded_fraction": 0.8,
+            "consistent": True,
+            "ungrounded_numbers": [],
+            "judge": None,
+        }
     }
     (line,) = log_path.read_text(encoding="utf-8").splitlines()
     record = json.loads(line)
     assert (record["response_id"], record["question"]) == ("r1", "what now?")
     assert record["score"]["chat"]["grounded_fraction"] == 0.8
+
+
+def test_the_verification_summary_says_what_failed() -> None:
+    score = ResponseScore(
+        chat=ChatScore(grounded_fraction=0.3, consistent=False, ungrounded_numbers=("95", "4")),
+        graph=GraphScore(
+            balanced=True,
+            power_ok=False,
+            deviation_from_optimum_pct=33.3333,
+            passed=False,
+            power_draw_mw=20.04,
+            available_power_mw=18.0,
+        ),
+        map=(
+            MapScore(
+                resource_node_id="node_iron",
+                position_ok=True,
+                purity_ok=True,
+                distance_ok=None,
+                still_free=False,
+                judge_verdict=None,
+                passed=False,
+            ),
+        ),
+    )
+    client, _ = _client(
+        _artifact(graph=_GRAPH, map_locations=(_SITE,)), verify=lambda artifact: score
+    )
+
+    checks = _ask(client).json()["verification"]
+
+    assert checks["chat"]["ungrounded_numbers"] == ["95", "4"]
+    assert checks["graph"] == {
+        "passed": False,
+        "balanced": True,
+        "power_ok": False,
+        "power_draw_mw": 20.0,
+        "spare_power_mw": 18.0,
+        "over_optimum_pct": 33.3,
+    }
+    assert checks["map"]["problems"] == ["already taken"]
 
 
 def test_feedback_is_merged_field_by_field_and_kept(tmp_path) -> None:
@@ -202,3 +255,14 @@ def test_feedback_is_validated_and_needs_a_known_answer() -> None:
 
     assert out_of_range.status_code == 422
     assert unknown.status_code == 404
+
+
+def test_feedback_is_taken_for_answers_from_before_a_restart(tmp_path) -> None:
+    log = ResponseLog(tmp_path / "responses.jsonl")
+    log.append(ResponseArtifact(response_id="earlier", chat="old answer"), None)
+    client, _ = _client(_artifact(), response_log=log)
+
+    response = client.post("/api/responses/earlier/feedback", json={"built_at_location": True})
+
+    assert response.status_code == 200
+    assert client.get("/responses/earlier/map").status_code == 404  # its pages are gone
