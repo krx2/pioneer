@@ -125,3 +125,24 @@ def test_purer_far_can_still_lose_to_closer_lesser() -> None:
     result = rank_locations("Desc_OreIron_C", nodes, (), _ORIGIN)
 
     assert result[0].resource_node_id == "normal_here"
+
+
+def test_a_node_an_extractor_names_is_claimed_wherever_the_extractor_stands() -> None:
+    nodes = (_iron("taken", Purity.PURE, x=5000), _iron("free", Purity.NORMAL, x=9000))
+    miner_far_away = PlacementRecord(
+        building_id="Build_MinerMk2_C",
+        position=Coordinates(x=-50_000, y=0),
+        resource_node_id="taken",
+    )
+
+    result = rank_locations("Desc_OreIron_C", nodes, (miner_far_away,), _ORIGIN)
+
+    assert [r.resource_node_id for r in result] == ["free"]
+
+
+def test_proximity_claims_across_grid_cell_boundaries() -> None:
+    """A placement just across a cell edge from a node, but within the radius, still claims it."""
+    nodes = (_iron("on_the_edge", Purity.NORMAL, x=999.0, y=999.0),)
+    placements = (_placement(x=1001.0, y=1001.0),)  # a neighbouring 1000-unit cell, ~3 units away
+
+    assert rank_locations("Desc_OreIron_C", nodes, placements, _ORIGIN) == ()

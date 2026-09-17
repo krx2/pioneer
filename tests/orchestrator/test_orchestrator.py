@@ -10,6 +10,7 @@ from typing import Any
 from pioneer.contracts import (
     Building,
     Coordinates,
+    GameState,
     Item,
     ItemAmount,
     PlacementRecord,
@@ -698,3 +699,163 @@ def test_diagnosis_treats_items_no_recipe_makes_as_gathered_not_short() -> None:
     )
 
     assert "Desc_Leaves_C" not in {anomaly["item_id"] for anomaly in tool_result["anomalies"]}
+
+
+_NODES = (
+    ResourceNode(
+        node_id="Persistent_Level:PersistentLevel.BP_ResourceNode1",
+        item_id="Desc_OreIron_C",
+        purity=Purity.PURE,
+        position=Coordinates(x=1000, y=0),
+    ),
+    ResourceNode(
+        node_id="Persistent_Level:PersistentLevel.BP_ResourceNode2",
+        item_id="Desc_OreIron_C",
+        purity=Purity.NORMAL,
+        position=Coordinates(x=90_000, y=0),
+    ),
+    ResourceNode(
+        node_id="Persistent_Level:PersistentLevel.BP_ResourceNodeGeyser1",
+        item_id="Desc_Geyser_C",
+        purity=Purity.NORMAL,
+        position=Coordinates(x=0, y=5000),
+    ),
+)
+_MINER = Building(
+    building_id="Build_MinerMk1_C",
+    name="Miner Mk.1",
+    power_consumption_mw=5,
+    input_slots=0,
+    output_slots=1,
+    extraction_rate_per_minute=60,
+)
+
+
+def test_rank_build_locations_without_node_data_says_so() -> None:
+    _, tool_result = _run_single_tool(
+        OrchestratorContext(items=_ITEMS), "rank_build_locations", {"item_id": "Iron Ore"}
+    )
+
+    assert "no resource node data" in tool_result["error"]
+
+
+def test_locations_are_measured_from_the_players_base_by_default() -> None:
+    """The base sits around x=90,000: the normal node right there beats the pure one far away."""
+    base = tuple(
+        PlacementRecord(building_id="Build_ConstructorMk1_C", position=Coordinates(x=x, y=0))
+        for x in (80_000, 100_000)
+    )
+    context = OrchestratorContext(items=_ITEMS, resource_nodes=_NODES, existing_placements=base)
+
+    result, tool_result = _run_single_tool(context, "rank_build_locations", {"item_id": "Iron Ore"})
+
+    assert tool_result["reference"] == {"x": 90_000, "y": 0, "z": 0}
+    assert result.map_locations[0].resource_node_id.endswith("BP_ResourceNode2")
+
+
+def test_geysers_can_be_asked_for_by_name() -> None:
+    context = OrchestratorContext(items=_ITEMS, resource_nodes=_NODES)
+
+    result, _ = _run_single_tool(context, "rank_build_locations", {"item_id": "geyser"})
+
+    assert [location.resource_node_id for location in result.map_locations] == [
+        "Persistent_Level:PersistentLevel.BP_ResourceNodeGeyser1"
+    ]
+
+
+def test_with_node_data_diagnosis_judges_ore_supply_too() -> None:
+    """One Mk.1 miner on a pure node (120 ore/min) under 5 smelters (150/min): 30/min short."""
+    smelters = ProductionNode(
+        node_id="save_Recipe_IngotIron_C",
+        recipe_id="Recipe_IngotIron_C",
+        building_id="Build_SmelterMk1_C",
+        machine_count=5,
+        is_existing=True,
+    )
+    context = OrchestratorContext(
+        recipes=(_IRON_INGOT,),
+        buildings=(_MINER,),
+        items=_ITEMS,
+        resource_nodes=_NODES,
+        existing_graph=ProductionGraph(nodes=(smelters,), flows=()),
+        existing_placements=(_placed("Build_MinerMk1_C", resource_node_id=_NODES[0].node_id),),
+    )
+
+    _, tool_result = _run_single_tool(context, "diagnose_factory_problems", {})
+
+    ore = [a for a in tool_result["anomalies"] if a["item_id"] == "Desc_OreIron_C"]
+    assert [anomaly["kind"] for anomaly in ore] == ["resource_deficit"]
+    assert "short by 30/min" in ore[0]["description"]
+
+
+def test_expansion_reports_raw_resources_needed_against_spare_extraction() -> None:
+    """A Mk.1 miner on a pure node feeds nothing yet: 120 ore/min spare. 20 plates/min takes one
+    new smelter eating 30 of it."""
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,),
+        buildings=(_MINER,),
+        items=_ITEMS,
+        resource_nodes=_NODES,
+        existing_graph=_existing_iron(smelters=0, constructors=0),
+        existing_placements=(_placed("Build_MinerMk1_C", resource_node_id=_NODES[0].node_id),),
+    )
+
+    _, tool_result = _run_single_tool(
+        context,
+        "expand_existing_factory",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 20},
+    )
+
+    assert tool_result["raw_resources_needed_per_minute"] == {"Desc_OreIron_C": 30}
+    assert tool_result["spare_extraction_per_minute"] == {"Desc_OreIron_C": 120}
+
+
+def test_the_model_is_told_what_data_it_has_and_has_not() -> None:
+    llm = _scripted_tool_calling_llm([{"content": "Hi!", "tool_calls": []}])
+    context = OrchestratorContext(
+        recipes=_RECIPES,
+        game_state=GameState(phase="Phase_2", tech_tier=6, session_name="stal mielec"),
+    )
+
+    handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "hi",
+        context,
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="resp",
+    )
+
+    system = llm.calls[0]["messages"][0]["content"]  # type: ignore[attr-defined]
+    assert "Knowledge base: 1 factory recipes." in system
+    assert "no save loaded" in system
+    assert "Resource node data: not loaded" in system
+    assert "session stal mielec, game phase Phase_2, tech tier 6" in system
+
+
+def test_the_answer_carries_its_question_and_named_grounding() -> None:
+    context = OrchestratorContext(recipes=_RECIPES, items=_ITEMS)
+
+    result, _ = _run_single_tool(
+        context, "plan_production", {"target_item_id": "Iron Plate", "target_rate_per_minute": 20}
+    )
+
+    assert result.question == "question"
+    question, plan_result = result.grounding
+    assert question == "question"
+    assert json.loads(plan_result)["names"] == {
+        "Recipe_IronPlate_C": "Iron Plate",
+        "Desc_IronIngot_C": "Iron Ingot",
+        "Desc_IronPlate_C": "Iron Plate",
+    }
+
+
+def test_retrieved_passages_are_part_of_the_grounding() -> None:
+    result, _ = _run_single_tool(
+        OrchestratorContext(qa_corpus=_QA_CORPUS),
+        "answer_game_question",
+        {"question": "How do I make Iron Ingot?"},
+    )
+
+    assert _QA_CORPUS[0].text in result.grounding

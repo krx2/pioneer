@@ -1,6 +1,8 @@
 """Tests for build_markers/render_page, against resource-node and placement fixtures copied in
 the same style as Stage 3/9 example outputs, per implementation.md Stage 14."""
 
+import re
+
 from pioneer.contracts import Coordinates, PlacementRecord, Purity, RankedLocation, ResourceNode
 from pioneer.map_presentation.renderer import build_markers, compute_view_box, render_page
 
@@ -92,3 +94,22 @@ def test_render_page_handles_no_data() -> None:
     page = render_page()
 
     assert "<svg" in page
+
+
+def test_labels_use_the_given_names() -> None:
+    names = {"Desc_OreIron_C": "Iron Ore", "Recipe_IngotIron_C": "Iron Ingot"}
+
+    page = render_page(_NODES, _PLACEMENTS, (), names=names)
+
+    assert "Iron Ore (pure)" in page
+    assert ">Iron Ingot<" in page
+    assert "Desc_OreIron_C" not in page
+
+
+def test_a_crowded_map_labels_only_the_recommendations() -> None:
+    page = render_page(_NODES, _PLACEMENTS, _RANKED, label_limit=2)
+
+    labels = re.findall(r'class="label"[^>]*>([^<]*)<', page)
+    assert len(labels) == 2
+    assert all(label.startswith("#") for label in labels)
+    assert "<title>Recipe_IngotIron_C</title>" in page  # still there on hover

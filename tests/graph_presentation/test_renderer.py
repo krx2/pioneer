@@ -195,3 +195,15 @@ def test_render_page_handles_an_empty_graph() -> None:
     page = render_page(ProductionGraph(nodes=(), flows=()))
 
     assert '"nodes": []' in page or '"nodes":[]' in page
+
+
+def test_labels_use_the_given_names_and_fall_back_to_ids() -> None:
+    names = {"Recipe_IngotIron_C": "Iron Ingot", "Desc_OreIron_C": "Iron Ore"}
+
+    data = graph_to_d3_data(_GRAPH, names)
+
+    labels = {node["id"]: node["label"] for node in data["nodes"]}
+    assert labels["node_smelter"] == "Iron Ingot ×4"
+    assert labels["__in__Desc_OreIron_C"] == "Iron Ore (input)"
+    assert labels["node_plate"] == "Recipe_IronPlate_C ×3"
+    assert data["links"][0]["itemName"] == "Iron Ore"

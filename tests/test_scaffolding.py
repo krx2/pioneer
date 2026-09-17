@@ -30,6 +30,7 @@ MODULE_NAMES = [
     "pioneer.verification_feedback",
     "pioneer.orchestrator",
     "pioneer.llm_client",
+    "pioneer.web",
 ]
 
 _SETTINGS_ENV_VARS = (
@@ -40,6 +41,7 @@ _SETTINGS_ENV_VARS = (
     "PIONEER_SERVER_PORT",
     "PIONEER_SERVER_API_TOKEN",
     "PIONEER_SAVE_DIR",
+    "PIONEER_LLM_JUDGE",
 )
 
 
@@ -67,15 +69,18 @@ def test_settings_default_to_unset(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.dedicated_server_port is None
     assert settings.dedicated_server_api_token is None
     assert settings.save_directory == default_save_directory()
+    assert settings.llm_judge is False
 
 
 def test_settings_read_values_from_env(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("PIONEER_LLM_MODEL", "local-model")
     clean_env.setenv("PIONEER_SERVER_PORT", "7777")
     clean_env.setenv("PIONEER_SAVE_DIR", "D:/saves")
+    clean_env.setenv("PIONEER_LLM_JUDGE", "1")
 
     settings = Settings.from_env()
 
     assert settings.llm_model == "local-model"
     assert settings.dedicated_server_port == 7777
     assert settings.save_directory == "D:/saves"
+    assert settings.llm_judge is True

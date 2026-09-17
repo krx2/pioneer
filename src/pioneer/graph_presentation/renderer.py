@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import html
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from pioneer.contracts import ProductionGraph
@@ -53,16 +53,23 @@ def _compute_layers(node_ids: Iterable[str], links: list[dict[str, Any]]) -> dic
     return layer
 
 
-def graph_to_d3_data(graph: ProductionGraph) -> dict[str, Any]:
+def graph_to_d3_data(
+    graph: ProductionGraph, names: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     """Machine nodes come straight from `graph.nodes`. A flow endpoint that isn't one of them —
     `None` (material entering from outside, or leaving as the final output), or an id no node in
     the graph has — gets a synthesized boundary node instead of a dangling edge, so every link in
     the output has two real endpoints: D3's `forceLink` throws on a link to an unknown node, which
-    blanks the whole diagram."""
+    blanks the whole diagram. `names` maps recipe and item ids to the names labels show; an id
+    without one is shown as it is."""
+
+    def name(class_id: str) -> str:
+        return (names or {}).get(class_id, class_id)
+
     nodes: dict[str, dict[str, Any]] = {
         node.node_id: {
             "id": node.node_id,
-            "label": f"{node.recipe_id} ×{node.machine_count:g}",
+            "label": f"{name(node.recipe_id)} ×{node.machine_count:g}",
             "buildingId": node.building_id,
             "existing": node.is_existing,
             "kind": "machine",
@@ -86,7 +93,7 @@ def graph_to_d3_data(graph: ProductionGraph) -> dict[str, Any]:
         if source not in nodes:
             nodes[source] = {
                 "id": source,
-                "label": f"{flow.item_id} (input)",
+                "label": f"{name(flow.item_id)} (input)",
                 "buildingId": None,
                 "existing": True,
                 "kind": "boundary-in",
@@ -94,7 +101,7 @@ def graph_to_d3_data(graph: ProductionGraph) -> dict[str, Any]:
         if target not in nodes:
             nodes[target] = {
                 "id": target,
-                "label": f"{flow.item_id} (output)",
+                "label": f"{name(flow.item_id)} (output)",
                 "buildingId": None,
                 "existing": True,
                 "kind": "boundary-out",
@@ -104,6 +111,7 @@ def graph_to_d3_data(graph: ProductionGraph) -> dict[str, Any]:
                 "source": source,
                 "target": target,
                 "itemId": flow.item_id,
+                "itemName": name(flow.item_id),
                 "ratePerMinute": flow.amount_per_minute,
             }
         )
@@ -115,8 +123,13 @@ def graph_to_d3_data(graph: ProductionGraph) -> dict[str, Any]:
     return {"nodes": list(nodes.values()), "links": links}
 
 
-def render_page(graph: ProductionGraph, *, title: str = "Production Graph") -> str:
-    data_json = json.dumps(graph_to_d3_data(graph))
+def render_page(
+    graph: ProductionGraph,
+    *,
+    title: str = "Production Graph",
+    names: Mapping[str, str] | None = None,
+) -> str:
+    data_json = json.dumps(graph_to_d3_data(graph, names))
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -215,7 +228,7 @@ const link = container.append("g").selectAll("line")
 
 const linkLabel = container.append("g").selectAll("text")
   .data(data.links).join("text").attr("class", "link-label")
-  .text(d => `${d.itemId} ${d.ratePerMinute}/min`);
+  .text(d => `${d.itemName} ${+d.ratePerMinute.toFixed(2)}/min`);
 
 function nodeClass(d) {
   if (d.kind !== "machine") return "node node-boundary";

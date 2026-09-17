@@ -19,16 +19,22 @@ result and is responsible for *phrasing*, not producing, the numbers in it.
 no save loaded) and unexpected ones (a module choking on data it didn't anticipate) alike come back
 to the model as an `{"error": ...}` tool result it can explain to the player -- see `_run_tool`.
 
+**Grounding.** Every tool result carries a `names` map for the ids in it, so the model can
+answer in the names a player knows. Every result it saw, and every knowledge passage it
+retrieved, is kept on the artifact as `grounding`: what the
+answer is checked against (see verification.py) and what its claims trace back to.
+
 **Items by name.** Tools accept an item's in-game name ("Reinforced Iron Plate") as well as its id
 (`Desc_IronPlateReinforced_C`): a local model can't be expected to know the export's class names.
 An unrecognized item comes back as an error listing the closest matches, so the model can correct
 itself on the next round.
 
 **The existing factory, as the Verifier sees it.** Expansion and diagnosis both start from the
-factory's net per-item balance: what its recipes make, minus what its recipes and its generators
-consume. Expansion then plans only what that surplus doesn't cover (see expansion_advisor), and
+factory's net per-item balance: what its recipes make and its extractors mine, minus what its
+recipes and its generators consume. Expansion then plans only what that surplus doesn't cover (see
+expansion_advisor) and reports the raw resources the plan needs against spare extraction;
 diagnosis judges power against every placed building -- extractors and generators included, which
-the save's recipe graph never contains.
+the save's recipe graph never contains -- and ore supply too, once resource node data is loaded.
 
 Like `qa_engine.engine` and `server_client.client`, this module never imports an HTTP library
 itself -- the caller injects a `ToolCallingLLM` transport (see `pioneer.llm_client` for the real
@@ -39,8 +45,9 @@ real networking.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+import re
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from pioneer.anomaly_detector import detect_anomalies
@@ -65,6 +72,7 @@ from pioneer.qa_engine import ChatCompletion, LLMUnavailable, NoRelevantPassages
 from pioneer.qa_engine import answer_question as qa_answer_question
 from pioneer.verifier import (
     balance,
+    extraction_rates,
     generator_fuel_demand,
     placed_generation_capacity_mw,
     placed_power_consumption_mw,
@@ -79,7 +87,8 @@ _SYSTEM_PROMPT = (
     "You MUST use the provided tools for every calculation: machine counts, throughput, power "
     "balance, and distances are never something you compute or estimate yourself, only the tools "
     "do that. Tools accept items by id (e.g. Desc_IronPlate_C) or by in-game name (e.g. 'Iron "
-    "Plate'); call find_item first if you're unsure which item the player means. Call whichever "
+    "Plate'); call find_item first if you're unsure which item the player means. Tool results "
+    "carry a `names` map from ids to in-game names: answer with the names. Call whichever "
     "tool(s) match the player's request, then write one clear, concise natural-language answer "
     "summarizing the tool results -- never invent numbers that didn't come from a tool. If a tool "
     "reports an error (e.g. no save data loaded), explain that limitation to the player plainly "
@@ -87,6 +96,9 @@ _SYSTEM_PROMPT = (
 )
 
 _ITEM_DESCRIPTION = "Item id (e.g. Desc_IronPlate_C) or in-game name (e.g. 'Iron Plate')"
+_GEYSER_ID = "Desc_Geyser_C"
+"""The resource database's id for geysers -- made up by the community data, since no item
+backs a geyser (see resource_db/loader.py)."""
 
 
 class TransportError(Exception):
@@ -154,6 +166,7 @@ class _ArtifactAccumulator:
 
     graph: ProductionGraph | None = None
     map_locations: tuple[RankedLocation, ...] | None = None
+    grounding: list[str] = field(default_factory=list)
 
 
 class _ToolError(Exception):
@@ -195,7 +208,8 @@ def handle_query(
     response_id: str,
     max_tool_rounds: int = _MAX_TOOL_ROUNDS,
 ) -> ResponseArtifact | OrchestratorUnavailable:
-    accumulator = _ArtifactAccumulator()
+    accumulator = _ArtifactAccumulator(grounding=[question])
+    names = display_names(context)
     tools = _build_tools(
         context, accumulator, qa_chat_completion, llm_base_url, llm_model, llm_api_key
     )
@@ -203,7 +217,7 @@ def handle_query(
     tools_by_name = {tool.name: tool for tool in tools}
 
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": f"{_SYSTEM_PROMPT}\n\n{_context_note(context)}"},
         {"role": "user", "content": question},
     ]
 
@@ -220,15 +234,44 @@ def handle_query(
                 chat=message.get("content") or "",
                 graph=accumulator.graph,
                 map_locations=accumulator.map_locations,
+                question=question,
+                grounding=tuple(accumulator.grounding),
             )
 
         messages.append(_assistant_message(message, tool_calls))
         for call in tool_calls:
-            messages.append(_execute_tool(call, tools_by_name))
+            result_message = _execute_tool(call, tools_by_name, names)
+            messages.append(result_message)
+            accumulator.grounding.append(result_message["content"])
 
     return OrchestratorUnavailable(
         reason=f"exceeded {max_tool_rounds} tool-call rounds without a final answer"
     )
+
+
+def _context_note(context: OrchestratorContext) -> str:
+    """What this conversation has to go on, so the model can say what it doesn't know instead of
+    assuming it (architecture.md invariant #5)."""
+    lines = [
+        f"Knowledge base: {len(context.recipes)} factory recipes."
+        if context.recipes
+        else "Knowledge base: not loaded -- no recipe data.",
+        f"Player's factory (latest save): {len(context.existing_placements)} buildings running "
+        f"{len(context.existing_graph.nodes)} recipes."
+        if context.existing_graph is not None
+        else "Player's factory: no save loaded -- nothing is known about what they have built.",
+        f"Resource node data: {len(context.resource_nodes)} nodes."
+        if context.resource_nodes
+        else "Resource node data: not loaded -- build locations can't be ranked.",
+    ]
+    state = context.game_state
+    lines.append(
+        f"Live server: session {state.session_name or 'unnamed'}, game phase {state.phase}, "
+        f"tech tier {state.tech_tier}."
+        if state is not None
+        else "Live server state: unavailable."
+    )
+    return "Data available in this conversation:\n" + "\n".join(f"- {line}" for line in lines)
 
 
 def _assistant_message(message: dict[str, Any], tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
@@ -249,12 +292,18 @@ def _assistant_message(message: dict[str, Any], tool_calls: list[dict[str, Any]]
     }
 
 
-def _execute_tool(call: dict[str, Any], tools_by_name: dict[str, _Tool]) -> dict[str, Any]:
+def _execute_tool(
+    call: dict[str, Any], tools_by_name: dict[str, _Tool], names: Mapping[str, str]
+) -> dict[str, Any]:
+    """Runs one call and packages its result, with a `names` map for its ids, for the model."""
     tool = tools_by_name.get(call["name"])
     if tool is None:
         result: dict[str, Any] = {"error": f"unknown tool {call['name']!r}"}
     else:
         result = _run_tool(tool, call.get("arguments") or {})
+    mentioned = _names_mentioned(json.dumps(result), names)
+    if mentioned:
+        result = {**result, "names": mentioned}
     return {
         "role": "tool",
         "tool_call_id": call["id"],
@@ -358,8 +407,10 @@ def _build_tools(
         _Tool(
             name="rank_build_locations",
             description=(
-                "Rank unclaimed resource deposits of a given item, best first, for where to build "
-                "next. Use for 'where should I build/mine X' questions."
+                "Rank unclaimed resource deposits of a given item (or 'geyser'), best first, for "
+                "where to build next. Use for 'where should I build/mine X' questions. Distances "
+                "are measured from the given reference point, else from the middle of the "
+                "player's existing buildings."
             ),
             parameters={
                 "type": "object",
@@ -401,7 +452,7 @@ def _build_tools(
                 "required": ["question"],
             },
             handler=lambda args: _handle_answer_question(
-                args, context, qa_chat_completion, llm_base_url, llm_model, llm_api_key
+                args, context, accumulator, qa_chat_completion, llm_base_url, llm_model, llm_api_key
             ),
         ),
     ]
@@ -488,6 +539,11 @@ def _handle_expand_existing_factory(
     change_set = advise_expansion(context.existing_graph, additions)
     accumulator.graph = change_set.resulting_graph
     items_in_plan = {flow.item_id for flow in additions.flows}
+    raw_needed = _per_item(
+        flow
+        for flow in additions.flows
+        if flow.source_node_id is None and flow.item_id in raw_item_ids
+    )
     return {
         "changes": [
             {
@@ -503,6 +559,12 @@ def _handle_expand_existing_factory(
             for flow in additions.flows
             if flow.source_node_id is None and flow.item_id in surplus
         ),
+        "raw_resources_needed_per_minute": raw_needed,
+        "spare_extraction_per_minute": {
+            item_id: existing_balance[item_id]
+            for item_id in raw_needed
+            if existing_balance.get(item_id, 0.0) > 0
+        },
         "existing_shortfalls_per_minute": {
             item_id: -rate
             for item_id, rate in existing_balance.items()
@@ -514,17 +576,19 @@ def _handle_expand_existing_factory(
 def _handle_rank_locations(
     args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
 ) -> dict[str, Any]:
+    if not context.resource_nodes:
+        raise _ToolError(
+            "no resource node data loaded (docs/resource_nodes.json is missing) -- build "
+            "locations can't be ranked"
+        )
     item_id = _resolve_item_id(args["item_id"], context)
-    reference = Coordinates(
-        x=float(args.get("reference_x", 0.0)),
-        y=float(args.get("reference_y", 0.0)),
-        z=float(args.get("reference_z", 0.0)),
-    )
+    reference = _reference_point(args, context)
     count = int(args.get("count", 5))
     ranked = rank_locations(item_id, context.resource_nodes, context.existing_placements, reference)
     top = ranked[:count]
     accumulator.map_locations = top
     return {
+        "reference": {"x": reference.x, "y": reference.y, "z": reference.z},
         "locations": [
             {
                 "resource_node_id": location.resource_node_id,
@@ -533,7 +597,7 @@ def _handle_rank_locations(
                 "score": location.score,
             }
             for location in top
-        ]
+        ],
     }
 
 
@@ -551,7 +615,7 @@ def _handle_diagnose_factory(args: dict[str, Any], context: OrchestratorContext)
         context.existing_graph,
         item_balance,
         power_draw_mw,
-        raw_item_ids=_raw_item_ids(context) | _uncraftable_item_ids(context, item_balance),
+        raw_item_ids=_inputs_from_outside(context, item_balance),
         available_power_mw=power_capacity_mw,
     )
     return {
@@ -573,6 +637,7 @@ def _handle_diagnose_factory(args: dict[str, Any], context: OrchestratorContext)
 def _handle_answer_question(
     args: dict[str, Any],
     context: OrchestratorContext,
+    accumulator: _ArtifactAccumulator,
     qa_chat_completion: ChatCompletion,
     llm_base_url: str,
     llm_model: str,
@@ -587,6 +652,12 @@ def _handle_answer_question(
         llm_api_key=llm_api_key,
     )
     if isinstance(result, QAAnswer):
+        passages = {passage.passage_id: passage.text for passage in context.qa_corpus}
+        accumulator.grounding.extend(
+            passages[citation.passage_id]
+            for citation in result.citations
+            if citation.passage_id in passages
+        )
         return {
             "answer": result.answer,
             "citations": [citation.source for citation in result.citations],
@@ -598,10 +669,16 @@ def _handle_answer_question(
 
 
 def _existing_item_balance(context: OrchestratorContext) -> dict[str, float]:
-    """The player's factory's net per-item rate: what its recipes make, minus what its recipes and
-    its generators consume -- a factory burning its own Fuel isn't overproducing it."""
+    """The player's factory's net per-item rate: what its recipes make and its extractors pull out
+    of the ground, minus what its recipes and its generators consume -- a factory burning its own
+    Fuel isn't overproducing it."""
     assert context.existing_graph is not None
     net = balance(context.existing_graph, context.recipes)
+    extracted = extraction_rates(
+        context.existing_placements, context.buildings, context.resource_nodes
+    )
+    for item_id, rate in extracted.items():
+        net[item_id] = net.get(item_id, 0.0) + rate
     burned = generator_fuel_demand(context.existing_placements, context.buildings, context.items)
     for item_id, rate in burned.items():
         net[item_id] = net.get(item_id, 0.0) - rate
@@ -631,6 +708,34 @@ def _raw_item_ids(context: OrchestratorContext) -> frozenset[str]:
     return frozenset(item.item_id for item in context.items if item.is_raw_resource)
 
 
+def _inputs_from_outside(context: OrchestratorContext, item_ids: Iterable[str]) -> frozenset[str]:
+    """Items diagnosis doesn't judge as short: hand-gathered ones always, and raw resources unless
+    resource node data is loaded -- without it, what the extractors mine is unknown and every ore
+    would look short."""
+    raw = _raw_item_ids(context)
+    gathered = _uncraftable_item_ids(context, item_ids) - raw
+    return gathered if context.resource_nodes else gathered | raw
+
+
+def _reference_point(args: dict[str, Any], context: OrchestratorContext) -> Coordinates:
+    """The point the model asked to measure from; else the middle of the player's buildings --
+    their base, near enough -- else the map origin."""
+    if any(key in args for key in ("reference_x", "reference_y", "reference_z")):
+        return Coordinates(
+            x=float(args.get("reference_x", 0.0)),
+            y=float(args.get("reference_y", 0.0)),
+            z=float(args.get("reference_z", 0.0)),
+        )
+    placements = context.existing_placements
+    if not placements:
+        return Coordinates(x=0.0, y=0.0, z=0.0)
+    return Coordinates(
+        x=sum(p.position.x for p in placements) / len(placements),
+        y=sum(p.position.y for p in placements) / len(placements),
+        z=sum(p.position.z for p in placements) / len(placements),
+    )
+
+
 def _uncraftable_item_ids(context: OrchestratorContext, item_ids: Iterable[str]) -> frozenset[str]:
     """Of `item_ids`, those no factory recipe makes -- Wood, Mycelia, creature remains: gathered by
     hand, so like raw resources they come into the factory from outside rather than running short
@@ -644,6 +749,8 @@ def _resolve_item_id(raw: object, context: OrchestratorContext) -> str:
     Anything else raises a `_ToolError` carrying the closest matches. Passed through unchecked when
     no knowledge base is loaded -- there's nothing to check it against."""
     query = str(raw).strip()
+    if query.casefold() in ("geyser", "geysers", _GEYSER_ID.casefold()):
+        return _GEYSER_ID
     if not context.items:
         return query
 
@@ -675,6 +782,23 @@ def _per_item(flows: Iterable[MaterialFlow]) -> dict[str, float]:
     for flow in flows:
         totals[flow.item_id] = totals.get(flow.item_id, 0.0) + flow.amount_per_minute
     return totals
+
+
+_CLASS_ID = re.compile(r"\b(?:Desc|Recipe|Build|BP)_\w+_C\b")
+
+
+def display_names(context: OrchestratorContext) -> dict[str, str]:
+    """The in-game name of every recipe, building and item `context` knows, by id."""
+    names = {recipe.recipe_id: recipe.name for recipe in context.recipes}
+    names.update({building.building_id: building.name for building in context.buildings})
+    names.update({item.item_id: item.name for item in context.items})
+    return names
+
+
+def _names_mentioned(text: str, names: Mapping[str, str]) -> dict[str, str]:
+    """The in-game name of every id in `text` that has one: tool results speak in ids, while the
+    model answers — and its answer is checked — in the names the player knows."""
+    return {class_id: names[class_id] for class_id in _CLASS_ID.findall(text) if class_id in names}
 
 
 def _graph_summary(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:

@@ -361,3 +361,24 @@ def test_score_response_scores_the_map_channel() -> None:
 
     assert result.map is not None
     assert result.map[0].passed
+
+
+def test_score_response_consults_the_chat_judge() -> None:
+    calls = []
+
+    def judge(question, answer, context):
+        calls.append((question, answer, context))
+        return JudgeVerdict(fits_context=False, rationale="Ignores the save.")
+
+    artifact = ResponseArtifact(response_id="r", chat="Build more smelters.", question="What now?")
+
+    score = score_response(
+        artifact,
+        cited_passages=("Build more smelters.",),
+        chat_judge=judge,
+        judge_context="tech tier 2",
+    )
+
+    assert score.chat is not None
+    assert score.chat.judge_verdict == JudgeVerdict(False, "Ignores the save.")
+    assert calls == [("What now?", "Build more smelters.", "tech tier 2")]

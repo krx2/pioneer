@@ -5,6 +5,7 @@ touchpoint in the system, but still fully independent — tested against a small
 not the full Knowledge Base.
 """
 
+from pioneer.qa_engine.corpus import build_corpus
 from pioneer.qa_engine.engine import (
     ChatCompletion,
     Citation,
@@ -26,5 +27,6 @@ __all__ = [
     "ScoredPassage",
     "TransportError",
     "answer_question",
+    "build_corpus",
     "retrieve",
 ]

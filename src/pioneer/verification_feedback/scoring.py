@@ -33,6 +33,17 @@ from pioneer.contracts import (
 )
 from pioneer.verifier import balance, distance, power_balance
 
+# --- Shared ----------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class JudgeVerdict:
+    """An LLM-as-a-judge's call on whether an answer fits its context — advisory, never gating."""
+
+    fits_context: bool
+    rationale: str
+
+
 # --- Chat channel --------------------------------------------------------------------------
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -58,6 +69,17 @@ class ChatScore:
     qualitative_score: int | None = None
     """Player feedback's 1-5 rating (`Feedback.qualitative_score`), carried through unchanged —
     this function never invents one."""
+    judge_verdict: JudgeVerdict | None = None
+    """architecture.md §6's Chat-channel LLM-as-a-judge call: does the answer suit the player's
+    question, context and game phase. `None` when no judge ran, or it gave no usable verdict."""
+
+
+class ChatJudge(Protocol):
+    """Rates whether `answer` suits the player's `question` and situation (`context`) —
+    architecture.md's Chat-channel LLM-as-a-judge step (the real one is
+    `llm_client.judges.chat_judge`). `None` means it gave no usable verdict."""
+
+    def __call__(self, question: str, answer: str, context: str) -> JudgeVerdict | None: ...
 
 
 def check_rag_consistency(
@@ -145,18 +167,12 @@ def score_graph(
 # --- Map channel ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class JudgeVerdict:
-    fits_context: bool
-    rationale: str
-
-
 class TerrainJudge(Protocol):
     """Scores whether `location` fits the player's terrain/logistics/existing-infra context —
-    architecture.md's Map-channel LLM-as-a-judge step. Never implemented for real here (that's
-    Stage 16's job); tests inject a fake so `score_map` is fully testable without one."""
+    architecture.md's Map-channel LLM-as-a-judge step (the real one is
+    `llm_client.judges.terrain_judge`). `None` means it gave no usable verdict."""
 
-    def __call__(self, location: RankedLocation, context: str) -> JudgeVerdict: ...
+    def __call__(self, location: RankedLocation, context: str) -> JudgeVerdict | None: ...
 
 
 @dataclass(frozen=True)
@@ -233,6 +249,8 @@ def score_response(
     resource_nodes: Sequence[ResourceNode] = (),
     distance_tolerance: float = 1.0,
     terrain_judge: TerrainJudge | None = None,
+    chat_judge: ChatJudge | None = None,
+    judge_context: str = "",
 ) -> ResponseScore:
     """Scores whichever channels `artifact` actually populates — per architecture.md §4.4, not
     every response needs all three."""
@@ -241,6 +259,9 @@ def score_response(
         chat_score = check_rag_consistency(artifact.chat, cited_passages)
         if artifact.feedback is not None and artifact.feedback.qualitative_score is not None:
             chat_score = replace(chat_score, qualitative_score=artifact.feedback.qualitative_score)
+        if chat_judge is not None:
+            verdict = chat_judge(artifact.question or "", artifact.chat, judge_context)
+            chat_score = replace(chat_score, judge_verdict=verdict)
 
     graph_score = None
     if artifact.graph is not None:
@@ -260,6 +281,7 @@ def score_response(
             resource_nodes,
             distance_tolerance=distance_tolerance,
             judge=terrain_judge,
+            judge_context=judge_context,
         )
 
     return ResponseScore(chat=chat_score, graph=graph_score, map=map_score)

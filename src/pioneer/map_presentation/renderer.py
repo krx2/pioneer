@@ -10,6 +10,7 @@ placeholder grid standing in for the in-game map image.
 from __future__ import annotations
 
 import html
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -40,13 +41,20 @@ def build_markers(
     resource_nodes: tuple[ResourceNode, ...] = (),
     placements: tuple[PlacementRecord, ...] = (),
     ranked_locations: tuple[RankedLocation, ...] = (),
+    names: Mapping[str, str] | None = None,
 ) -> tuple[MapMarker, ...]:
+    """`names` maps item, recipe and building ids to the names labels show; an id without one is
+    shown as it is."""
+
+    def name(class_id: str) -> str:
+        return (names or {}).get(class_id, class_id)
+
     markers = [
         MapMarker(
             x=node.position.x,
             y=node.position.y,
             kind="resource",
-            label=f"{node.item_id} ({node.purity.value})",
+            label=f"{name(node.item_id)} ({node.purity.value})",
             color=_PURITY_COLOR[node.purity],
         )
         for node in resource_nodes
@@ -56,7 +64,7 @@ def build_markers(
             x=placement.position.x,
             y=placement.position.y,
             kind="existing_building",
-            label=placement.recipe_id or placement.building_id,
+            label=name(placement.recipe_id or placement.building_id),
             color=_EXISTING_COLOR,
         )
         for placement in placements
@@ -97,7 +105,7 @@ rather than a fixed pixel count, since game coordinates can range from small fix
 to the real map's much larger scale."""
 
 
-def _svg_marker(marker: MapMarker, *, unit: float) -> str:
+def _svg_marker(marker: MapMarker, *, unit: float, show_label: bool) -> str:
     radius = _MARKER_RADIUS_FACTOR[marker.kind] * unit
     stroke_width = max(unit * 0.06, 0.5)
     shape = (
@@ -119,12 +127,16 @@ def _svg_marker(marker: MapMarker, *, unit: float) -> str:
     # Location Advisor), so its label goes *above* the marker rather than below — otherwise it'd
     # collide with the resource node's own label sitting right underneath at the same coordinates.
     label_y = marker.y - radius - unit if marker.kind == "recommended" else marker.y + radius + unit
+    label = (
+        f'<text x="{marker.x}" y="{label_y}" text-anchor="middle" class="label" '
+        f'style="{label_style}">{html.escape(marker.label)}</text>'
+        if show_label
+        else ""
+    )
     return (
         f'<g class="marker marker-{marker.kind}">'
         f"<title>{html.escape(marker.label)}</title>"
-        f"{shape}{badge}"
-        f'<text x="{marker.x}" y="{label_y}" text-anchor="middle" class="label" '
-        f'style="{label_style}">{html.escape(marker.label)}</text>'
+        f"{shape}{badge}{label}"
         f"</g>"
     )
 
@@ -135,12 +147,21 @@ def render_page(
     ranked_locations: tuple[RankedLocation, ...] = (),
     *,
     title: str = "Factory Map",
+    names: Mapping[str, str] | None = None,
+    label_limit: int = 40,
 ) -> str:
-    markers = build_markers(resource_nodes, placements, ranked_locations)
+    """Every marker keeps its label as a hover tooltip; past `label_limit` markers only the
+    recommended ones are also labelled on the map — a real map's hundreds of nodes would
+    otherwise bury the pins under text."""
+    markers = build_markers(resource_nodes, placements, ranked_locations, names)
+    label_everything = len(markers) <= label_limit
     min_x, min_y, w, h = compute_view_box(markers)
     unit = max(w, h) / 45
     grid = _svg_grid(min_x, min_y, w, h, unit=unit)
-    markers_svg = "".join(_svg_marker(m, unit=unit) for m in markers)
+    markers_svg = "".join(
+        _svg_marker(m, unit=unit, show_label=label_everything or m.kind == "recommended")
+        for m in markers
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>

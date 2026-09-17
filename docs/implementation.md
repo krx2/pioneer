@@ -158,6 +158,16 @@ against the fixture set, no other module involved.
 **Done when:** "nearest pure iron node to (x, y)" returns correct, tested output against the
 fixture set.
 
+**Real data:** saves don't store what a resource node yields or how pure it is, so the node data
+ships with the project at `docs/resource_nodes.json`, next to the Knowledge Base export. It was
+converted once from a community table — `sav_data/resourcePurity.py` in GreyHak/sat_sav_parse
+(game version 1.2.0.0; GPL-3.0, itself extracted from SCIM), recorded in the file's own header —
+since the default world's nodes never change. It is keyed by the same actor path names saves use:
+both fixture saves match all 607 of its nodes at the same positions, and every extractor's
+`mExtractableResource` names one of them. That reference is what the Location Advisor uses to tell
+occupied deposits from free ones, and what extraction rates are computed from. Worlds generated
+with 1.2's randomized node mode won't match it.
+
 ---
 
 ## Stage 4 — Verifier (module)
@@ -222,6 +232,11 @@ as a bonus sanity check, but it's not required to call this module done.
 
 **Done when:** the client returns normalized state against a mocked server, and a typed
 "unavailable" result when the mock simulates a dead connection.
+
+`server_client.transport.post_json` is the real HTTPS transport (standard library; it accepts the
+server's self-signed certificate, as the game's own API docs require). The app queries the server
+when `PIONEER_SERVER_HOST` and `PIONEER_SERVER_API_TOKEN` are set, and the model is told the result
+either way.
 
 ---
 
@@ -335,6 +350,11 @@ the full Knowledge Base.
 **Done when:** a handful of known questions against the fixture corpus get answers traceable to
 specific retrieved passages.
 
+**Real corpus:** `build_corpus` turns the Knowledge Base into passages — the game's own description
+of every class it describes (items, buildings, belts, equipment, schematics) plus one generated
+passage per factory recipe with its building, rates and unlock. Retrieval stays TF-IDF, with a
+bonus for passages whose title the question names; there is no wiki text yet.
+
 ---
 
 ## Stage 12 — Chat presentation (module)
@@ -396,6 +416,10 @@ scores.
 **Done when:** each fixture artifact produces the expected score via its scoring function, with no
 dependency on a live orchestrator or rendered UI.
 
+The LLM-as-a-judge hooks have real implementations in `llm_client.judges` (used only when
+`PIONEER_LLM_JUDGE` is set — they cost a model call each), and `JsonlFeedbackStore` / `ResponseLog`
+keep player feedback and a record of every answer under `data/`.
+
 ---
 
 ## Stage 16 — Integration: LLM Orchestrator + final wiring
@@ -431,9 +455,23 @@ plumbs it together.
   and treats raw resources and hand-gathered items (no factory recipe) as inputs, not shortfalls.
 - `tests/end_to_end/test_real_data.py` runs the real Knowledge Base and both fixture saves through
   `app.build_context` with a scripted model standing in for the LLM.
-- Still open: resource node data (Stage 3) for the Map channel and the Location Advisor, a Q&A
-  corpus, the live Server Client transport, the Stage 15 verification pass inside the loop, and a
-  real UI instead of the CLI.
+- Every answer carries its `question` and its `grounding` — each tool result (with a `names` map
+  for the ids in it) and each retrieved passage — and `orchestrator.verify_response` scores it with
+  the Stage 15 functions.
+- The web UI (`python -m pioneer.web`, FastAPI) serves the chat, each answer's graph and map, the
+  verification badges and the feedback buttons; `python -m pioneer.app "question"` is the CLI.
+- Still open: a run against a real local model (everything above is exercised with a scripted
+  one), belt routing from saves (so a surplus can be told apart from items fed to storage or the
+  sink), a real map image behind the Map channel, multi-turn conversation, and the rest of the
+  architecture's scope — alternate-recipe recommendations, tech unlock order, power-grid and
+  logistics planning.
+
+**Running it:**
+
+```
+pip install -e .[dev]
+python -m pioneer.web   # needs PIONEER_LLM_* in .env
+```
 
 **Done when:** "I want to produce 10/min of X" goes in through Chat and comes back out as a
 verified Chat + Graph + Map response, built entirely from real module calls, with no fixtures left

@@ -66,3 +66,22 @@ def test_scores_are_sorted_descending() -> None:
 
     scores = [scored.score for scored in result]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_the_passage_a_question_names_beats_one_that_repeats_its_words() -> None:
+    corpus = (
+        Passage(
+            passage_id="wall",
+            text="Conveyor Wall x 1. Has 1 Conveyor Belt connection.",
+            source="Conveyor Wall x 1",
+        ),
+        Passage(
+            passage_id="belt",
+            text="Conveyor Belt Mk.1. Transports up to 60 resources per minute.",
+            source="Conveyor Belt Mk.1",
+        ),
+    )
+
+    result = retrieve("How fast is a Conveyor Belt Mk.1?", corpus)
+
+    assert [scored.passage.passage_id for scored in result] == ["belt", "wall"]

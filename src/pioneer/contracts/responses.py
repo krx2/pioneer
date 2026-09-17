@@ -31,3 +31,10 @@ class ResponseArtifact:
     graph: ProductionGraph | None = None
     map_locations: tuple[RankedLocation, ...] | None = None
     feedback: Feedback | None = None
+    question: str | None = None
+    """The player's message this answers."""
+    grounding: tuple[str, ...] = ()
+    """What the chat answer was built from: the question, every tool result the model saw (with the
+    game's names for the ids in it), and the text of every knowledge passage it retrieved. The
+    answer is checked against this (architecture.md §6), and it's what makes the answer's claims
+    attributable (invariant #6)."""

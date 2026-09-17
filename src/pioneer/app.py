@@ -10,14 +10,16 @@ Run as:
 Requires a local OpenAI-compatible LLM server (Ollama, llama.cpp, vLLM, ...) reachable at
 `PIONEER_LLM_BASE_URL` -- see `.env.example`.
 
-`load_context` loads the Knowledge Base from the game's own `docs/en-US.json` export and the
-player's factory from the newest save in `PIONEER_SAVE_DIR` (defaulting to the game's dedicated-
-server save folder), then hands both to `build_context` -- kept pure so the end-to-end tests build
-exactly the context the CLI does. Each source degrades independently, per architecture.md
-invariant #5: a missing save leaves `existing_graph` unset and the expansion/diagnosis tools say so
-rather than inventing a factory, and a missing knowledge base leaves planning unavailable rather
-than guessing recipes. Nothing here raises on missing data -- only on a missing LLM endpoint,
-without which there's no assistant at all.
+`load_context` loads the Knowledge Base from the game's own `docs/en-US.json` export, the player's
+factory from the newest save in `PIONEER_SAVE_DIR` (defaulting to the game's dedicated-server save
+folder), the resource node data shipped at `docs/resource_nodes.json`, and live state from the
+dedicated server, when one is configured, then hands them to `build_context` -- kept pure so the
+end-to-end tests build exactly the context the CLI does. Each source degrades independently, per
+architecture.md invariant #5: a missing save leaves `existing_graph` unset and the
+expansion/diagnosis tools say so rather than inventing a factory, missing node data leaves the
+location tool unavailable, and a missing knowledge base leaves planning unavailable rather than
+guessing recipes. Nothing here raises on missing data -- only on a missing LLM endpoint, without
+which there's no assistant at all.
 """
 
 from __future__ import annotations
@@ -29,13 +31,21 @@ import zlib
 from pathlib import Path
 
 from pioneer.config import settings
-from pioneer.contracts import ResponseArtifact
+from pioneer.contracts import GameState, ResourceNode, ResponseArtifact
 from pioneer.knowledge_base import KnowledgeBase, load_from_file
 from pioneer.llm_client import chat_completion, tool_calling_chat_completion
 from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable, handle_query
+from pioneer.qa_engine import build_corpus
+from pioneer.resource_db import load_from_file as load_resource_database
 from pioneer.save_parser import SaveState, find_latest_save, load_save_state
+from pioneer.server_client import ServerUnavailable, post_json, query_server_state
 
-DOCS_JSON = Path(__file__).parent.parent.parent / "docs" / "en-US.json"
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+DOCS_JSON = _PROJECT_ROOT / "docs" / "en-US.json"
+RESOURCE_NODES_JSON = _PROJECT_ROOT / "docs" / "resource_nodes.json"
+DATA_DIR = _PROJECT_ROOT / "data"
+"""Local, gitignored runtime data: player feedback and the response log."""
+DEFAULT_SERVER_PORT = 7777
 
 
 def load_knowledge_base(path: Path = DOCS_JSON) -> KnowledgeBase | None:
@@ -45,6 +55,30 @@ def load_knowledge_base(path: Path = DOCS_JSON) -> KnowledgeBase | None:
         return load_from_file(path)
     except (OSError, ValueError, KeyError):
         return None
+
+
+def load_resource_nodes(path: Path = RESOURCE_NODES_JSON) -> tuple[ResourceNode, ...]:
+    """The shipped resource node data; empty if the file is missing or can't be read."""
+    if not path.is_file():
+        return ()
+    try:
+        return load_resource_database(path).nodes
+    except (OSError, ValueError, KeyError, TypeError):
+        return ()
+
+
+def load_game_state() -> tuple[GameState | None, str]:
+    """Live state from the dedicated server when one is configured, plus a note on how that went
+    — an unreachable server is reported, never raised (see server_client)."""
+    host = settings.dedicated_server_host
+    token = settings.dedicated_server_api_token
+    if not host or not token:
+        return None, "no dedicated server configured"
+    base_url = f"https://{host}:{settings.dedicated_server_port or DEFAULT_SERVER_PORT}"
+    result = query_server_state(post_json, base_url, token)
+    if isinstance(result, ServerUnavailable):
+        return None, f"dedicated server unavailable ({result.reason})"
+    return result, f"server: {result.phase}, tech tier {result.tech_tier}"
 
 
 def load_latest_save_state() -> tuple[SaveState | None, Path | None]:
@@ -64,12 +98,26 @@ def load_latest_save_state() -> tuple[SaveState | None, Path | None]:
         return None, save_path
 
 
-def build_context(kb: KnowledgeBase | None, state: SaveState | None) -> OrchestratorContext:
-    """The Orchestrator's view of whichever data sources actually loaded."""
+def build_context(
+    kb: KnowledgeBase | None,
+    state: SaveState | None,
+    resource_nodes: tuple[ResourceNode, ...] = (),
+    game_state: GameState | None = None,
+) -> OrchestratorContext:
+    """The Orchestrator's view of whichever data sources actually loaded. The Q&A corpus is built
+    here from the knowledge base: the game's own descriptions plus a passage per recipe."""
+    corpus = (
+        build_corpus(kb.descriptions, kb.recipes, kb.items, kb.buildings, kb.technologies)
+        if kb
+        else ()
+    )
     return OrchestratorContext(
         recipes=kb.recipes if kb else (),
         buildings=kb.buildings if kb else (),
         items=kb.items if kb else (),
+        resource_nodes=resource_nodes,
+        qa_corpus=corpus,
+        game_state=game_state,
         existing_graph=state.graph if state else None,
         existing_placements=state.placements if state else (),
     )
@@ -80,8 +128,13 @@ def load_context() -> tuple[OrchestratorContext, str]:
     for the CLI to report."""
     kb = load_knowledge_base()
     state, save_path = load_latest_save_state()
+    resource_nodes = load_resource_nodes()
+    game_state, server_note = load_game_state()
 
     notes = [f"{len(kb.recipes)} recipes" if kb else "no knowledge base"]
+    notes.append(
+        f"{len(resource_nodes)} resource nodes" if resource_nodes else "no resource node data"
+    )
     if state is not None and save_path is not None:
         machines = sum(node.machine_count for node in state.graph.nodes)
         notes.append(
@@ -90,8 +143,9 @@ def load_context() -> tuple[OrchestratorContext, str]:
         )
     else:
         notes.append("no save loaded")
+    notes.append(server_note)
 
-    return build_context(kb, state), " | ".join(notes)
+    return build_context(kb, state, resource_nodes, game_state), " | ".join(notes)
 
 
 def ask(

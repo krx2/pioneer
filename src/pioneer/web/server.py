@@ -1,0 +1,179 @@
+"""The FastAPI app. Everything it serves comes from what `create_app` is handed — `answer` runs the
+Orchestrator, `verify` scores its result, the stores keep feedback and a response log — so tests
+drive it with fakes, no model and no socket.
+
+Answers are kept in memory (the most recent `_KEPT_RESPONSES`) so their graph and map pages can be
+served after the fact; feedback goes to the feedback store, merged field by field, since the page
+sends each button press on its own.
+"""
+
+from __future__ import annotations
+
+import threading
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, replace
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+
+from pioneer.chat_presentation import render_message
+from pioneer.contracts import Feedback, ResponseArtifact
+from pioneer.graph_presentation import render_page as render_graph_page
+from pioneer.map_presentation import render_page as render_map_page
+from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable, display_names
+from pioneer.verification_feedback import FeedbackStore, JudgeVerdict, ResponseLog, ResponseScore
+from pioneer.web.page import render_chat_page
+
+Answer = Callable[[str], ResponseArtifact | OrchestratorUnavailable]
+Verify = Callable[[ResponseArtifact], ResponseScore]
+
+_KEPT_RESPONSES = 200
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+
+
+class FeedbackRequest(BaseModel):
+    thumbs_up: bool | None = None
+    applied_plan: bool | None = None
+    built_at_location: bool | None = None
+    qualitative_score: int | None = Field(default=None, ge=1, le=5)
+
+
+@dataclass(frozen=True)
+class AnsweredQuestion:
+    artifact: ResponseArtifact
+    score: ResponseScore | None
+
+
+def create_app(
+    *,
+    context: OrchestratorContext,
+    answer: Answer,
+    verify: Verify | None = None,
+    feedback_store: FeedbackStore | None = None,
+    response_log: ResponseLog | None = None,
+    status: str = "",
+) -> FastAPI:
+    app = FastAPI(title="Pioneer")
+    feedback = feedback_store if feedback_store is not None else FeedbackStore()
+    answered: OrderedDict[str, AnsweredQuestion] = OrderedDict()
+    lock = threading.Lock()  # FastAPI runs these sync handlers on a thread pool
+    names = display_names(context)
+
+    def find(response_id: str) -> AnsweredQuestion:
+        with lock:
+            found = answered.get(response_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="unknown response id")
+        return found
+
+    @app.get("/", response_class=HTMLResponse)
+    def chat_page() -> str:
+        return render_chat_page(status=status)
+
+    @app.get("/api/status")
+    def api_status() -> dict[str, str]:
+        return {"status": status}
+
+    @app.post("/api/ask")
+    def ask(request: AskRequest) -> dict[str, Any]:
+        question = request.question.strip()
+        if not question:
+            raise HTTPException(status_code=422, detail="the question is empty")
+        result = answer(question)
+        if isinstance(result, OrchestratorUnavailable):
+            raise HTTPException(status_code=503, detail=result.reason)
+        score = verify(result) if verify is not None else None
+
+        with lock:
+            answered[result.response_id] = AnsweredQuestion(artifact=result, score=score)
+            while len(answered) > _KEPT_RESPONSES:
+                answered.popitem(last=False)
+            if response_log is not None:
+                response_log.append(result, score)
+
+        base = f"/responses/{result.response_id}"
+        return {
+            "response_id": result.response_id,
+            "chat_html": render_message(result.chat),
+            "graph_url": f"{base}/graph" if result.graph is not None else None,
+            "map_url": f"{base}/map" if result.map_locations is not None else None,
+            "verification": _verification_summary(score),
+        }
+
+    @app.get("/responses/{response_id}/graph", response_class=HTMLResponse)
+    def graph_page(response_id: str) -> str:
+        graph = find(response_id).artifact.graph
+        if graph is None:
+            raise HTTPException(status_code=404, detail="this answer has no production graph")
+        return render_graph_page(graph, title="Production graph", names=names)
+
+    @app.get("/responses/{response_id}/map", response_class=HTMLResponse)
+    def map_page(response_id: str) -> str:
+        artifact = find(response_id).artifact
+        if artifact.map_locations is None:
+            raise HTTPException(status_code=404, detail="this answer has no map")
+        return _render_map(artifact, context, names)
+
+    @app.post("/api/responses/{response_id}/feedback")
+    def record_feedback(response_id: str, request: FeedbackRequest) -> dict[str, Any]:
+        find(response_id)
+        with lock:
+            merged = replace(
+                feedback.get(response_id) or Feedback(), **request.model_dump(exclude_none=True)
+            )
+            feedback.record(response_id, merged)
+        return asdict(merged)
+
+    return app
+
+
+def _render_map(
+    artifact: ResponseArtifact, context: OrchestratorContext, names: dict[str, str]
+) -> str:
+    """The recommended sites, every node of the same resource, and the player's extractors — the
+    rest of a real save's thousands of buildings would bury the pins."""
+    ranked = artifact.map_locations or ()
+    nodes_by_id = {node.node_id: node for node in context.resource_nodes}
+    resources = {
+        nodes_by_id[location.resource_node_id].item_id
+        for location in ranked
+        if location.resource_node_id in nodes_by_id
+    }
+    nodes = tuple(node for node in context.resource_nodes if node.item_id in resources)
+    extractors = tuple(p for p in context.existing_placements if p.resource_node_id is not None)
+    return render_map_page(nodes, extractors, ranked, title="Recommended build sites", names=names)
+
+
+def _verification_summary(score: ResponseScore | None) -> dict[str, Any] | None:
+    if score is None:
+        return None
+    summary: dict[str, Any] = {}
+    if score.chat is not None:
+        summary["chat"] = {
+            "grounded_fraction": round(score.chat.grounded_fraction, 2),
+            "consistent": score.chat.consistent,
+            "judge": _verdict(score.chat.judge_verdict),
+        }
+    if score.graph is not None:
+        summary["graph"] = {
+            "passed": score.graph.passed,
+            "balanced": score.graph.balanced,
+            "power_ok": score.graph.power_ok,
+        }
+    if score.map is not None:
+        summary["map"] = {
+            "passed": all(site.passed for site in score.map),
+            "checked": len(score.map),
+            "judge": [_verdict(site.judge_verdict) for site in score.map],
+        }
+    return summary
+
+
+def _verdict(verdict: JudgeVerdict | None) -> dict[str, Any] | None:
+    return asdict(verdict) if verdict is not None else None

@@ -25,6 +25,9 @@ _STOPWORDS = frozenset(
 other purely for sharing "the"/"is"/"of" — with a corpus this small, IDF alone doesn't push their
 weight low enough."""
 
+_TITLE_WEIGHT = 0.5
+"""How much a passage's title being named in the question adds to its text similarity."""
+
 
 @dataclass(frozen=True)
 class Passage:
@@ -73,23 +76,35 @@ def _cosine_similarity(a: dict[str, float], b: dict[str, float]) -> float:
 def retrieve(
     question: str, corpus: Sequence[Passage], *, top_k: int = 3
 ) -> tuple[ScoredPassage, ...]:
-    """Ranks `corpus` by TF-IDF cosine similarity to `question`. Passages with zero term overlap
-    are dropped rather than returned with a meaningless zero score, so callers can tell "nothing
-    relevant" apart from "relevant but weakly worded"."""
+    """Ranks `corpus` by TF-IDF cosine similarity to `question`, plus a bonus when the question
+    names a passage's title (`source`) — see `_title_match`. Without it a short passage that merely
+    repeats the question's words ("Conveyor Wall x 1. Has 1 Conveyor Belt connection.") outranks the
+    one the question is about ("Conveyor Belt Mk.1. Transports up to 60 resources per minute.").
+    Passages with zero term overlap are dropped rather than returned with a meaningless zero score,
+    so callers can tell "nothing relevant" apart from "relevant but weakly worded"."""
     if not corpus:
         return ()
 
     corpus_tokens = [_tokenize(passage.text) for passage in corpus]
     idf = _idf(corpus_tokens)
-    question_vector = _tfidf_vector(_tokenize(question), idf)
+    question_tokens = _tokenize(question)
+    question_vector = _tfidf_vector(question_tokens, idf)
+    question_words = set(question_tokens)
 
-    scored = [
-        ScoredPassage(
-            passage=passage,
-            score=_cosine_similarity(question_vector, _tfidf_vector(tokens, idf)),
-        )
-        for passage, tokens in zip(corpus, corpus_tokens, strict=True)
-    ]
-    relevant = [scored_passage for scored_passage in scored if scored_passage.score > 0]
+    relevant = []
+    for passage, tokens in zip(corpus, corpus_tokens, strict=True):
+        similarity = _cosine_similarity(question_vector, _tfidf_vector(tokens, idf))
+        if similarity > 0:
+            bonus = _TITLE_WEIGHT * _title_match(passage.source, question_words)
+            relevant.append(ScoredPassage(passage=passage, score=similarity + bonus))
     relevant.sort(key=lambda sp: (-sp.score, sp.passage.passage_id))
     return tuple(relevant[:top_k])
+
+
+def _title_match(title: str, question_words: set[str]) -> float:
+    """The share of `title`'s words the question uses, counting a one-word title as half-named —
+    sharing a single word ("Coal") is weaker evidence than naming "Coal-Powered Generator"."""
+    title_words = set(_tokenize(title))
+    if not title_words:
+        return 0.0
+    return len(title_words & question_words) / max(len(title_words), 2)

@@ -36,6 +36,9 @@ class Settings:
     """Where to look for `.sav` files; the newest one wins (see `save_parser.find_latest_save`).
     Defaults to the game's own dedicated-server save location, so a normal Windows install needs
     no configuration at all."""
+    llm_judge: bool = False
+    """Whether the web UI asks the model for LLM-as-a-judge verdicts on its own answers
+    (architecture.md §6) — one extra model call per answer and per suggested build site."""
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -48,7 +51,12 @@ class Settings:
             dedicated_server_port=int(port) if port else None,
             dedicated_server_api_token=os.environ.get("PIONEER_SERVER_API_TOKEN"),
             save_directory=os.environ.get("PIONEER_SAVE_DIR") or default_save_directory(),
+            llm_judge=_flag(os.environ.get("PIONEER_LLM_JUDGE")),
         )
+
+
+def _flag(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def default_save_directory() -> str | None:
