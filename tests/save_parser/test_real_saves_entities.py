@@ -45,6 +45,8 @@ def known_recipe_ids() -> frozenset[str]:
     [
         pytest.param("stal_mielec.sav", 29211, id="stal_mielec"),
         pytest.param("wielka_polska_niesmiertelna.sav", 55012, id="wielka_polska"),
+        pytest.param("alfa.sav", 1919, id="alfa"),
+        pytest.param("tak.sav", 5165, id="tak"),
     ],
 )
 def test_frames_every_entity_and_lands_on_the_declared_section_end(
@@ -66,6 +68,8 @@ def test_frames_every_entity_and_lands_on_the_declared_section_end(
     [
         pytest.param("stal_mielec.sav", 500, id="stal_mielec"),
         pytest.param("wielka_polska_niesmiertelna.sav", 906, id="wielka_polska"),
+        pytest.param("alfa.sav", 20, id="alfa"),
+        pytest.param("tak.sav", 63, id="tak"),
     ],
 )
 def test_every_recipe_is_attributed_to_exactly_one_manufacturer(
@@ -145,3 +149,61 @@ def test_extractors_name_the_node_or_water_volume_they_extract_from() -> None:
         else:
             assert placement.resource_node_id is None
     assert sum(1 for p in state.placements if p.resource_node_id) == 61
+
+
+def test_the_two_assemblers_put_on_standby_are_left_out_of_the_graph() -> None:
+    state = load_save_state(_FIXTURES_DIR / "wielka_polska_niesmiertelna.sav")
+
+    paused = [p for p in state.placements if p.is_paused]
+    assert [p.building_id for p in paused] == ["Build_AssemblerMk1_C"] * 2
+    for recipe_id in {p.recipe_id for p in paused}:
+        running = [
+            p.clock_speed for p in state.placements if p.recipe_id == recipe_id and not p.is_paused
+        ]
+        node = next(n for n in state.graph.nodes if n.recipe_id == recipe_id)
+        assert abs(node.machine_count - sum(running)) < 1e-9
+    assert all(p.production_boost == 1.0 for p in state.placements)  # no Somersloops slotted
+
+
+@pytest.mark.parametrize(
+    ("filename", "paused"),
+    [
+        pytest.param("alfa.sav", ["Build_ConstructorMk1_C"], id="alfa"),
+        pytest.param("tak.sav", ["Build_AssemblerMk1_C", "Build_MinerMk1_C"], id="tak"),
+    ],
+)
+def test_small_saves_report_what_the_player_put_on_standby(
+    filename: str, paused: list[str]
+) -> None:
+    state = load_save_state(_FIXTURES_DIR / filename)
+
+    assert sorted(p.building_id for p in state.placements if p.is_paused) == paused
+    assert state.graph.nodes
+    assert all(p.production_boost == 1.0 for p in state.placements)
+
+
+@pytest.mark.parametrize(
+    ("filename", "unlocked", "locked"),
+    [
+        pytest.param("tak.sav", "Schematic_3-4_C", "Research_Alien_ActiveSAM_C", id="tak"),
+        pytest.param(
+            "wielka_polska_niesmiertelna.sav", "Schematic_3-4_C", "Schematic_9-1_C", id="wielka"
+        ),
+    ],
+)
+def test_the_schematics_the_player_unlocked_are_read(
+    filename: str, unlocked: str, locked: str, known_technology_ids: frozenset[str]
+) -> None:
+    state = load_save_state(_FIXTURES_DIR / filename)
+
+    assert state.unlocked_technology_ids is not None
+    assert "Schematic_StartingRecipes_C" in state.unlocked_technology_ids
+    assert unlocked in state.unlocked_technology_ids
+    assert locked not in state.unlocked_technology_ids
+    # Anything the Knowledge Base doesn't list is a schematic it filters out on purpose.
+    assert len(state.unlocked_technology_ids & known_technology_ids) > 20
+
+
+@pytest.fixture(scope="module")
+def known_technology_ids() -> frozenset[str]:
+    return frozenset(t.technology_id for t in load_from_file(_DOCS_JSON).technologies)

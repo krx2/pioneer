@@ -483,7 +483,7 @@ def test_score_response_consults_the_chat_judge() -> None:
         artifact,
         cited_passages=("Build more smelters.",),
         chat_judge=judge,
-        judge_context="tech tier 2",
+        chat_context="tech tier 2",
     )
 
     assert score.chat is not None

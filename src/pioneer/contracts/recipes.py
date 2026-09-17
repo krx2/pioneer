@@ -77,11 +77,36 @@ class Building:
 
 
 @dataclass(frozen=True)
+class TransportTier:
+    """One conveyor belt or pipeline tier and how much it carries."""
+
+    building_id: str
+    name: str
+    capacity_per_minute: float
+    """Items per minute for a belt, m³ per minute for a pipe."""
+    carries_fluids: bool
+
+
+@dataclass(frozen=True)
+class ItemCount:
+    """A number of items, not a rate — what a technology costs to unlock."""
+
+    item_id: str
+    amount: float
+
+
+@dataclass(frozen=True)
 class Technology:
     technology_id: str
     name: str
     tier: int
     prerequisites: tuple[str, ...] = ()
+    kind: str = ""
+    """How the player unlocks it: "milestone" (the HUB), "mam" (MAM research), "alternate" (a hard
+    drive), "tutorial" (the onboarding HUB upgrades) or "custom" (granted along the way, e.g. the
+    starting recipes) — the export's `mType` without its `EST_` prefix, lower-cased."""
+    cost: tuple[ItemCount, ...] = ()
+    """What the player hands in to unlock it."""
 
 
 @dataclass(frozen=True)
@@ -95,7 +120,11 @@ class Recipe:
     inputs: tuple[ItemAmount, ...]
     outputs: tuple[ItemAmount, ...]
     unlocked_by: str | None = None
-    """`Technology.technology_id` that unlocks this recipe, if any."""
+    """`Technology.technology_id` that unlocks this recipe, if any — the first of
+    `unlockable_by`."""
+    unlockable_by: tuple[str, ...] = ()
+    """Every technology that unlocks this recipe; any one of them is enough (Silica comes with MAM
+    quartz research, or with a later milestone). Empty when the data names none."""
     is_alternate: bool = False
     """One the game presents as an alternate ("Alternate: ..."), unlocked by optional research —
     mostly hard drives, a few MAM nodes. The Production Planner only falls back to alternates for

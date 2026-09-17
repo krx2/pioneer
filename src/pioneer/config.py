@@ -33,6 +33,9 @@ class Settings:
     """Bearer token for the Dedicated Server HTTPS API (see server_client's module docstring).
     Obtained out-of-band via the server's login functions — not something this project logs into
     on its own yet."""
+    dedicated_server_exe: str | None
+    """Where the dedicated server's `FactoryServer.exe` lives — the folder or the file itself.
+    Only `pioneer.startup` uses it, to start the server along with everything else."""
     save_directory: str | None
     """Where to look for `.sav` files; the newest one wins (see `save_parser.find_latest_save`).
     Defaults to the game's own dedicated-server save location, so a normal Windows install needs
@@ -50,6 +53,7 @@ class Settings:
             dedicated_server_host=os.environ.get("PIONEER_SERVER_HOST"),
             dedicated_server_port=_port(os.environ.get("PIONEER_SERVER_PORT")),
             dedicated_server_api_token=os.environ.get("PIONEER_SERVER_API_TOKEN"),
+            dedicated_server_exe=os.environ.get("PIONEER_SERVER_EXE") or None,
             save_directory=os.environ.get("PIONEER_SAVE_DIR") or default_save_directory(),
             llm_judge=_flag(os.environ.get("PIONEER_LLM_JUDGE")),
         )

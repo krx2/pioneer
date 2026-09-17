@@ -13,19 +13,24 @@ from pioneer.knowledge_base.loader import load_from_dict, load_from_file
 from pioneer.knowledge_base.queries import (
     KnowledgeBase,
     building_for,
+    easiest_unlock,
     find_items,
     item_by_id,
     prerequisites_for_technology,
     raw_resource_ids,
     recipe_by_id,
+    recipe_is_unlocked,
     recipes_for_output,
+    resolve_item,
     technology_by_id,
     technology_for_recipe,
+    unlock_order,
 )
 
 __all__ = [
     "KnowledgeBase",
     "building_for",
+    "easiest_unlock",
     "find_items",
     "item_by_id",
     "load_from_dict",
@@ -33,7 +38,10 @@ __all__ = [
     "prerequisites_for_technology",
     "raw_resource_ids",
     "recipe_by_id",
+    "recipe_is_unlocked",
     "recipes_for_output",
+    "resolve_item",
     "technology_by_id",
     "technology_for_recipe",
+    "unlock_order",
 ]

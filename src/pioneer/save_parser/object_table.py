@@ -17,11 +17,21 @@ table starts `[length: int64][numObjects: int32]` immediately before its first h
 is a UE class path, always starting with `/Game/` or `/Script/`. So: find a `/Game/` or `/Script/`
 occurrence, walk backward through the fixed-width fields that must precede it if it's really a
 table's first `ClassName`, and check they're self-consistent (small `type` flag, a plausible
-object count, a plausible table byte length). Verified against both real saves committed at
-tests/save_parser/fixtures/: exactly one such position exists in each, walking `numObjects`
-headers from it decodes cleanly with zero errors, and the recognizable results (starting
-buildings, vehicle classes, ...) match what's actually in each save — see
-test_real_saves_object_table.py.
+object count, a plausible table byte length). Verified against the real saves committed at
+tests/save_parser/fixtures/: walking `numObjects` headers from the table found decodes cleanly
+with zero errors, and the recognizable results (starting buildings, vehicle classes, ...) match
+what's actually in each save — see test_real_saves_object_table.py.
+
+**Which table.** A save holds one object table per level: hundreds to thousands of small ones for
+the world's sublevels (foliage, rocks, creature spawners, pickups — nothing a player builds), then
+the persistent level's, which holds every building. So the anchor alone isn't enough: the table
+this module wants is the one whose object count matches the entity section right after it, and
+whose entity section runs up to the save's closing block — which names `Persistent_Level` within
+its first bytes. Verified against four real saves (the two fixtures, and two small early-game
+ones): exactly one table passes, and it's the last one in the body. That structural test is what's
+used; the size thresholds below are only the fallback for bodies without a closing block (the
+hand-built test fixtures), and they alone missed a real early-game save whose persistent table is
+only 411 kB.
 
 **The declared `length` covers more than the headers.** It doesn't land on the offset reached after
 reading `numObjects` headers (off by 29 bytes on one fixture, 177 on the other) because a trailing
@@ -52,6 +62,10 @@ _DEFAULT_MIN_OBJECT_COUNT = 1_000
 _MAX_PLAUSIBLE_OBJECT_COUNT = 5_000_000
 _DEFAULT_MIN_TABLE_LENGTH = 500_000
 _CLASS_PATH_PREFIXES = (b"/Game/", b"/Script/")
+_PERSISTENT_LEVEL_NAME = struct.pack("<i", len("Persistent_Level") + 1) + b"Persistent_Level\x00"
+_CLOSING_BLOCK_NAME_WINDOW = 64
+"""How far into the closing block after the persistent level's entities its level name may sit —
+at byte 4 or 8 in every save seen."""
 
 
 @dataclass(frozen=True)
@@ -107,10 +121,10 @@ def find_object_table(
     """Locates the object table in `body` (searching from `search_from` onward) and parses every
     entry in it. Raises `ValueError` if no plausible table is found.
 
-    `min_object_count`/`min_table_length` exist to tell the real table apart from smaller,
-    coincidentally self-consistent-looking data elsewhere in the body — see module docstring.
-    Lower them for small hand-built fixtures; the production defaults are what's validated against
-    real saves.
+    The persistent level's table is recognized by what follows it (see module docstring).
+    `min_object_count`/`min_table_length` only matter when nothing does — a body without a real
+    save's closing block — to tell a table apart from smaller, coincidentally
+    self-consistent-looking data. Lower them for small hand-built fixtures.
     """
     table_start = _find_object_table_start(body, search_from, min_object_count, min_table_length)
     return _read_object_table(body, table_start)
@@ -119,6 +133,9 @@ def find_object_table(
 def _find_object_table_start(
     body: bytes, search_from: int, min_object_count: int, min_table_length: int
 ) -> int:
+    persistent = _find_persistent_level_table(body, search_from)
+    if persistent is not None:
+        return persistent
     for prefix in _CLASS_PATH_PREFIXES:
         offset = search_from
         while True:
@@ -133,6 +150,33 @@ def _find_object_table_start(
         "could not locate the object table: no position looked like a table's first "
         "ClassName preceded by a self-consistent (length, numObjects, type) triple"
     )
+
+
+def _find_persistent_level_table(body: bytes, search_from: int) -> int | None:
+    """The persistent level's table, recognized by what follows it — see module docstring."""
+    for prefix in _CLASS_PATH_PREFIXES:
+        offset = search_from
+        while (offset := body.find(prefix, offset)) != -1:
+            candidate = _validate_candidate(body, offset, 1, 1)
+            if candidate is not None and _is_followed_by_persistent_level_entities(body, candidate):
+                return candidate
+            offset += 1
+    return None
+
+
+def _is_followed_by_persistent_level_entities(body: bytes, table_start: int) -> bool:
+    (length,) = struct.unpack_from("<q", body, table_start)
+    (num_objects,) = struct.unpack_from("<i", body, table_start + 8)
+    entities_offset = table_start + 8 + length
+    if entities_offset + 12 > len(body):
+        return False
+    (entities_length,) = struct.unpack_from("<q", body, entities_offset)
+    (num_entities,) = struct.unpack_from("<i", body, entities_offset + 8)
+    entities_end = entities_offset + 8 + entities_length
+    if num_entities != num_objects or not entities_offset < entities_end <= len(body):
+        return False
+    window_end = entities_end + _CLOSING_BLOCK_NAME_WINDOW
+    return body.find(_PERSISTENT_LEVEL_NAME, entities_end, window_end) != -1
 
 
 def _validate_candidate(

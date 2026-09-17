@@ -1,6 +1,7 @@
 """`python -m pioneer.web [--host HOST] [--port PORT]` — the Pioneer web UI on a local port.
 
-Loads the same data the CLI does (`app.load_context`), answers through the same `app.ask`,
+Loads the same data the CLI does, kept current while it runs (`app.LiveContext`: a newer save or
+a stale server answer is picked up on the next question), answers through the same `app.ask`,
 verifies every answer with `orchestrator.verify_response` — with LLM-as-a-judge verdicts when
 `PIONEER_LLM_JUDGE` is on — and keeps player feedback and a response log under `data/`.
 """
@@ -14,7 +15,7 @@ from typing import Any
 
 import uvicorn
 
-from pioneer.app import DATA_DIR, ask, load_context
+from pioneer.app import DATA_DIR, ask, live_context
 from pioneer.config import settings
 from pioneer.llm_client.judges import chat_judge, terrain_judge
 from pioneer.orchestrator import verify_response
@@ -37,7 +38,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
-    context, status = load_context()
+    live = live_context()
+    _, status = live.current()
     print(f"[{status}]", file=sys.stderr)
 
     judges: dict[str, Any] = {}
@@ -48,12 +50,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
 
     app = create_app(
-        context=context,
-        answer=lambda question: ask(question, context),
-        verify=lambda artifact: verify_response(artifact, context, **judges),
+        context=live.current,
+        answer=lambda question, context, history: ask(question, context, history),
+        verify=lambda artifact, context: verify_response(artifact, context, **judges),
         feedback_store=JsonlFeedbackStore(DATA_DIR / "feedback.jsonl"),
         response_log=ResponseLog(DATA_DIR / "responses.jsonl"),
-        status=status,
     )
     uvicorn.run(app, host=args.host, port=args.port)
     return 0

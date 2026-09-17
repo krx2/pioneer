@@ -139,21 +139,28 @@ All five are treated as read-only inputs. No module ever writes back to the game
 ### 4.2 Assistant modules (logic layer)
 
 Each module is an independently testable unit with a narrow responsibility. The LLM Orchestrator
-calls modules as tools; modules never call the LLM directly (Q&A Engine and Verifier are the two
-exceptions worth noting below).
+calls modules as tools; modules never call the LLM directly. The two exceptions are the Q&A
+Engine's answer synthesis and the LLM-as-a-judge hooks of the verification module (§6) — both take
+the model call as an injected callable, so the modules themselves stay testable without one.
 
 | Module | Responsibility | Primary inputs | Nature |
 |---|---|---|---|
-| **Production Planner** | Given a target output rate, build/extend a recipe graph via BFS/graph search from the goal backward to raw resources | Knowledge base, Verifier | Deterministic |
+| **Production Planner** | Given a target output rate, build/extend a recipe graph via BFS/graph search from the goal backward to raw resources | Knowledge base | Deterministic |
 | **Expansion Advisor** | Given a new target and the player's *existing* factories (from `.sav`), decide the minimal set of changes (extend factory A, add a linking stage, etc.) instead of planning from scratch | `.sav` state, Production Planner, Verifier | Deterministic |
 | **Location Advisor** | Recommend where to place new buildings, based on remaining unclaimed deposits and their purity/distance | Static resource DB, `.sav` state | Deterministic |
 | **Anomaly Detector** | Scan the current factory for problems: under/over-production gaps, power blackouts, belt/pipe congestion | `.sav` state, Verifier | Deterministic |
 | **Q&A Engine** | Answer free-form game-mechanics questions | Knowledge base + wiki via RAG | Retrieval + LLM |
 | **Verifier** | Ground-truth calculator: machine counts, throughput, resource balance, power balance | Knowledge base, module outputs | Deterministic |
 
-The **Verifier** is a shared dependency, not a leaf module — Production Planner, Expansion Advisor
-and Anomaly Detector all call into it rather than duplicating arithmetic. Treat it as the single
-source of truth for "is this plan numerically valid."
+The **Verifier** is a shared dependency, not a leaf module: it's where the Expansion Advisor's
+spare capacity, the Anomaly Detector's balances and every figure in an answer come from — through
+the Orchestrator, which is what calls modules for each other (§4.3). Treat it as the single source
+of truth for "is this plan numerically valid."
+
+The one deliberate exception is the Production Planner, which counts its own machines in two lines
+rather than importing the Verifier: that keeps it dependent on the shared contracts alone, like
+every other module, and its output is checked against the Verifier anyway, both in the
+verification step and by the end-to-end tests.
 
 ### 4.3 LLM Orchestrator
 

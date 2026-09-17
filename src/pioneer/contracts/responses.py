@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pioneer.contracts.geometry import Coordinates
-from pioneer.contracts.locations import RankedLocation
+from pioneer.contracts.locations import FactorySite, RankedLocation
 from pioneer.contracts.production_graph import ProductionGraph
 
 
@@ -34,6 +34,8 @@ class ResponseArtifact:
     map_reference: Coordinates | None = None
     """The point `map_locations`' `distance_to_reference` is measured from — what the Map channel's
     distances are checked against (architecture.md §6)."""
+    factory_sites: tuple[FactorySite, ...] | None = None
+    """The player's existing factories the answer points at — where an expansion extends."""
     feedback: Feedback | None = None
     question: str | None = None
     """The player's message this answers."""

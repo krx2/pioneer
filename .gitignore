@@ -13,6 +13,10 @@ dist/
 # Environment secrets
 .env
 
+# Editors
+.idea/
+.vscode/
+
 # OS
 .DS_Store
 Thumbs.db

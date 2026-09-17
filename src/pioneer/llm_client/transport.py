@@ -16,24 +16,17 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from pioneer.orchestrator.orchestrator import TransportError as OrchestratorTransportError
-from pioneer.qa_engine.engine import TransportError as QATransportError
+from pioneer.contracts import TransportError
 
 _TIMEOUT_SECONDS = 120.0
-
-
-class TransportError(Exception):
-    """Raised when the HTTP request to the LLM endpoint couldn't complete at all (connection
-    refused, timeout, DNS failure, ...) or came back in a shape that isn't a usable chat-completion
-    response."""
 
 
 def post_chat_completion(
     base_url: str, api_key: str | None, payload: dict[str, Any]
 ) -> dict[str, Any]:
     """POSTs `payload` (an OpenAI chat/completions request body) to `{base_url}/chat/completions`
-    and returns the parsed JSON response. Raises `TransportError` if the request couldn't complete
-    at all, or didn't come back as valid JSON."""
+    and returns the parsed JSON response. Raises `contracts.TransportError` if the request couldn't
+    complete at all, or didn't come back as valid JSON."""
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -65,11 +58,9 @@ def chat_completion(
     base_url: str, model: str, messages: list[dict[str, str]], api_key: str | None
 ) -> str:
     """Conforms to `pioneer.qa_engine.engine.ChatCompletion`."""
-    try:
-        response = post_chat_completion(base_url, api_key, {"model": model, "messages": messages})
-        message = _first_message(response)
-    except TransportError as error:
-        raise QATransportError(str(error)) from error
+    message = _first_message(
+        post_chat_completion(base_url, api_key, {"model": model, "messages": messages})
+    )
     return message.get("content") or ""
 
 
@@ -84,13 +75,10 @@ def tool_calling_chat_completion(
     `{"content": str | None, "tool_calls": [{"id", "name", "arguments": dict}, ...]}`, with each
     tool call's JSON-string `arguments` already parsed so the orchestrator never touches the wire
     format directly."""
-    try:
-        response = post_chat_completion(
-            base_url, api_key, {"model": model, "messages": messages, "tools": tools}
-        )
-        message = _first_message(response)
-    except TransportError as error:
-        raise OrchestratorTransportError(str(error)) from error
+    response = post_chat_completion(
+        base_url, api_key, {"model": model, "messages": messages, "tools": tools}
+    )
+    message = _first_message(response)
 
     tool_calls = []
     for call in message.get("tool_calls") or []:
@@ -101,7 +89,7 @@ def tool_calling_chat_completion(
                 json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
             )
         except json.JSONDecodeError as error:
-            raise OrchestratorTransportError(
+            raise TransportError(
                 f"LLM returned malformed tool-call arguments for {function.get('name')!r}: {error}"
             ) from error
         tool_calls.append(

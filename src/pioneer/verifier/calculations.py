@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from pioneer.contracts import (
     Building,
@@ -31,6 +31,7 @@ from pioneer.contracts import (
     Purity,
     Recipe,
     ResourceNode,
+    TransportTier,
 )
 
 _OVERCLOCK_POWER_EXPONENT = 1.321929
@@ -40,6 +41,11 @@ Generator output, by contrast, scales linearly with clock speed."""
 
 _RATE_TOLERANCE = 1e-9
 """Machine counts this close to zero are float noise, not machines."""
+
+_PRODUCTION_BOOST_POWER_EXPONENT = 2.0
+"""How power draw scales with Somersloop production boost — the export's
+`mProductionBoostPowerConsumptionExponent`, the same for every building: double the output, four
+times the power."""
 
 _PURITY_MULTIPLIER = {Purity.IMPURE: 0.5, Purity.NORMAL: 1.0, Purity.PURE: 2.0}
 """How a node's purity scales an extractor's rate — the game's own ratios."""
@@ -69,13 +75,14 @@ def balance(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -> dict[str, fl
 
     Computed straight from each node's own recipe, independent of how `graph.flows` routes
     material — this is what the flows *should* sum to if the graph is internally consistent, which
-    makes it the reference a flow-routing check can be verified against.
+    makes it the reference a flow-routing check can be verified against. Outputs are multiplied by
+    the node's `production_boost`; inputs aren't.
     """
     net: dict[str, float] = {}
     for node in graph.nodes:
         recipe = _recipe_by_id(recipes, node.recipe_id)
         for item in recipe.outputs:
-            rate = item.amount_per_minute * node.machine_count
+            rate = item.amount_per_minute * node.machine_count * node.production_boost
             net[item.item_id] = net.get(item.item_id, 0.0) + rate
         for item in recipe.inputs:
             rate = item.amount_per_minute * node.machine_count
@@ -95,22 +102,16 @@ def consumption(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -> dict[str
     return consumed
 
 
-def added_machines(graph: ProductionGraph, existing: ProductionGraph | None) -> ProductionGraph:
-    """What building `graph` adds on top of `existing`: every node `existing` already has (same
-    `node_id`, and `graph` marks it `is_existing`) keeps only its machines beyond the existing
-    count, and a node left with none is dropped. Flows are kept as they are — in an expansion they
-    already describe only the additions. `existing=None` returns `graph` unchanged."""
-    if existing is None:
-        return graph
-    already = {node.node_id: node.machine_count for node in existing.nodes}
-    nodes = []
-    for node in graph.nodes:
-        count = node.machine_count
-        if node.is_existing:
-            count -= already.get(node.node_id, 0.0)
-        if count > _RATE_TOLERANCE:
-            nodes.append(replace(node, machine_count=count))
-    return ProductionGraph(nodes=tuple(nodes), flows=graph.flows)
+def added_machines(graph: ProductionGraph) -> ProductionGraph:
+    """What building `graph` takes: every node keeps only its machines beyond
+    `existing_machine_count`, and a node left with none is dropped. Flows are kept as they are — in
+    an expansion they already describe only the additions. New machines carry no Somersloops."""
+    nodes = tuple(
+        replace(node, machine_count=added, existing_machine_count=0.0, production_boost=1.0)
+        for node in graph.nodes
+        if (added := node.machine_count - node.existing_machine_count) > _RATE_TOLERANCE
+    )
+    return ProductionGraph(nodes=nodes, flows=graph.flows)
 
 
 def minimal_machine_graph(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -> ProductionGraph:
@@ -147,7 +148,7 @@ def minimal_machine_graph(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -
         resolving.discard(node_id)
 
         rates = {
-            output.item_id: output.amount_per_minute
+            output.item_id: output.amount_per_minute * node.production_boost
             for output in _recipe_by_id(recipes, node.recipe_id).outputs
         }
         counts = [amount / rates[item] for item, amount in needed.items() if rates.get(item, 0) > 0]
@@ -175,11 +176,14 @@ def placed_power_consumption_mw(
     placements: Sequence[PlacementRecord], buildings: tuple[Building, ...]
 ) -> float:
     """Rated draw of every placed power consumer, at its clock speed (see
-    `_OVERCLOCK_POWER_EXPONENT`). Placements `buildings` has no entry for are skipped rather than
-    raising, unlike in `power_balance`: most placed buildings — belts, foundations, storage, poles —
-    draw nothing and appear in no building list."""
+    `_OVERCLOCK_POWER_EXPONENT`) and Somersloop boost (`_PRODUCTION_BOOST_POWER_EXPONENT`).
+    Placements `buildings` has no entry for are skipped rather than raising, unlike in
+    `power_balance`: most placed buildings — belts, foundations, storage, poles — draw nothing and
+    appear in no building list."""
     return sum(
-        building.power_consumption_mw * placement.clock_speed**_OVERCLOCK_POWER_EXPONENT
+        building.power_consumption_mw
+        * placement.clock_speed**_OVERCLOCK_POWER_EXPONENT
+        * placement.production_boost**_PRODUCTION_BOOST_POWER_EXPONENT
         for placement, building in _placed_buildings(placements, buildings)
         if building.power_consumption_mw > 0
     )
@@ -275,6 +279,104 @@ def extraction_rates(
     return rates
 
 
+@dataclass(frozen=True)
+class PowerPlant:
+    """One way to supply a power target: how many of a generator, burning which fuel, and what that
+    takes and leaves at full load."""
+
+    generator_id: str
+    fuel_item_id: str
+    generators: int
+    capacity_mw: float
+    fuel_per_minute: float
+    supplemental_item_id: str | None
+    supplemental_per_minute: float
+    byproduct_item_id: str | None
+    byproduct_per_minute: float
+
+
+def power_plants(
+    target_mw: float, buildings: Sequence[Building], items: Sequence[Item]
+) -> tuple[PowerPlant, ...]:
+    """Every generator-and-fuel pair the data can supply `target_mw` with — one per fuel with a
+    known energy value — the least capacity past the target first, then the fewest generators.
+    Figures are at full load: generators burn only what the grid draws, so these are the most the
+    plant needs."""
+    energy = {item.item_id: item.energy_value_mj for item in items if item.energy_value_mj > 0}
+    plants = []
+    for building in buildings:
+        output_mw = -building.power_consumption_mw
+        if output_mw <= 0:
+            continue
+        count = math.ceil(target_mw / output_mw) if target_mw > 0 else 0
+        capacity = count * output_mw
+        for fuel in building.fuels:
+            if fuel.fuel_item_id not in energy:
+                continue
+            burned = capacity / energy[fuel.fuel_item_id] * 60.0
+            has_supplemental = fuel.supplemental_item_id is not None
+            plants.append(
+                PowerPlant(
+                    generator_id=building.building_id,
+                    fuel_item_id=fuel.fuel_item_id,
+                    generators=count,
+                    capacity_mw=capacity,
+                    fuel_per_minute=burned,
+                    supplemental_item_id=fuel.supplemental_item_id,
+                    supplemental_per_minute=(
+                        capacity * building.supplemental_per_minute_per_mw
+                        if has_supplemental
+                        else 0.0
+                    ),
+                    byproduct_item_id=fuel.byproduct_item_id,
+                    byproduct_per_minute=burned * fuel.byproduct_per_fuel_unit,
+                )
+            )
+    return tuple(
+        sorted(plants, key=lambda p: (p.capacity_mw, p.generators, p.generator_id, p.fuel_item_id))
+    )
+
+
+def extractors_needed(rate_per_minute: float, extractor: Building) -> int:
+    """Whole fixed-resource extractors (Water Extractors) for `rate_per_minute`, at 100%."""
+    if rate_per_minute <= 0:
+        return 0
+    if extractor.extraction_rate_per_minute <= 0:
+        raise ValueError(f"{extractor.building_id!r} extracts nothing")
+    return math.ceil(rate_per_minute / extractor.extraction_rate_per_minute)
+
+
+@dataclass(frozen=True)
+class TransportNeed:
+    """The slowest belt or pipe tier that carries a flow, and how many lines of it — more than one
+    only when even the fastest tier is too slow."""
+
+    flow: MaterialFlow
+    tier: TransportTier | None
+    """`None` when the data has no tier for the flow's form (solid or fluid)."""
+    lines: int
+
+
+def transport_needs(
+    flows: Sequence[MaterialFlow], items: Sequence[Item], tiers: Sequence[TransportTier]
+) -> tuple[TransportNeed, ...]:
+    """What carries each of `flows`: belts for solids, pipes for fluids (an item `items` doesn't
+    know is taken for a solid)."""
+    fluids = {item.item_id for item in items if item.is_fluid}
+    needs = []
+    for flow in flows:
+        options = sorted(
+            (t for t in tiers if t.carries_fluids == (flow.item_id in fluids)),
+            key=lambda t: t.capacity_per_minute,
+        )
+        tier = next((t for t in options if t.capacity_per_minute >= flow.amount_per_minute), None)
+        if tier is None and options:
+            tier = options[-1]
+        lines = max(1, math.ceil(flow.amount_per_minute / tier.capacity_per_minute)) if tier else 0
+        needs.append(TransportNeed(flow=flow, tier=tier, lines=lines))
+    return tuple(needs)
+
+
 def _fueled_generators(
     placements: Sequence[PlacementRecord], buildings: tuple[Building, ...]
 ) -> Iterator[tuple[str, GeneratorFuel | None, float, Building]]:
@@ -304,8 +406,12 @@ def _fuel_burn(
 def _placed_buildings(
     placements: Sequence[PlacementRecord], buildings: tuple[Building, ...]
 ) -> Iterator[tuple[PlacementRecord, Building]]:
+    """Every running placement with the building it is — a paused one makes, burns and draws
+    nothing, so none of the placement views count it."""
     by_id = {building.building_id: building for building in buildings}
     for placement in placements:
+        if placement.is_paused:
+            continue
         building = by_id.get(placement.building_id)
         if building is not None:
             yield placement, building

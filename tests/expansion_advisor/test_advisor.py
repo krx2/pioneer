@@ -115,8 +115,36 @@ def test_resulting_graph_is_the_changed_chain() -> None:
     }  # the untouched plate and copper nodes are the rest of the factory, not this chain
     smelters = _result_node(graph, "save_Recipe_IngotIron_C")
     assert smelters.machine_count == 11  # 10 existing + 1 from the extend
+    assert smelters.existing_machine_count == 10
     assert smelters.is_existing is True
-    assert _result_node(graph, "node_Desc_Screw_C").is_existing is False
+    screws = _result_node(graph, "node_Desc_Screw_C")
+    assert (screws.is_existing, screws.existing_machine_count) == (False, 0)
+
+
+def test_extending_somersloop_boosted_machines_thins_the_boost() -> None:
+    """Two machines doubled by Somersloops, plus two plain new ones: 4 machines making 6."""
+    boosted = ProductionGraph(
+        nodes=(
+            ProductionNode(
+                node_id="save_Recipe_IngotIron_C",
+                recipe_id="Recipe_IngotIron_C",
+                building_id="Build_SmelterMk1_C",
+                machine_count=2,
+                is_existing=True,
+                existing_machine_count=2,
+                production_boost=2.0,
+            ),
+        ),
+        flows=(),
+    )
+    additions = ProductionGraph(
+        nodes=(_node("node_Desc_IronIngot_C", "Recipe_IngotIron_C", 2),), flows=()
+    )
+
+    (node,) = advise_expansion(boosted, additions).resulting_graph.nodes
+
+    assert (node.machine_count, node.existing_machine_count) == (4, 2)
+    assert node.production_boost == 1.5
 
 
 def test_flows_are_rewired_onto_the_resulting_node_ids() -> None:

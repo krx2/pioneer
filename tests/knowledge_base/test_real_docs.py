@@ -47,8 +47,24 @@ def test_loads_all_relevant_buildings(kb) -> None:
 
 
 def test_filters_out_irrelevant_schematics(kb) -> None:
-    # 574 raw schematics minus resource-sink/customization/tutorial noise, per loader.py.
-    assert len(kb.technologies) == 365
+    # 574 raw schematics minus resource-sink/customization noise, per loader.py.
+    assert len(kb.technologies) == 371
+
+
+def test_every_way_to_unlock_a_recipe_is_kept(kb) -> None:
+    """Silica comes with MAM quartz research or with a later schematic — either will do."""
+    silica = next(r for r in kb.recipes if r.recipe_id == "Recipe_Silica_C")
+    assert set(silica.unlockable_by) == {"Research_Quartz_1_2_C", "Schematic_7-1-1_C"}
+    assert silica.unlocked_by == silica.unlockable_by[0]
+    assert all(recipe.unlockable_by for recipe in kb.recipes)
+
+
+def test_technologies_carry_their_kind_and_cost(kb) -> None:
+    kinds = {t.kind for t in kb.technologies}
+    assert {"milestone", "mam", "alternate", "custom", "tutorial"} <= kinds
+    steel = next(t for t in kb.technologies if t.technology_id == "Schematic_3-4_C")
+    assert (steel.name, steel.kind, steel.tier) == ("Basic Steel Production", "milestone", 3)
+    assert any(c.item_id == "Desc_ModularFrame_C" and c.amount == 50 for c in steel.cost)
 
 
 def test_iron_rod_recipe_matches_known_game_values(kb) -> None:
@@ -229,7 +245,7 @@ def test_iron_rod_is_unlocked_by_a_technology(kb) -> None:
 
 def test_some_technologies_have_real_prerequisites(kb) -> None:
     with_prerequisites = [t for t in kb.technologies if t.prerequisites]
-    assert len(with_prerequisites) == 163
+    assert len(with_prerequisites) == 168  # 163, plus the tutorial HUB upgrades chained in order
 
 
 def test_extractor_rates_match_the_game(kb) -> None:
@@ -254,3 +270,17 @@ def test_the_games_own_descriptions_are_loaded(kb) -> None:
 
     assert len(descriptions) > 700
     assert "60 resources per minute" in descriptions["Build_ConveyorBeltMk1_C"].text
+
+
+def test_belt_and_pipe_capacities_match_the_game(kb) -> None:
+    capacities = {t.name: (t.capacity_per_minute, t.carries_fluids) for t in kb.transport_tiers}
+    assert capacities == {
+        "Conveyor Belt Mk.1": (60, False),
+        "Conveyor Belt Mk.2": (120, False),
+        "Conveyor Belt Mk.3": (270, False),
+        "Conveyor Belt Mk.4": (480, False),
+        "Conveyor Belt Mk.5": (780, False),
+        "Conveyor Belt Mk.6": (1200, False),
+        "Pipeline Mk.1": (300, True),
+        "Pipeline Mk.2": (600, True),
+    }

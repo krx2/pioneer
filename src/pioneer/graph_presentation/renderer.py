@@ -8,7 +8,8 @@ rendering choice; `render_page` wraps that data in a standalone HTML page that l
 and lays the graph out on the diagonal of a square board: raw inputs (layer 0) pinned near the
 top-left corner, the final output (deepest layer) pinned near the bottom-right corner, everything
 else free to spread across the square rather than being squeezed into a single column or row.
-Also distinguishes existing vs. new nodes, as required by the Stage 13 contract.
+Also distinguishes existing vs. new nodes, as required by the Stage 13 contract — and existing
+nodes an expansion extends, labelled with how many of their machines are new.
 """
 
 from __future__ import annotations
@@ -66,16 +67,19 @@ def graph_to_d3_data(
     def name(class_id: str) -> str:
         return (names or {}).get(class_id, class_id)
 
-    nodes: dict[str, dict[str, Any]] = {
-        node.node_id: {
+    nodes: dict[str, dict[str, Any]] = {}
+    for node in graph.nodes:
+        added = node.machine_count - node.existing_machine_count
+        extended = node.is_existing and node.existing_machine_count > 0 and added > 0
+        label = f"{name(node.recipe_id)} ×{node.machine_count:g}"
+        nodes[node.node_id] = {
             "id": node.node_id,
-            "label": f"{name(node.recipe_id)} ×{node.machine_count:g}",
+            "label": f"{label} (+{added:g} new)" if extended else label,
             "buildingId": node.building_id,
             "existing": node.is_existing,
+            "extended": extended,
             "kind": "machine",
         }
-        for node in graph.nodes
-    }
     machine_ids = set(nodes)
 
     links: list[dict[str, Any]] = []
@@ -143,6 +147,7 @@ def render_page(
 <svg id="graph"></svg>
 <div id="legend">
   <span><i class="dot existing"></i> existing</span>
+  <span><i class="dot extended"></i> extended</span>
   <span><i class="dot new"></i> new</span>
   <span><i class="dot boundary"></i> raw / output</span>
 </div>
@@ -161,6 +166,7 @@ html, body { margin:0; height:100%; background:#0b0f14; font-family: system-ui, 
 svg { width:100%; height:100%; display:block; }
 .node-existing circle { fill:#5b6b7c; stroke:#aab6c2; }
 .node-new circle { fill:#2f6fed; stroke:#9db8f7; }
+.node-extended circle { fill:#5b6b7c; stroke:#2f6fed; stroke-width:4px; }
 .node-boundary circle { fill:#0b0f14; stroke:#6b7683; stroke-dasharray:3 2; }
 .node text { fill:#e8eaed; font-size:11px; paint-order: stroke; stroke:#0b0f14; stroke-width:3px; }
 .link { stroke:#3a4552; stroke-opacity:0.8; }
@@ -170,6 +176,7 @@ svg { width:100%; height:100%; display:block; }
 #legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
 #legend .existing { background:#5b6b7c; }
 #legend .new { background:#2f6fed; }
+#legend .extended { background:#5b6b7c; box-shadow: 0 0 0 2px #2f6fed; }
 #legend .boundary { background:#0b0f14; border:1px dashed #6b7683; }
 """
 
@@ -232,6 +239,7 @@ const linkLabel = container.append("g").selectAll("text")
 
 function nodeClass(d) {
   if (d.kind !== "machine") return "node node-boundary";
+  if (d.extended) return "node node-extended";
   return d.existing ? "node node-existing" : "node node-new";
 }
 

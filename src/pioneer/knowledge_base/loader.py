@@ -48,6 +48,9 @@ docs/implementation.md Stage 2 discussion) and encoded as deliberate choices bel
   `_load_items` indexes every descriptor in the export and `_item_amount` divides fluid amounts
   back down. Without this, anything touching oil, water, gas or their derivatives is off by three
   orders of magnitude — machine counts, balance, power, anomaly severities.
+- **Belt and pipe capacity** is `mSpeed` / 2 items a minute for a belt (Mk.1's 120 is 60/min) and
+  `mFlowLimit` m³ a second for a pipeline. The export lists each pipeline twice — with and without
+  flow indicators — at the same capacity; only the plain one is kept.
 - **Generators consume more than fuel.** Each entry of a generator's `mFuel` names, per fuel, a
   supplemental resource (water, for coal and nuclear) and a byproduct (nuclear waste, with
   `mByproductAmount` per fuel unit). How much supplemental resource is consumed comes from the
@@ -68,8 +71,10 @@ from pioneer.contracts import (
     GeneratorFuel,
     Item,
     ItemAmount,
+    ItemCount,
     Recipe,
     Technology,
+    TransportTier,
 )
 from pioneer.knowledge_base.parsing import (
     class_name_from_path,
@@ -114,12 +119,14 @@ _FALLBACK_SLOTS: dict[str, tuple[int, int]] = {
 """(input, output) slots for buildings no recipe runs in — see module docstring. Anything not
 listed (the pressurizer, power storage) moves no items at all."""
 
-# Schematic categories that never gate a production recipe: cosmetics, resource-sink point
-# unlocks, and the tutorial. Milestones, MAM research, alternates, and custom (e.g. the starting
-# recipes) all can.
-_IRRELEVANT_SCHEMATIC_TYPES = frozenset({"EST_ResourceSink", "EST_Customization", "EST_Tutorial"})
+# Schematic categories that never gate a production recipe: cosmetics and resource-sink point
+# unlocks. Milestones, MAM research, alternates, the tutorial's HUB upgrades and custom (e.g. the
+# starting recipes) all can.
+_IRRELEVANT_SCHEMATIC_TYPES = frozenset({"EST_ResourceSink", "EST_Customization"})
 _ALTERNATE_NAME_PREFIX = "Alternate:"
 
+_BELT_NATIVE_CLASS = "FGBuildableConveyorBelt"
+_PIPELINE_NATIVE_CLASS = "FGBuildablePipeline"
 _ITEM_FORMS = frozenset({"RF_SOLID", "RF_LIQUID", "RF_GAS"})
 """`mForm` values of real items — building and vehicle descriptors carry `RF_INVALID`."""
 _FLUID_FORMS = frozenset({"RF_LIQUID", "RF_GAS"})
@@ -149,11 +156,15 @@ def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
         manufacturing_building_ids=manufacturing_building_ids,
     )
     buildings = _load_buildings(entries_by_native_class, recipes, fluid_item_ids)
-    technologies, recipe_to_technology = _load_technologies(
+    technologies, recipe_to_technologies = _load_technologies(
         entries_by_native_class.get(_SCHEMATIC_NATIVE_CLASS, [])
     )
     recipes = tuple(
-        replace(recipe, unlocked_by=recipe_to_technology.get(recipe.recipe_id))
+        replace(
+            recipe,
+            unlocked_by=next(iter(recipe_to_technologies.get(recipe.recipe_id, ())), None),
+            unlockable_by=tuple(recipe_to_technologies.get(recipe.recipe_id, ())),
+        )
         for recipe in recipes
     )
 
@@ -163,7 +174,35 @@ def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
         technologies=technologies,
         items=items,
         descriptions=_load_descriptions(entries_by_native_class),
+        transport_tiers=_load_transport_tiers(entries_by_native_class),
     )
+
+
+def _load_transport_tiers(
+    entries_by_native_class: dict[str, list[dict[str, Any]]],
+) -> tuple[TransportTier, ...]:
+    """Every belt and pipeline tier, slowest first — see module docstring."""
+    belts = [
+        TransportTier(
+            building_id=entry["ClassName"],
+            name=entry.get("mDisplayName") or entry["ClassName"],
+            capacity_per_minute=float(entry.get("mSpeed") or 0) / 2,
+            carries_fluids=False,
+        )
+        for entry in entries_by_native_class.get(_BELT_NATIVE_CLASS, [])
+    ]
+    pipes = [
+        TransportTier(
+            building_id=entry["ClassName"],
+            name=entry.get("mDisplayName") or entry["ClassName"],
+            capacity_per_minute=float(entry.get("mFlowLimit") or 0) * 60,
+            carries_fluids=True,
+        )
+        for entry in entries_by_native_class.get(_PIPELINE_NATIVE_CLASS, [])
+        if "NoIndicator" not in entry["ClassName"]
+    ]
+    tiers = [tier for tier in belts + pipes if tier.capacity_per_minute > 0]
+    return tuple(sorted(tiers, key=lambda tier: (tier.carries_fluids, tier.capacity_per_minute)))
 
 
 def _index_by_native_class(raw_docs: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -402,9 +441,10 @@ def _parse_prerequisites(raw_dependencies: list[dict[str, Any]] | None) -> tuple
 
 def _load_technologies(
     entries: list[dict[str, Any]],
-) -> tuple[tuple[Technology, ...], dict[str, str]]:
+) -> tuple[tuple[Technology, ...], dict[str, list[str]]]:
+    """Every relevant schematic, and per recipe every schematic unlocking it, in export order."""
     technologies = []
-    recipe_to_technology: dict[str, str] = {}
+    recipe_to_technologies: dict[str, list[str]] = {}
     for entry in entries:
         if entry.get("mType") in _IRRELEVANT_SCHEMATIC_TYPES:
             continue
@@ -415,11 +455,18 @@ def _load_technologies(
                 name=entry.get("mDisplayName") or technology_id,
                 tier=int(float(entry.get("mTechTier") or 0)),
                 prerequisites=_parse_prerequisites(entry.get("mSchematicDependencies")),
+                kind=str(entry.get("mType") or "").removeprefix("EST_").lower(),
+                cost=tuple(
+                    ItemCount(item_id=item_id, amount=amount)
+                    for item_id, amount in parse_item_amounts(entry.get("mCost") or "")
+                ),
             )
         )
         for unlock in entry.get("mUnlocks") or []:
             if unlock.get("Class") != "BP_UnlockRecipe_C":
                 continue
             for recipe_id in parse_quoted_class_list(unlock.get("mRecipes", "")):
-                recipe_to_technology.setdefault(recipe_id, technology_id)
-    return tuple(technologies), recipe_to_technology
+                unlockers = recipe_to_technologies.setdefault(recipe_id, [])
+                if technology_id not in unlockers:
+                    unlockers.append(technology_id)
+    return tuple(technologies), recipe_to_technologies

@@ -27,3 +27,9 @@ class PlacementRecord:
     """What an extractor extracts from (`mExtractableResource`), as that object's path name —
     for miners and oil/well extractors a resource node, keyed exactly as the resource database keys
     nodes; for a Water Extractor the water volume it draws from. `None` for other buildings."""
+    is_paused: bool = False
+    """Put on standby by the player (`mIsProductionPaused`): makes, consumes and draws nothing."""
+    production_boost: float = 1.0
+    """Production amplification from Somersloops (`mCurrentProductionBoost`): 1.0 is none, 2.0 a
+    fully slotted building. It multiplies what the building makes, not what it consumes, and its
+    power draw by the boost squared."""

@@ -10,16 +10,18 @@ the project consumes. See the module docstrings in `header.py`, `chunks.py`, `ob
 from __future__ import annotations
 
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from pioneer.contracts import PlacementRecord, ProductionGraph
 from pioneer.save_parser.chunks import decompress_all
-from pioneer.save_parser.entities import find_entity_spans
+from pioneer.save_parser.entities import EntitySpan, find_entity_spans
 from pioneer.save_parser.header import ParsedHeader, SaveHeader, parse_header
-from pioneer.save_parser.object_table import find_object_table
+from pioneer.save_parser.object_table import RawObjectHeader, find_object_table
 from pioneer.save_parser.placements import to_placement_records_with_recipes
 from pioneer.save_parser.production_graph import to_production_graph
+from pioneer.save_parser.properties import read_object_reference_array
 
 
 def load_body_from_file(path: Path | str) -> tuple[SaveHeader, bytes]:
@@ -63,6 +65,10 @@ class SaveState:
     graph: ProductionGraph
     """What the player has already built, one node per recipe in use. `flows` is empty — see
     production_graph.py for why."""
+    unlocked_technology_ids: frozenset[str] | None = None
+    """Every schematic the player has unlocked — milestones, MAM research, alternates — by the
+    class name the Knowledge Base keys technologies with (`Schematic_3-4_C`). `None` if the save's
+    schematic manager couldn't be read."""
 
 
 def load_save_state(path: Path | str) -> SaveState:
@@ -70,7 +76,30 @@ def load_save_state(path: Path | str) -> SaveState:
     table = find_object_table(body)
     spans = find_entity_spans(body, table)
     placements = to_placement_records_with_recipes(table.headers, body, spans)
-    return SaveState(header=header, placements=placements, graph=to_production_graph(placements))
+    return SaveState(
+        header=header,
+        placements=placements,
+        graph=to_production_graph(placements),
+        unlocked_technology_ids=_purchased_schematics(table.headers, spans, body),
+    )
+
+
+_SCHEMATIC_MANAGER_CLASS_SUFFIX = ".BP_SchematicManager_C"
+
+
+def _purchased_schematics(
+    headers: Sequence[RawObjectHeader], spans: Sequence[EntitySpan], body: bytes
+) -> frozenset[str] | None:
+    """The schematic manager's `mPurchasedSchematics`, as bare class names."""
+    for header, span in zip(headers, spans, strict=True):
+        if not header.class_name.endswith(_SCHEMATIC_MANAGER_CLASS_SUFFIX):
+            continue
+        paths = read_object_reference_array(
+            body, "mPurchasedSchematics", start=span.start, end=span.end
+        )
+        if paths is not None:
+            return frozenset(path.rsplit(".", 1)[-1] for path in paths)
+    return None
 
 
 def _validate_total_size(body: bytes) -> None:

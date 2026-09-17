@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from pioneer.contracts import (
     Coordinates,
+    FactorySite,
     Feedback,
     MaterialFlow,
     PlacementRecord,
@@ -67,15 +68,15 @@ def _artifact(**channels) -> ResponseArtifact:
     )
 
 
-def _client(result, **options) -> tuple[TestClient, list[str]]:
+def _client(result, *, context=None, **options) -> tuple[TestClient, list[str]]:
     asked: list[str] = []
 
-    def answer(question: str):
+    def answer(question: str, current: OrchestratorContext, history):
         asked.append(question)
         return result
 
-    options.setdefault("context", OrchestratorContext())
-    app = create_app(answer=answer, status="291 recipes | no save loaded", **options)
+    loaded = (context or OrchestratorContext(), "291 recipes | no save loaded")
+    app = create_app(context=lambda: loaded, answer=answer, **options)
     return TestClient(app), asked
 
 
@@ -101,6 +102,7 @@ def test_asking_returns_the_answer_rendered_and_escaped() -> None:
 
     assert asked == ["what now?"]
     assert body["response_id"] == "r1"
+    assert body["status"] == "291 recipes | no save loaded"
     assert "&lt;Smelters&gt;" in body["chat_html"]
     assert (body["graph_url"], body["map_url"], body["verification"]) == (None, None, None)
 
@@ -169,7 +171,7 @@ def test_answers_are_verified_and_logged(tmp_path) -> None:
     score = ResponseScore(chat=ChatScore(grounded_fraction=0.8, consistent=True))
     log_path = tmp_path / "responses.jsonl"
     client, _ = _client(
-        _artifact(), verify=lambda artifact: score, response_log=ResponseLog(log_path)
+        _artifact(), verify=lambda artifact, context: score, response_log=ResponseLog(log_path)
     )
 
     body = _ask(client).json()
@@ -212,7 +214,7 @@ def test_the_verification_summary_says_what_failed() -> None:
         ),
     )
     client, _ = _client(
-        _artifact(graph=_GRAPH, map_locations=(_SITE,)), verify=lambda artifact: score
+        _artifact(graph=_GRAPH, map_locations=(_SITE,)), verify=lambda artifact, context: score
     )
 
     checks = _ask(client).json()["verification"]
@@ -227,6 +229,40 @@ def test_the_verification_summary_says_what_failed() -> None:
         "over_optimum_pct": 33.3,
     }
     assert checks["map"]["problems"] == ["already taken"]
+
+
+def test_each_answer_is_built_verified_and_mapped_on_the_context_of_its_time() -> None:
+    """A newer save arrives between two questions: the status follows it, and the first answer's
+    map still shows the extractor it was answered with."""
+    before = OrchestratorContext(
+        resource_nodes=(_IRON_NODE,),
+        existing_placements=(
+            PlacementRecord(
+                building_id="Build_MinerMk1_C",
+                position=Coordinates(x=0, y=0),
+                resource_node_id="node_old",
+            ),
+        ),
+    )
+    after = OrchestratorContext(resource_nodes=(_IRON_NODE,))
+    sources = [(before, "save one"), (before, "save one"), (after, "save two")]
+    seen: list[tuple[str, OrchestratorContext]] = []
+
+    def answer(question, current, history):
+        seen.append(("answer", current))
+        return _artifact(map_locations=(_SITE,))
+
+    def verify(artifact, current):
+        seen.append(("verify", current))
+        return ResponseScore()
+
+    app = create_app(context=lambda: sources.pop(0), answer=answer, verify=verify)
+    client = TestClient(app)  # creating the app took the first
+    map_url = _ask(client).json()["map_url"]
+
+    assert seen == [("answer", before), ("verify", before)]
+    assert "save two" in client.get("/api/status").json()["status"]
+    assert "Build_MinerMk1_C" in client.get(map_url).text
 
 
 def test_feedback_is_merged_field_by_field_and_kept(tmp_path) -> None:
@@ -266,3 +302,42 @@ def test_feedback_is_taken_for_answers_from_before_a_restart(tmp_path) -> None:
 
     assert response.status_code == 200
     assert client.get("/responses/earlier/map").status_code == 404  # its pages are gone
+
+
+def test_an_answer_pointing_at_factories_gets_a_map_of_them() -> None:
+    site = FactorySite(
+        site_id="site_3",
+        position=Coordinates(x=100, y=200),
+        placements=(
+            PlacementRecord(
+                building_id="Build_SmelterMk1_C",
+                position=Coordinates(x=100, y=200),
+                recipe_id="Recipe_IngotIron_C",
+            ),
+        ),
+    )
+    client, _ = _client(_artifact(factory_sites=(site,)))
+
+    body = _ask(client).json()
+    page = client.get(body["map_url"]).text
+
+    assert body["map_url"] == "/responses/r1/map"
+    assert "site_3: Recipe_IngotIron_C" in page
+
+
+def test_the_conversation_so_far_is_passed_on_and_bounded() -> None:
+    histories = []
+
+    def answer(question, current, history):
+        histories.append(history)
+        return _artifact()
+
+    client = TestClient(create_app(context=lambda: (OrchestratorContext(), ""), answer=answer))
+    turn = {"question": "how do I make plates?", "answer": "Use a Constructor."}
+
+    body = client.post("/api/ask", json={"question": "and rods?", "history": [turn]}).json()
+    too_long = client.post("/api/ask", json={"question": "q", "history": [turn] * 9})
+
+    assert histories == [[("how do I make plates?", "Use a Constructor.")]]
+    assert body["chat"] == "Build two <Smelters>."
+    assert too_long.status_code == 422

@@ -19,6 +19,10 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
     [
         pytest.param("stal_mielec.sav", 29211, 10000, id="stal_mielec"),
         pytest.param("wielka_polska_niesmiertelna.sav", 55012, 18000, id="wielka_polska"),
+        # Early-game saves: the persistent level's table is small enough (411 kB for alfa) that
+        # size thresholds alone passed it over for a sublevel's.
+        pytest.param("alfa.sav", 1919, 1000, id="alfa"),
+        pytest.param("tak.sav", 5165, 2200, id="tak"),
     ],
 )
 def test_object_table_matches_known_counts(

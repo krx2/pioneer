@@ -10,13 +10,14 @@ placeholder grid standing in for the in-game map image.
 from __future__ import annotations
 
 import html
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from pioneer.contracts import PlacementRecord, Purity, RankedLocation, ResourceNode
+from pioneer.contracts import FactorySite, PlacementRecord, Purity, RankedLocation, ResourceNode
 
-MarkerKind = Literal["resource", "existing_building", "recommended"]
+MarkerKind = Literal["resource", "existing_building", "recommended", "factory"]
 
 _PURITY_COLOR = {
     Purity.IMPURE: "#a9702f",
@@ -25,6 +26,7 @@ _PURITY_COLOR = {
 }
 _EXISTING_COLOR = "#6b7683"
 _RECOMMENDED_COLOR = "#33c17a"
+_FACTORY_COLOR = "#2f6fed"
 
 
 @dataclass(frozen=True)
@@ -42,9 +44,11 @@ def build_markers(
     placements: tuple[PlacementRecord, ...] = (),
     ranked_locations: tuple[RankedLocation, ...] = (),
     names: Mapping[str, str] | None = None,
+    factory_sites: tuple[FactorySite, ...] = (),
 ) -> tuple[MapMarker, ...]:
     """`names` maps item, recipe and building ids to the names labels show; an id without one is
-    shown as it is."""
+    shown as it is. A factory site is labelled with its id and the recipes most of its buildings
+    run."""
 
     def name(class_id: str) -> str:
         return (names or {}).get(class_id, class_id)
@@ -82,7 +86,22 @@ def build_markers(
             sorted(ranked_locations, key=lambda loc: -loc.score), start=1
         )
     ]
+    markers += [
+        MapMarker(
+            x=site.position.x,
+            y=site.position.y,
+            kind="factory",
+            label=f"{site.site_id}: {_main_recipes(site, name)}",
+            color=_FACTORY_COLOR,
+        )
+        for site in factory_sites
+    ]
     return tuple(markers)
+
+
+def _main_recipes(site: FactorySite, name: Callable[[str], str], shown: int = 3) -> str:
+    counts = Counter(p.recipe_id for p in site.placements if p.recipe_id is not None)
+    return ", ".join(name(recipe_id) for recipe_id, _ in counts.most_common(shown))
 
 
 def compute_view_box(
@@ -99,7 +118,12 @@ def compute_view_box(
     return (min_x, min_y, max_x - min_x, max_y - min_y)
 
 
-_MARKER_RADIUS_FACTOR = {"resource": 0.7, "existing_building": 0.5, "recommended": 0.8}
+_MARKER_RADIUS_FACTOR = {
+    "resource": 0.7,
+    "existing_building": 0.5,
+    "recommended": 0.8,
+    "factory": 1.1,
+}
 """Marker radius as a fraction of `unit` (see `render_page`) — sized relative to the view box
 rather than a fixed pixel count, since game coordinates can range from small fixture numbers up
 to the real map's much larger scale."""
@@ -112,7 +136,7 @@ def _svg_marker(marker: MapMarker, *, unit: float, show_label: bool) -> str:
         f'<rect x="{marker.x - radius}" y="{marker.y - radius}" width="{radius * 2}" '
         f'height="{radius * 2}" fill="{marker.color}" stroke="#0b0f14" '
         f'stroke-width="{stroke_width}" />'
-        if marker.kind == "existing_building"
+        if marker.kind in ("existing_building", "factory")
         else f'<circle cx="{marker.x}" cy="{marker.y}" r="{radius}" fill="{marker.color}" '
         f'stroke="#0b0f14" stroke-width="{stroke_width}" />'
     )
@@ -126,7 +150,8 @@ def _svg_marker(marker: MapMarker, *, unit: float, show_label: bool) -> str:
     # A recommended location's position is typically the same resource node it recommends (per
     # Location Advisor), so its label goes *above* the marker rather than below — otherwise it'd
     # collide with the resource node's own label sitting right underneath at the same coordinates.
-    label_y = marker.y - radius - unit if marker.kind == "recommended" else marker.y + radius + unit
+    above = marker.kind in ("recommended", "factory")
+    label_y = marker.y - radius - unit if above else marker.y + radius + unit
     label = (
         f'<text x="{marker.x}" y="{label_y}" text-anchor="middle" class="label" '
         f'style="{label_style}">{html.escape(marker.label)}</text>'
@@ -149,17 +174,20 @@ def render_page(
     title: str = "Factory Map",
     names: Mapping[str, str] | None = None,
     label_limit: int = 40,
+    factory_sites: tuple[FactorySite, ...] = (),
 ) -> str:
     """Every marker keeps its label as a hover tooltip; past `label_limit` markers only the
-    recommended ones are also labelled on the map — a real map's hundreds of nodes would
-    otherwise bury the pins under text."""
-    markers = build_markers(resource_nodes, placements, ranked_locations, names)
+    recommended sites and factories are also labelled on the map — a real map's hundreds of nodes
+    would otherwise bury the pins under text."""
+    markers = build_markers(resource_nodes, placements, ranked_locations, names, factory_sites)
     label_everything = len(markers) <= label_limit
     min_x, min_y, w, h = compute_view_box(markers)
     unit = max(w, h) / 45
     grid = _svg_grid(min_x, min_y, w, h, unit=unit)
     markers_svg = "".join(
-        _svg_marker(m, unit=unit, show_label=label_everything or m.kind == "recommended")
+        _svg_marker(
+            m, unit=unit, show_label=label_everything or m.kind in ("recommended", "factory")
+        )
         for m in markers
     )
     return f"""<!doctype html>
@@ -181,6 +209,7 @@ def render_page(
   <span><i class="dot" style="background:{_PURITY_COLOR[Purity.IMPURE]}"></i> impure node</span>
   <span><i class="sq" style="background:{_EXISTING_COLOR}"></i> existing building</span>
   <span><i class="dot" style="background:{_RECOMMENDED_COLOR}"></i> recommended</span>
+  <span><i class="sq" style="background:{_FACTORY_COLOR}"></i> factory to extend</span>
 </div>
 </body>
 </html>

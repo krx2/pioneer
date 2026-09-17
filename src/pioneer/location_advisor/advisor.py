@@ -1,4 +1,11 @@
-"""Ranks unclaimed resource deposits of a given type as candidate build sites, best first.
+"""Ranks unclaimed resource deposits of a given type as candidate build sites, best first, and
+finds where the player's existing factories stand.
+
+**Factory sites.** `find_factory_sites` groups running production buildings (those with a recipe)
+that stand within `link_distance` of each other — through any chain of them — into sites. 50 m
+separates the factories of real saves well: closer, and one factory floor splits in two; much
+farther, and neighbouring factories merge. Belts, foundations and power poles aren't considered;
+they'd join everything to everything.
 
 **Unclaimed cross-reference.** A deposit is claimed when an extractor in the save names it as what
 it extracts from (`PlacementRecord.resource_node_id` — exact, the save's own
@@ -26,7 +33,14 @@ import math
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
 
-from pioneer.contracts import Coordinates, PlacementRecord, Purity, RankedLocation, ResourceNode
+from pioneer.contracts import (
+    Coordinates,
+    FactorySite,
+    PlacementRecord,
+    Purity,
+    RankedLocation,
+    ResourceNode,
+)
 
 DistanceFn = Callable[[Coordinates, Coordinates], float]
 
@@ -78,6 +92,59 @@ def rank_locations(
     return tuple(ranked)
 
 
+def find_factory_sites(
+    placements: Sequence[PlacementRecord],
+    *,
+    link_distance: float = 5000.0,
+    distance_fn: DistanceFn = _euclidean_distance,
+) -> tuple[FactorySite, ...]:
+    """The player's factories, most buildings first, ids `site_1`, `site_2`, ... in that order.
+    Paused buildings and those running no recipe are left out (see module docstring)."""
+    machines = [p for p in placements if p.recipe_id is not None and not p.is_paused]
+    parent = list(range(len(machines)))
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    cells: dict[tuple[int, int], list[int]] = defaultdict(list)
+    grid = _PositionGrid((), link_distance)
+    for index, machine in enumerate(machines):
+        cells[grid.cell(machine.position)].append(index)
+    for (column, row), members in cells.items():
+        for d_column in (-1, 0, 1):
+            for d_row in (-1, 0, 1):
+                for other in cells.get((column + d_column, row + d_row), ()):
+                    for index in members:
+                        if index < other and (
+                            distance_fn(machines[index].position, machines[other].position)
+                            <= link_distance
+                        ):
+                            parent[root(index)] = root(other)
+
+    groups: dict[int, list[PlacementRecord]] = defaultdict(list)
+    for index, machine in enumerate(machines):
+        groups[root(index)].append(machine)
+    ordered = sorted(
+        groups.values(),
+        key=lambda group: (-len(group), group[0].position.x, group[0].position.y),
+    )
+    return tuple(
+        FactorySite(
+            site_id=f"site_{number}",
+            position=Coordinates(
+                x=sum(p.position.x for p in group) / len(group),
+                y=sum(p.position.y for p in group) / len(group),
+                z=sum(p.position.z for p in group) / len(group),
+            ),
+            placements=tuple(group),
+        )
+        for number, group in enumerate(ordered, start=1)
+    )
+
+
 class _PositionGrid:
     """Positions bucketed into square x/y cells of side `radius`: everything within `radius` of a
     point lies in that point's cell or one of the eight around it."""
@@ -86,15 +153,15 @@ class _PositionGrid:
         self._cell_size = max(radius, 1.0)
         self._cells: dict[tuple[int, int], list[Coordinates]] = defaultdict(list)
         for position in positions:
-            self._cells[self._cell(position)].append(position)
+            self._cells[self.cell(position)].append(position)
 
     def around(self, position: Coordinates) -> Iterator[Coordinates]:
-        column, row = self._cell(position)
+        column, row = self.cell(position)
         for d_column in (-1, 0, 1):
             for d_row in (-1, 0, 1):
                 yield from self._cells.get((column + d_column, row + d_row), ())
 
-    def _cell(self, position: Coordinates) -> tuple[int, int]:
+    def cell(self, position: Coordinates) -> tuple[int, int]:
         return (
             math.floor(position.x / self._cell_size),
             math.floor(position.y / self._cell_size),

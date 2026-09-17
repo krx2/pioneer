@@ -5,15 +5,18 @@ module and land in the right `ResponseArtifact` field, and an unreachable/misbeh
 come back as a typed `OrchestratorUnavailable`, never a raised exception."""
 
 import json
+from dataclasses import replace
 from typing import Any
 
 from pioneer.contracts import (
     Building,
     Coordinates,
+    FactorySite,
     GameState,
     GeneratorFuel,
     Item,
     ItemAmount,
+    ItemCount,
     PlacementRecord,
     ProductionGraph,
     ProductionNode,
@@ -21,6 +24,8 @@ from pioneer.contracts import (
     Recipe,
     ResourceNode,
     ResponseArtifact,
+    Technology,
+    TransportTier,
 )
 from pioneer.orchestrator.orchestrator import (
     OrchestratorContext,
@@ -193,7 +198,13 @@ def test_plan_production_tool_populates_graph() -> None:
     # The second round's tool result message must carry the real machine count back to the model.
     second_round_messages = llm.calls[1]["messages"]  # type: ignore[attr-defined]
     tool_result = next(m for m in second_round_messages if m["role"] == "tool")
-    assert '"Recipe_IronPlate_C": 1' in tool_result["content"]
+    assert json.loads(tool_result["content"])["stages"] == [
+        {
+            "recipe_id": "Recipe_IronPlate_C",
+            "building_id": "Build_ConstructorMk1_C",
+            "machines": 1,
+        }
+    ]
 
 
 def test_expand_existing_factory_without_save_reports_error_gracefully() -> None:
@@ -455,16 +466,41 @@ def test_item_names_resolve_and_planning_stops_at_raw_resources() -> None:
     }
 
 
-def test_unknown_item_is_reported_with_the_closest_matches() -> None:
+def test_a_name_several_items_fit_is_reported_with_them() -> None:
     context = OrchestratorContext(recipes=_RECIPES, items=_ITEMS)
 
     result, tool_result = _run_single_tool(
-        context, "plan_production", {"target_item_id": "Iron Plat", "target_rate_per_minute": 20}
+        context, "plan_production", {"target_item_id": "Iron", "target_rate_per_minute": 20}
     )
 
     assert result.graph is None
-    assert tool_result["error"] == "unknown item 'Iron Plat'"
-    assert tool_result["did_you_mean"][0]["item_id"] == "Desc_IronPlate_C"
+    assert "'Iron' could be several items" in tool_result["error"]
+    assert {match["item_id"] for match in tool_result["did_you_mean"]} == {
+        "Desc_OreIron_C",
+        "Desc_IronIngot_C",
+        "Desc_IronPlate_C",
+    }
+
+
+def test_an_unknown_item_is_reported_as_such() -> None:
+    context = OrchestratorContext(recipes=_RECIPES, items=_ITEMS)
+
+    _, tool_result = _run_single_tool(
+        context, "plan_production", {"target_item_id": "Uranium", "target_rate_per_minute": 20}
+    )
+
+    assert tool_result == {"error": "unknown item 'Uranium'", "did_you_mean": []}
+
+
+def test_a_partial_or_plural_name_one_item_fits_is_taken() -> None:
+    context = OrchestratorContext(recipes=_RECIPES, items=_ITEMS)
+
+    for name in ("Iron Plat", "iron plates"):
+        result, tool_result = _run_single_tool(
+            context, "plan_production", {"target_item_id": name, "target_rate_per_minute": 20}
+        )
+        assert "error" not in tool_result, name
+        assert result.graph.nodes[0].recipe_id == "Recipe_IronPlate_C"
 
 
 def test_plan_production_honours_recipe_choices_given_by_item_name() -> None:
@@ -555,10 +591,12 @@ def test_expansion_draws_on_the_existing_factorys_surplus_first() -> None:
         {
             "action": "extend",
             "recipe_id": "Recipe_IronPlate_C",
+            "building_id": "Build_ConstructorMk1_C",
             "additional_machine_count": 1,
             "target_node_id": "save_Recipe_IronPlate_C",
         }
     ]
+    assert "added_power_draw_mw" not in tool_result  # no building data to tell
     assert tool_result["drawn_from_existing_surplus_per_minute"] == {
         "Desc_IronPlate_C": 20,
         "Desc_IronIngot_C": 30,
@@ -597,6 +635,95 @@ def test_a_rate_that_is_not_positive_is_refused() -> None:
         )
         assert "positive" in tool_result["error"]
         assert result.graph is None
+
+
+_IRON_BUILDINGS = (
+    Building(
+        building_id="Build_SmelterMk1_C",
+        name="Smelter",
+        power_consumption_mw=4,
+        input_slots=1,
+        output_slots=1,
+    ),
+    Building(
+        building_id="Build_ConstructorMk1_C",
+        name="Constructor",
+        power_consumption_mw=4,
+        input_slots=1,
+        output_slots=1,
+    ),
+    Building(
+        building_id="Build_GeneratorBiomass_C",
+        name="Biomass Burner",
+        power_consumption_mw=-30,
+        input_slots=1,
+        output_slots=0,
+    ),
+)
+
+
+def test_expansion_names_the_buildings_their_power_and_the_grids_spare() -> None:
+    """1 smelter under 2 constructors on one 30 MW burner: 12 MW drawn, 18 spare. 60 more plates
+    a minute takes a constructor (4 MW) and a smelter (4 MW)."""
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,),
+        buildings=_IRON_BUILDINGS,
+        items=_ITEMS,
+        existing_graph=_existing_iron(smelters=1, constructors=2),
+        existing_placements=(
+            _placed("Build_SmelterMk1_C", recipe_id="Recipe_IngotIron_C"),
+            _placed("Build_ConstructorMk1_C", recipe_id="Recipe_IronPlate_C"),
+            _placed("Build_ConstructorMk1_C", recipe_id="Recipe_IronPlate_C"),
+            _placed("Build_GeneratorBiomass_C"),
+        ),
+    )
+
+    _, tool_result = _run_single_tool(
+        context,
+        "expand_existing_factory",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 60},
+    )
+
+    assert {
+        change["recipe_id"]: (change["building_id"], change["power_mw"])
+        for change in tool_result["changes"]
+    } == {
+        "Recipe_IronPlate_C": ("Build_ConstructorMk1_C", 4),
+        "Recipe_IngotIron_C": ("Build_SmelterMk1_C", 4),
+    }
+    assert tool_result["added_power_draw_mw"] == 8
+    assert tool_result["grid_spare_power_mw"] == 18
+    assert tool_result["target_item_id"] == "Desc_IronPlate_C"
+    assert tool_result["names"]["Build_ConstructorMk1_C"] == "Constructor"
+
+
+def test_a_plan_names_each_stages_building_and_power() -> None:
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,), buildings=_IRON_BUILDINGS, items=_ITEMS
+    )
+
+    _, tool_result = _run_single_tool(
+        context,
+        "plan_production",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
+    )
+
+    assert tool_result["stages"] == [
+        {
+            "recipe_id": "Recipe_IronPlate_C",
+            "building_id": "Build_ConstructorMk1_C",
+            "machines": 2,
+            "power_mw": 8,
+        },
+        {
+            "recipe_id": "Recipe_IngotIron_C",
+            "building_id": "Build_SmelterMk1_C",
+            "machines": 2,
+            "power_mw": 8,
+        },
+    ]
+    assert tool_result["net_power_draw_mw"] == 16
+    assert "grid_spare_power_mw" not in tool_result  # no save: nothing to tell
 
 
 def test_expansion_reports_shortfalls_the_existing_factory_already_has() -> None:
@@ -981,3 +1108,458 @@ def test_retrieved_passages_are_part_of_the_grounding() -> None:
     )
 
     assert _QA_CORPUS[0].text in result.grounding
+
+
+# --- Unlocks, recipe comparison, power and transport -------------------------------------------
+
+_START = Technology(technology_id="Schematic_Start_C", name="Start", tier=0, kind="custom")
+_PLATES = Technology(
+    technology_id="Schematic_1-1_C",
+    name="Plates",
+    tier=1,
+    kind="milestone",
+    prerequisites=("Schematic_Start_C",),
+    cost=(ItemCount(item_id="Desc_IronIngot_C", amount=50),),
+)
+_PURE_DRIVE = Technology(
+    technology_id="Schematic_Alternate_PureIronIngot_C",
+    name="Alternate: Pure Iron Ingot",
+    tier=0,
+    kind="alternate",
+    prerequisites=("Schematic_1-1_C",),
+)
+_GATED_RECIPES = (
+    replace(_RECIPES[0], unlockable_by=("Schematic_1-1_C",)),
+    replace(_IRON_INGOT, unlockable_by=("Schematic_Start_C",)),
+    replace(_PURE_IRON_INGOT, unlockable_by=("Schematic_Alternate_PureIronIngot_C",)),
+)
+_WATER_ITEMS = (*_ITEMS, Item(item_id="Desc_Water_C", name="Water", is_raw_resource=True))
+
+
+def _gated(unlocked: set[str] | None, **fields: Any) -> OrchestratorContext:
+    return OrchestratorContext(
+        recipes=_GATED_RECIPES,
+        items=_WATER_ITEMS,
+        technologies=(_START, _PLATES, _PURE_DRIVE),
+        unlocked_technology_ids=None if unlocked is None else frozenset(unlocked),
+        **fields,
+    )
+
+
+def test_a_plan_the_unlocked_recipes_cannot_make_says_what_to_unlock() -> None:
+    result, tool_result = _run_single_tool(
+        _gated({"Schematic_Start_C"}),
+        "plan_production",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 20},
+    )
+
+    assert result.graph is not None
+    assert tool_result["needs_unlocking"] == [
+        {
+            "recipe_id": "Recipe_IronPlate_C",
+            "unlock_with": "Schematic_1-1_C",
+            "tier": 1,
+            "kind": "milestone",
+        }
+    ]
+    assert tool_result["names"]["Schematic_1-1_C"] == "Plates"
+
+
+def test_a_plan_uses_an_unlocked_alternate_over_a_locked_standard_recipe() -> None:
+    context = _gated({"Schematic_1-1_C", "Schematic_Alternate_PureIronIngot_C"})
+
+    result, tool_result = _run_single_tool(
+        context, "plan_production", {"target_item_id": "Iron Plate", "target_rate_per_minute": 20}
+    )
+
+    assert "Recipe_Alternate_PureIronIngot_C" in {n.recipe_id for n in result.graph.nodes}
+    assert "needs_unlocking" not in tool_result
+
+
+def test_with_unlocks_unknown_every_recipe_is_fair_game() -> None:
+    _, tool_result = _run_single_tool(
+        _gated(None),
+        "plan_production",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 20},
+    )
+
+    assert "needs_unlocking" not in tool_result
+
+
+def test_listed_recipes_say_whether_they_are_unlocked() -> None:
+    _, tool_result = _run_single_tool(
+        _gated({"Schematic_Start_C"}), "list_recipes_for_item", {"item": "Iron Ingot"}
+    )
+
+    assert {r["recipe_id"]: (r["unlocked"], r["unlocked_by"]) for r in tool_result["recipes"]} == {
+        "Recipe_IngotIron_C": (True, ["Schematic_Start_C"]),
+        "Recipe_Alternate_PureIronIngot_C": (False, ["Schematic_Alternate_PureIronIngot_C"]),
+    }
+
+
+def test_plan_unlocks_orders_what_is_missing_with_prerequisites_and_cost() -> None:
+    _, tool_result = _run_single_tool(
+        _gated({"Schematic_Start_C"}), "plan_unlocks", {"item": "Iron Plate"}
+    )
+
+    assert tool_result["already_unlocked"] is False
+    assert tool_result["unlock_order"] == [
+        {
+            "technology_id": "Schematic_1-1_C",
+            "kind": "milestone",
+            "tier": 1,
+            "cost": {"Desc_IronIngot_C": 50},
+            "unlocks_recipes": ["Recipe_IronPlate_C"],
+        }
+    ]
+
+
+def test_plan_unlocks_for_an_unlocked_chain_has_nothing_to_do() -> None:
+    _, tool_result = _run_single_tool(
+        _gated({"Schematic_Start_C", "Schematic_1-1_C"}), "plan_unlocks", {"item": "Iron Plate"}
+    )
+
+    assert (tool_result["already_unlocked"], tool_result["unlock_order"]) == (True, [])
+
+
+def test_plan_unlocks_refuses_raw_resources_and_missing_data() -> None:
+    _, raw = _run_single_tool(_gated(set()), "plan_unlocks", {"item": "Iron Ore"})
+    _, no_data = _run_single_tool(
+        OrchestratorContext(recipes=_RECIPES, items=_ITEMS), "plan_unlocks", {"item": "Iron Plate"}
+    )
+
+    assert "raw resource" in raw["error"]
+    assert "no technology data" in no_data["error"]
+
+
+_REFINERY = Building(
+    building_id="Build_OilRefinery_C",
+    name="Refinery",
+    power_consumption_mw=30,
+    input_slots=2,
+    output_slots=2,
+)
+
+
+def test_compare_recipes_plans_each_one_as_a_whole_chain() -> None:
+    """60 ingots a minute: two smelters on 60 ore (8 MW), or one refinery on 35 ore and 20 water
+    (30 MW) -- which the player hasn't unlocked."""
+    context = _gated({"Schematic_Start_C"}, buildings=(*_IRON_BUILDINGS, _REFINERY))
+
+    _, tool_result = _run_single_tool(
+        context, "compare_recipes", {"item": "Iron Ingot", "target_rate_per_minute": 60}
+    )
+
+    options = {o["recipe_id"]: o for o in tool_result["options"]}
+    standard = options["Recipe_IngotIron_C"]
+    pure = options["Recipe_Alternate_PureIronIngot_C"]
+    assert (standard["machines"], standard["power_mw"], standard["unlocked"]) == (2, 8, True)
+    assert standard["inputs_per_minute"] == {"Desc_OreIron_C": 60}
+    assert (pure["machines"], pure["power_mw"], pure["unlocked"]) == (1, 30, False)
+    assert pure["inputs_per_minute"] == {"Desc_OreIron_C": 35, "Desc_Water_C": 20}
+    assert pure["needs_unlocking"][0]["unlock_with"] == "Schematic_Alternate_PureIronIngot_C"
+    assert tool_result["fewest_machines"] == "Recipe_Alternate_PureIronIngot_C"
+    assert tool_result["least_power"] == "Recipe_IngotIron_C"
+    assert tool_result["least_input"] == "Recipe_Alternate_PureIronIngot_C"
+
+
+def test_compare_recipes_defaults_to_ten_a_minute() -> None:
+    _, tool_result = _run_single_tool(_gated(None), "compare_recipes", {"item": "Iron Plate"})
+
+    assert tool_result["target_rate_per_minute"] == 10
+    assert "least_power" not in tool_result  # no building data
+    assert [o["recipe_id"] for o in tool_result["options"]] == ["Recipe_IronPlate_C"]
+
+
+_FUEL_POWER = (
+    replace(
+        _POWER_BUILDINGS[1],
+        fuels=(GeneratorFuel(fuel_item_id="Desc_LiquidFuel_C"),),
+    ),
+    replace(_COAL_POWER[0]),
+    _COAL_POWER[1],
+    _POWER_BUILDINGS[0],
+)
+_FUEL_AND_COAL_ITEMS = (*_FUEL_ITEMS, *_COAL_ITEMS)
+
+
+def test_plan_power_lists_generators_fuel_water_and_extractors() -> None:
+    """300 MW: two 250 MW fuel generators (40 m³ of fuel), or four coal generators (60 coal and
+    180 m³ of water -- two water extractors)."""
+    context = OrchestratorContext(buildings=_FUEL_POWER, items=_FUEL_AND_COAL_ITEMS)
+
+    _, tool_result = _run_single_tool(context, "plan_power", {"target_mw": 300})
+
+    coal, fuel = tool_result["options"]
+    assert (coal["generator_id"], coal["generators"], coal["capacity_mw"]) == (
+        "Build_GeneratorCoal_C",
+        4,
+        300,
+    )
+    assert (coal["fuel_per_minute"], coal["supplemental_per_minute"]) == (60, 180)
+    assert coal["extractors"] == {"building_id": "Build_WaterPump_C", "count": 2, "power_mw": 40}
+    assert (fuel["generators"], fuel["fuel_per_minute"]) == (2, 40)
+    assert "fuel_supply" not in tool_result
+
+
+def test_plan_power_for_a_named_fuel_includes_how_to_make_it() -> None:
+    context = OrchestratorContext(
+        recipes=(_REFINERY_FUEL,), buildings=_FUEL_POWER, items=_FUEL_AND_COAL_ITEMS
+    )
+
+    _, tool_result = _run_single_tool(context, "plan_power", {"target_mw": 500, "fuel": "Fuel"})
+
+    (option,) = tool_result["options"]
+    assert (option["generators"], option["fuel_per_minute"]) == (2, 40)
+    supply = tool_result["fuel_supply"]
+    assert supply["per_minute"] == 40
+    assert supply["stages"] == [
+        {
+            "recipe_id": "Recipe_LiquidFuel_C",
+            "building_id": "Build_OilRefinery_C",
+            "machines": 1,
+            "power_mw": 30,
+        }
+    ]
+
+
+def test_plan_power_for_a_mined_fuel_says_so() -> None:
+    context = OrchestratorContext(buildings=_FUEL_POWER, items=_FUEL_AND_COAL_ITEMS)
+
+    _, tool_result = _run_single_tool(context, "plan_power", {"target_mw": 75, "fuel": "Coal"})
+
+    assert tool_result["fuel_supply"] == {"mined": True, "per_minute": 15}
+
+
+def test_plan_power_refuses_nonsense() -> None:
+    context = OrchestratorContext(buildings=_FUEL_POWER, items=_FUEL_AND_COAL_ITEMS)
+
+    _, negative = _run_single_tool(context, "plan_power", {"target_mw": -5})
+    _, unburnable = _run_single_tool(context, "plan_power", {"target_mw": 5, "fuel": "Crude Oil"})
+
+    assert "positive" in negative["error"]
+    assert "no generator burns Desc_LiquidOil_C" in unburnable["error"]
+
+
+def test_a_plan_says_which_belt_each_flow_needs() -> None:
+    tiers = (
+        TransportTier(
+            building_id="Build_ConveyorBeltMk1_C",
+            name="Conveyor Belt Mk.1",
+            capacity_per_minute=60,
+            carries_fluids=False,
+        ),
+    )
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,), items=_ITEMS, transport_tiers=tiers
+    )
+
+    _, tool_result = _run_single_tool(
+        context, "plan_production", {"target_item_id": "Iron Plate", "target_rate_per_minute": 60}
+    )
+
+    assert tool_result["transport"] == [
+        {
+            "item_id": "Desc_IronIngot_C",
+            "per_minute": 90,
+            "from": "Recipe_IngotIron_C",
+            "to": "Recipe_IronPlate_C",
+            "tier": "Build_ConveyorBeltMk1_C",
+            "lines": 2,
+        },
+        {
+            "item_id": "Desc_OreIron_C",
+            "per_minute": 90,
+            "from": "outside",
+            "to": "Recipe_IngotIron_C",
+            "tier": "Build_ConveyorBeltMk1_C",
+            "lines": 2,
+        },
+        {
+            "item_id": "Desc_IronPlate_C",
+            "per_minute": 60,
+            "from": "Recipe_IronPlate_C",
+            "to": "output",
+            "tier": "Build_ConveyorBeltMk1_C",
+            "lines": 1,
+        },
+    ]
+
+
+# --- Where: factory sites and deposits ----------------------------------------------------------
+
+
+def _smelting_site(site_id: str, x: float, smelters: int) -> FactorySite:
+    return FactorySite(
+        site_id=site_id,
+        position=Coordinates(x=x, y=0),
+        placements=tuple(
+            _placed("Build_SmelterMk1_C", recipe_id="Recipe_IngotIron_C") for _ in range(smelters)
+        ),
+    )
+
+
+def test_an_extension_names_the_factory_site_that_runs_the_recipe_most() -> None:
+    """60 plates a minute need 90 ingots; 2 smelters spare 60, so 1 more smelter goes to the site
+    with the most of them, which is the answer's map. No site makes plates yet."""
+    small, big = _smelting_site("site_2", 50_000, 1), _smelting_site("site_1", 0, 3)
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,),
+        items=_ITEMS,
+        existing_graph=_existing_iron(smelters=2, constructors=0),
+        factory_sites=(small, big),
+    )
+
+    result, tool_result = _run_single_tool(
+        context,
+        "expand_existing_factory",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 60},
+    )
+
+    ingots = next(c for c in tool_result["changes"] if c["recipe_id"] == "Recipe_IngotIron_C")
+    plates = next(c for c in tool_result["changes"] if c["recipe_id"] == "Recipe_IronPlate_C")
+    assert ingots["at_site"] == "site_1"
+    assert "at_site" not in plates  # no site runs plates
+    assert tool_result["sites"]["site_1"]["buildings"] == 3
+    assert tool_result["sites"]["site_1"]["main_recipes"] == ["Recipe_IngotIron_C"]
+    assert result.factory_sites == (big,)
+
+
+def test_a_plan_suggests_a_deposit_for_each_raw_input_and_maps_them() -> None:
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,), items=_ITEMS, resource_nodes=_NODES
+    )
+
+    result, tool_result = _run_single_tool(
+        context, "plan_production", {"target_item_id": "Iron Plate", "target_rate_per_minute": 20}
+    )
+
+    assert tool_result["suggested_sites"] == {
+        "Desc_OreIron_C": {
+            "resource_node_id": "Persistent_Level:PersistentLevel.BP_ResourceNode1",
+            "purity": "pure",
+            "distance_m": 10,
+        }
+    }
+    assert [loc.resource_node_id for loc in result.map_locations] == [
+        "Persistent_Level:PersistentLevel.BP_ResourceNode1"
+    ]
+    assert result.map_reference == Coordinates(x=0, y=0, z=0)
+
+
+def test_an_explicit_site_ranking_is_not_replaced_by_a_plans_suggestions() -> None:
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,), items=_ITEMS, resource_nodes=_NODES
+    )
+    llm = _scripted_tool_calling_llm(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    _tool_call("c1", "rank_build_locations", {"item_id": "geyser"}),
+                    _tool_call(
+                        "c2",
+                        "plan_production",
+                        {"target_item_id": "Iron Plate", "target_rate_per_minute": 20},
+                    ),
+                ],
+            },
+            {"content": "done", "tool_calls": []},
+        ]
+    )
+
+    result = handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "q",
+        context,
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="r",
+    )
+
+    assert [loc.resource_node_id for loc in result.map_locations] == [
+        "Persistent_Level:PersistentLevel.BP_ResourceNodeGeyser1"
+    ]
+
+
+def test_ranked_sites_are_reported_in_metres() -> None:
+    context = OrchestratorContext(items=_ITEMS, resource_nodes=_NODES)
+
+    _, tool_result = _run_single_tool(context, "rank_build_locations", {"item_id": "Iron Ore"})
+
+    assert [site["distance_m"] for site in tool_result["locations"]] == [10, 900]
+
+
+def test_earlier_turns_come_before_the_question_and_ground_the_answer() -> None:
+    llm = _scripted_tool_calling_llm([{"content": "About 12 MW.", "tool_calls": []}])
+
+    result = handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "and the power?",
+        OrchestratorContext(),
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="r",
+        history=[("plan 20 plates", "Build 1 Constructor; it draws 12 MW.")],
+    )
+
+    messages = llm.calls[0]["messages"]  # type: ignore[attr-defined]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user"]
+    assert messages[1]["content"] == "plan 20 plates"
+    assert messages[3]["content"] == "and the power?"
+    assert result.grounding == (
+        "and the power?",
+        "plan 20 plates",
+        "Build 1 Constructor; it draws 12 MW.",
+    )
+
+
+def test_a_tool_call_the_model_wrote_as_text_is_executed_anyway() -> None:
+    """Local models sometimes answer with the call instead of making it."""
+    written = json.dumps(
+        {
+            "name": "plan_production",
+            "arguments": {"target_item_id": "Iron Plate", "target_rate_per_minute": 20},
+        }
+    )
+    llm = _scripted_tool_calling_llm(
+        [
+            {"content": f"Let me check: {written}", "tool_calls": []},
+            {"content": "You need 1 Constructor.", "tool_calls": []},
+        ]
+    )
+
+    result = handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "20 plates a minute please",
+        OrchestratorContext(recipes=_RECIPES, items=_ITEMS),
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="r",
+    )
+
+    assert result.chat == "You need 1 Constructor."
+    assert result.graph is not None
+    assert result.graph.nodes[0].recipe_id == "Recipe_IronPlate_C"
+
+
+def test_an_answer_that_merely_contains_braces_stays_an_answer() -> None:
+    llm = _scripted_tool_calling_llm(
+        [{"content": 'Set it to {"clock": 250} in the UI.', "tool_calls": []}]
+    )
+
+    result = handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "how do I overclock?",
+        OrchestratorContext(recipes=_RECIPES, items=_ITEMS),
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="r",
+    )
+
+    assert result.chat == 'Set it to {"clock": 250} in the UI.'
+    assert result.graph is None

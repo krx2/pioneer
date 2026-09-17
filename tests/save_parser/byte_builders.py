@@ -145,6 +145,24 @@ def float_property_tag_bytes(
     return out + struct.pack("<f", value)
 
 
+def bool_property_tag_bytes(*, name: str, value_bytes: bytes = b"\x00\x10") -> bytes:
+    """One `BoolProperty` tag as `properties.read_bool_property` reads it: `[Name]
+    [Type="BoolProperty"][0][Size=0]`, then the two bytes carrying the value — `00 10` (the
+    `BoolTrue` flag) as every real save seen writes a true one."""
+    out = fstring(name) + fstring("BoolProperty") + struct.pack("<ii", 0, 0)
+    return out + value_bytes
+
+
+def object_reference_array_tag_bytes(*, name: str, paths: list[str]) -> bytes:
+    """One `ArrayProperty` of class references as `properties.read_object_reference_array` reads
+    it: `[Name][Type="ArrayProperty"][1][FString "ObjectProperty"][0][Size][flags]`, then the
+    element count and each element as an empty level name and its path."""
+    value = struct.pack("<i", len(paths)) + b"".join(fstring("") + fstring(p) for p in paths)
+    out = fstring(name) + fstring("ArrayProperty") + struct.pack("<i", 1)
+    out += fstring("ObjectProperty") + struct.pack("<ii", 0, len(value)) + b"\x00"
+    return out + value
+
+
 def level_object_reference_tag_bytes(
     *, name: str, path: str, level: str = "Persistent_Level"
 ) -> bytes:

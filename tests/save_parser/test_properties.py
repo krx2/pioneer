@@ -3,10 +3,12 @@ buffers (`byte_builders.object_property_tag_bytes`) — no real save file involv
 test_real_saves_properties.py for the bonus real-file check."""
 
 from tests.save_parser.byte_builders import (
+    bool_property_tag_bytes,
     float_property_tag_bytes,
     fstring,
     level_object_reference_tag_bytes,
     object_property_tag_bytes,
+    object_reference_array_tag_bytes,
     property_list_terminator_bytes,
 )
 
@@ -14,8 +16,10 @@ from pioneer.save_parser.binary_reader import ByteReader
 from pioneer.save_parser.properties import (
     find_recipe_ids,
     find_recipe_paths,
+    read_bool_property,
     read_float_property,
     read_level_object_reference,
+    read_object_reference_array,
     read_object_reference_value,
     read_property_tag,
 )
@@ -169,3 +173,55 @@ def test_read_level_object_reference_absent_is_none() -> None:
     body = property_list_terminator_bytes()
 
     assert read_level_object_reference(body, "mExtractableResource") is None
+
+
+def test_read_bool_property_reads_the_bool_true_flag() -> None:
+    body = b"\xaa" + bool_property_tag_bytes(name="mIsProductionPaused")
+
+    assert read_bool_property(body, "mIsProductionPaused") is True
+
+
+def test_read_bool_property_reads_the_older_value_byte_and_an_explicit_false() -> None:
+    old_style = bool_property_tag_bytes(name="mIsProductionPaused", value_bytes=b"\x01\x00")
+    false = bool_property_tag_bytes(name="mIsProductionPaused", value_bytes=b"\x00\x00")
+
+    assert read_bool_property(old_style, "mIsProductionPaused") is True
+    assert read_bool_property(false, "mIsProductionPaused") is False
+
+
+def test_read_bool_property_absent_or_of_another_type_is_none() -> None:
+    body = float_property_tag_bytes(name="mIsProductionPaused", value=1.0)
+
+    assert read_bool_property(body, "mIsProductionPaused") is None
+    assert read_bool_property(b"", "mIsProductionPaused") is None
+
+
+_SCHEMATICS = [
+    "/Game/FactoryGame/Schematics/Schematic_StartingRecipes.Schematic_StartingRecipes_C",
+    "/Game/FactoryGame/Schematics/Progression/Schematic_3-4.Schematic_3-4_C",
+]
+
+
+def test_read_object_reference_array_returns_every_path() -> None:
+    body = b"\x01\x02" + object_reference_array_tag_bytes(
+        name="mPurchasedSchematics", paths=_SCHEMATICS
+    )
+
+    assert read_object_reference_array(body, "mPurchasedSchematics") == tuple(_SCHEMATICS)
+
+
+def test_read_object_reference_array_of_nothing_is_empty() -> None:
+    body = object_reference_array_tag_bytes(name="mPurchasedSchematics", paths=[])
+
+    assert read_object_reference_array(body, "mPurchasedSchematics") == ()
+
+
+def test_read_object_reference_array_refuses_a_size_the_elements_do_not_fill() -> None:
+    body = bytearray(
+        object_reference_array_tag_bytes(name="mPurchasedSchematics", paths=_SCHEMATICS)
+    )
+    size_offset = body.index(b"ObjectProperty") + len("ObjectProperty") + 1 + 4
+    body[size_offset] += 1
+
+    assert read_object_reference_array(bytes(body), "mPurchasedSchematics") is None
+    assert read_object_reference_array(b"", "mPurchasedSchematics") is None

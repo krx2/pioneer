@@ -15,7 +15,7 @@ from pioneer.qa_engine.engine import (
     TransportError,
     answer_question,
 )
-from pioneer.qa_engine.retrieval import Passage, ScoredPassage, retrieve
+from pioneer.qa_engine.retrieval import Passage, ScoredPassage, retrieve, significant_words
 
 __all__ = [
     "ChatCompletion",
@@ -29,4 +29,5 @@ __all__ = [
     "answer_question",
     "build_corpus",
     "retrieve",
+    "significant_words",
 ]

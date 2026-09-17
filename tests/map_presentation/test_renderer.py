@@ -3,7 +3,14 @@ the same style as Stage 3/9 example outputs, per implementation.md Stage 14."""
 
 import re
 
-from pioneer.contracts import Coordinates, PlacementRecord, Purity, RankedLocation, ResourceNode
+from pioneer.contracts import (
+    Coordinates,
+    FactorySite,
+    PlacementRecord,
+    Purity,
+    RankedLocation,
+    ResourceNode,
+)
 from pioneer.map_presentation.renderer import build_markers, compute_view_box, render_page
 
 _NODES = (
@@ -113,3 +120,19 @@ def test_a_crowded_map_labels_only_the_recommendations() -> None:
     assert len(labels) == 2
     assert all(label.startswith("#") for label in labels)
     assert "<title>Recipe_IngotIron_C</title>" in page  # still there on hover
+
+
+def test_factory_sites_become_labelled_pins() -> None:
+    site = FactorySite(
+        site_id="site_2",
+        position=Coordinates(x=1500, y=2200),
+        placements=_PLACEMENTS * 2,
+    )
+
+    (marker,) = build_markers(factory_sites=(site,), names={"Recipe_IngotIron_C": "Iron Ingot"})
+    page = render_page(factory_sites=(site,), label_limit=0)
+
+    assert (marker.kind, marker.x, marker.y) == ("factory", 1500, 2200)
+    assert marker.label == "site_2: Iron Ingot"
+    assert "site_2: Recipe_IngotIron_C" in page  # labelled even past the label limit
+    assert "factory to extend" in page

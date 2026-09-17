@@ -3,7 +3,7 @@
 import pytest
 
 from pioneer.contracts import Coordinates, PlacementRecord, Purity, ResourceNode
-from pioneer.location_advisor.advisor import rank_locations
+from pioneer.location_advisor.advisor import find_factory_sites, rank_locations
 
 _ORIGIN = Coordinates(x=0.0, y=0.0, z=0.0)
 
@@ -146,3 +146,39 @@ def test_proximity_claims_across_grid_cell_boundaries() -> None:
     placements = (_placement(x=1001.0, y=1001.0),)  # a neighbouring 1000-unit cell, ~3 units away
 
     assert rank_locations("Desc_OreIron_C", nodes, placements, _ORIGIN) == ()
+
+
+def _machine(x: float, y: float = 0.0, recipe_id: str | None = "Recipe_IronPlate_C", **fields):
+    return PlacementRecord(
+        building_id="Build_ConstructorMk1_C",
+        position=Coordinates(x=x, y=y),
+        recipe_id=recipe_id,
+        **fields,
+    )
+
+
+def test_factory_sites_join_machines_through_chains_of_neighbours() -> None:
+    """0, 40 m and 80 m chain into one site (each 40 m from the next); 500 m is its own."""
+    placements = (_machine(0), _machine(4000), _machine(8000), _machine(50_000, 100))
+
+    big, small = find_factory_sites(placements)
+
+    assert (big.site_id, len(big.placements), big.position.x) == ("site_1", 3, 4000)
+    assert (small.site_id, small.placements, small.position) == (
+        "site_2",
+        (placements[3],),
+        Coordinates(x=50_000, y=100),
+    )
+
+
+def test_factory_sites_leave_out_paused_and_non_production_buildings() -> None:
+    placements = (
+        _machine(0),
+        _machine(4000, recipe_id=None),  # a belt or a storage container
+        _machine(8000, is_paused=True),
+    )
+
+    (site,) = find_factory_sites(placements)
+
+    assert site.placements == (placements[0],)
+    assert find_factory_sites(()) == ()

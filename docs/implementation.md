@@ -66,7 +66,10 @@ outputs (Stage 1 below). Once contracts exist, each module becomes a self-contai
 - Test runner + linter wired up.
 - A `config` mechanism for secrets (LLM API key, dedicated server address) — never hardcoded.
 
-**Done when:** `<test command>` runs green on an empty test suite, `<lint command>` runs clean.
+**Done when:** `pytest` runs green on an empty test suite, and `ruff check .` and
+`ruff format --check .` run clean. Python 3.12, with `pytest` and `ruff` as the dev extras of
+`pyproject.toml`. `.github/workflows/ci.yml` runs all three on every push, and
+`tests/test_architecture.py` checks the dependency rule below rather than trusting it.
 
 ---
 
@@ -96,6 +99,10 @@ every module is allowed to depend on.
 
 **Done when:** every module below can be described purely in terms of "takes a `<Contract>`,
 returns a `<Contract>`" without referencing any other module by name.
+
+`contracts/` also holds the one thing shared by every module that talks to the outside world and
+isn't data: `TransportError`, what an injected transport raises when a request couldn't complete at
+all. Each such module used to declare its own.
 
 **Note:** contracts are allowed to evolve — if Stage 9 discovers Stage 1's `ProductionGraph` is
 missing a field, fix it in `contracts/` and patch the (few, fixture-based) tests that touched it.
@@ -128,11 +135,19 @@ simplest/leaf-first), but no stage here is blocked on another finishing first.
   presents it as an alternate ("Alternate: ..."). Recipes alone can't answer either question on
   real data: 1.0's Converter has recipes *producing* ores, so a planner that treats "has a
   recipe" as "crafted" walks ore -> ore -> ore in a circle.
-- `find_items` resolves the in-game names a player (or the LLM) uses into item ids.
+- `find_items` resolves the in-game names a player (or the LLM) uses into item ids, and
+  `resolve_item` picks the one item a name unambiguously means: an exact name, the same name with
+  plurals ignored ("Screw" is Screws), or the only best match ("reinforced plates"). "Iron" names
+  several items and resolves to none.
 - Generators carry what they consume besides fuel and what they leave behind (`Building.fuels`,
   `Building.supplemental_per_minute_per_mw`): coal and nuclear plants need water — 45 and 240
   m³/min — and fuel rods leave waste. Counting only the fuel made a real save's 36 coal generators
   look like 1620 m³/min of spare water.
+- Technologies carry how they're unlocked (`kind`: milestone, MAM, alternate, tutorial, custom)
+  and their cost, and each recipe lists every technology that unlocks it (`unlockable_by`) — 19
+  recipes have more than one way in. `unlock_order` puts the technologies a goal needs, with their
+  prerequisites, in the order to get them.
+- Belt and pipeline tiers (`transport_tiers`) come with their capacity per minute.
 
 **Test fixtures:** a small hand-curated `Docs.json`-shaped export (`fixtures/mini_docs.json`)
 covering the iron chain from the source deck, plus one alternate recipe and one schematic that
@@ -209,11 +224,26 @@ Parser to generate them, write them by hand.
   means 100%, since the game doesn't save defaults) and, for generators, fuel
   (`mCurrentFuelClass`). The existing-factory graph's `machine_count` is clock-scaled: effective
   machines at 100%, so it can be fractional.
+- Standby (`mIsProductionPaused`, a `BoolProperty` in the newer tag format — see properties.py):
+  a paused building makes, burns and draws nothing, so it's left out of the graph and of every
+  placement-based sum. Somersloop boost (`mCurrentProductionBoost`) multiplies a building's output
+  but not its input, and its power by the boost squared; the graph carries it as the node's
+  clock-weighted `production_boost`. No fixture save has a boosted machine, so that property's
+  name is inferred from its siblings rather than seen.
+- What the player has unlocked: the schematic manager's `mPurchasedSchematics`, an
+  `ArrayProperty` of class references (`SaveState.unlocked_technology_ids`).
+- A save holds an object table per level; the persistent level's — the one with the buildings —
+  is recognized by what follows it rather than by its size (see object_table.py): size thresholds
+  alone missed a small early-game save.
+- Saves from before 1.0 (header version 6, save version 22-25, e.g. Update 5) use an older chunk
+  and body layout the parser doesn't read; loading one fails at decompression. Re-saving them in
+  the current game fixes that.
 - Not recoverable from a save, by design or by format: belt routing (the graph's `flows` stay
   empty — see production_graph.py), and resource node purity/type (resource node actors carry only
   `mResourcesLeft`), which has to come from Stage 3's static data instead.
 
-**Test fixtures:** one or two real (or hand-constructed) sample `.sav` files with known contents.
+**Test fixtures:** real sample `.sav` files with known contents — two developed factories
+(`stal_mielec`, `wielka_polska_niesmiertelna`) and two small early-game ones (`alfa`, `tak`).
 
 **Done when:** parsing a fixture save file produces a `ProductionGraph` whose shape is correct
 against the known contents — you may optionally run the real Verifier over it once Stage 4 exists,
@@ -283,6 +313,8 @@ which factories to extend, what new stage to add — instead of planning from sc
 with the existing factory's surplus as `available_supply`), produces a `ChangeSet`.
 
 **Deliverables:**
+- Every node records how many of its machines already stand (`existing_machine_count`), so an
+  extended node shows what's new and `verifier.added_machines` can score only the additions.
 - Mapping each addition onto the existing factory: `EXTEND` a node already running its recipe,
   `ADD` otherwise, with the plan's flows rewired onto the resulting node ids.
 
@@ -316,6 +348,10 @@ numerically sufficient — matching the worked example in architecture.md §5.
 
 **Done when:** given the fixtures, a ranked candidate list comes back excluding claimed nodes.
 
+`find_factory_sites` also groups the player's running production buildings into factories —
+machines within 50 m of each other, through any chain of them — so an expansion can say where to
+build: real saves come out as 4 to 22 sites.
+
 ---
 
 ## Stage 10 — Anomaly Detector (module)
@@ -347,7 +383,8 @@ touchpoint in the system, but still fully independent.
 **Contract:** consumes a question + a text corpus, produces an answer + citations.
 
 **Deliverables:**
-- Indexing/embedding pipeline over a text corpus.
+- An index over a text corpus. TF-IDF in the end, not embeddings: the corpus is a thousand short
+  passages, and a dependency-free ranking that's a page of code beats a model download.
 - Retrieval + answer-synthesis call to the LLM, scoped to rephrase retrieved content only.
 - The LLM call goes through `pioneer.config.Settings` (`llm_base_url` + `llm_model`) against a
   local, OpenAI-compatible endpoint — this is the point where the specific backend (Ollama,
@@ -385,9 +422,11 @@ UI or API.
 
 **Contract:** consumes `ProductionGraph` (+ a new/existing flag per node, per architecture.md §5).
 
-**Test fixtures:** Stage 7/8 example outputs, copied in as static fixture JSON.
+**Test fixtures:** Stage 7/8 example outputs, copied in as constants in the test file.
 
-**Done when:** a fixture graph renders with new-vs-existing nodes visually distinguished.
+**Done when:** a fixture graph renders with new-vs-existing nodes visually distinguished — and,
+since expansions extend nodes, existing nodes with new machines as a third kind, labelled with how
+many are new.
 
 ---
 
@@ -397,9 +436,13 @@ UI or API.
 
 **Contract:** consumes `ResourceNode` list, `PlacementRecord` list, `RankedLocation` list.
 
-**Test fixtures:** Stage 3/9 example outputs, copied in as static fixture JSON.
+**Test fixtures:** Stage 3/9 example outputs, copied in as constants in the test file.
 
 **Done when:** a fixture recommendation renders as pins alongside fixture existing placements.
+
+Factory sites an answer points at render as pins too, labelled with what they mostly make. The
+background is still a plain grid: a real map image needs an asset whose source and licence are
+decided first.
 
 ---
 
@@ -424,6 +467,9 @@ scores.
 
 **Done when:** each fixture artifact produces the expected score via its scoring function, with no
 dependency on a live orchestrator or rendered UI.
+
+`score_response` is the one place that decides which channels an answer gets scored on and how
+(see its docstring); the Orchestrator's `verify_response` only says what data to score against.
 
 The LLM-as-a-judge hooks have real implementations in `llm_client.judges` (used only when
 `PIONEER_LLM_JUDGE` is set — they cost a model call each), and `JsonlFeedbackStore` / `ResponseLog`
@@ -467,8 +513,26 @@ plumbs it together.
 **Status / decisions so far:**
 - Tool calling *is* the intent classification: which tool the model reaches for is the intent, so
   there's no separate classification call and the `Intent` contract is currently unused.
-- Tools take in-game item names as well as ids (`find_item`, `list_recipes_for_item`, and name
-  resolution inside every other tool, with closest-match suggestions on a miss).
+- Tools take in-game item names as well as ids (`find_item`, `list_recipes_for_item`, and
+  `knowledge_base.resolve_item` inside every other tool, with closest-match suggestions when a
+  name fits several items or none).
+- Planning and expansion results name each stage's building and its power, the power an expansion
+  adds, and what the save's grid has to spare — so the model never has to guess a building or add
+  up watts itself. They also name the belt or pipe tier each flow needs, the best free deposit for
+  each raw input (published as the answer's map, so "I want to produce N/min of X" comes back as
+  Chat + Graph + Map), and, for an expansion, the factory site each extended recipe is built at.
+  Distances are in metres.
+- Planning prefers what the player has unlocked (from the save) and names what a stage still
+  needs; `plan_unlocks` gives the unlock order with costs, `compare_recipes` plans every recipe
+  for an item side by side, and `plan_power` lists the generators, fuel, water and extractors for a
+  power target, with the chain that makes a named fuel.
+- `handle_query` takes the conversation so far (`history`); the web page sends its last eight
+  turns with each question.
+- **Found running against a real model** (qwen2.5:14b through Ollama, which both live smoke tests
+  now pass): it answered a game-mechanics question from its own memory — wrongly, and the chat
+  check caught the number — so the system prompt now tells it that what it remembers about the
+  game is out of date and to ask the Q&A tool; and it sometimes writes a tool call into its answer
+  instead of using the API's `tool_calls` field, which `handle_query` now executes anyway.
 - No tool failure escapes `handle_query`: expected and unexpected errors alike come back to the
   model as an error result it can explain.
 - Diagnosis judges the existing factory against every *placed* building — extractors, pumps and
@@ -476,27 +540,39 @@ plumbs it together.
   coal and nuclear plants need as consumption, and their waste as output, rates each shortfall
   against the item's real demand, and treats raw resources and hand-gathered items (no factory
   recipe) as inputs, not shortfalls.
-- `tests/end_to_end/test_real_data.py` runs the real Knowledge Base and both fixture saves through
-  `app.build_context` with a scripted model standing in for the LLM.
+- `tests/end_to_end/test_real_data.py` runs the real Knowledge Base and the fixture saves through
+  `app.build_context` with a scripted model standing in for the LLM;
+  `tests/end_to_end/test_live_model.py` asks a real one, when `PIONEER_LIVE_LLM_TESTS=1`.
 - Every answer carries its `question` and its `grounding` — each tool result (with a `names` map
   for the ids in it) and each retrieved passage — and `orchestrator.verify_response` scores it with
   the Stage 15 functions.
 - The web UI (`python -m pioneer.web`, FastAPI) serves the chat, each answer's graph and map, the
   verification badges and the feedback buttons; `python -m pioneer.app "question"` is the CLI.
-- Still open: a run against a real local model (everything above is exercised with a scripted
-  one), belt routing from saves (so a surplus can be told apart from items fed to storage or the
-  sink — until then diagnosis flags every end product as overproduced), reloading the save and
-  server state while the web UI runs (both are read once, at startup), tool results naming the
-  building each recipe runs in and an expansion's power, a real map image behind the Map channel,
-  multi-turn conversation, and the rest of the architecture's scope — alternate-recipe
-  recommendations, tech unlock order, power-grid and logistics planning.
+- `app.LiveContext` keeps the context current while the web UI runs: a newer save (or a new write
+  of the newest) is read on the next question, the server is asked again once its answer is a
+  minute old, and a save that fails to parse leaves the last good one in use. Each answer is
+  verified and mapped against the context it was built from.
+- Still open: belt routing from saves (so a surplus can be told apart from items fed to storage or
+  the sink — until then diagnosis flags every end product as overproduced, and congestion in a
+  real factory can't be seen), fetching the save from a dedicated server on another machine
+  (`EnumerateSessions` + `DownloadSaveGame` exist, but both need an admin token), pre-1.0 saves, a
+  real map image behind the Map channel, which buildings (belts, generators) are unlocked — only
+  recipes are tracked — and a check of an answer's factory sites alongside its deposits.
+
+**Starting everything:** `pioneer.startup` brings up the model server (Ollama) and the dedicated
+server if nothing is listening on their ports yet, serves the web UI, and stops whatever it
+started. `PIONEER_SERVER_EXE` says where `FactoryServer.exe` lives.
 
 **Running it:**
 
 ```
 pip install -e .[dev]
-python -m pioneer.web   # needs PIONEER_LLM_* in .env
+python startup.py       # the model, the dedicated server and the web UI, whichever isn't up
+python -m pioneer.web   # just the web UI; needs PIONEER_LLM_* in .env
 ```
+
+`pioneer.startup` starts only what isn't already listening on its port and stops what it started;
+see README.md for the rest of the setup.
 
 **Done when:** "I want to produce 10/min of X" goes in through Chat and comes back out as a
 verified Chat + Graph + Map response, built entirely from real module calls, with no fixtures left

@@ -43,7 +43,9 @@ class ScoredPassage:
     score: float
 
 
-def _tokenize(text: str) -> list[str]:
+def significant_words(text: str) -> list[str]:
+    """`text`'s words worth matching on, lower-cased, function words dropped — what retrieval
+    scores passages by, and what the Stage 15 grounding check compares an answer against."""
     return [token for token in _TOKEN_RE.findall(text.lower()) if token not in _STOPWORDS]
 
 
@@ -85,9 +87,9 @@ def retrieve(
     if not corpus:
         return ()
 
-    corpus_tokens = [_tokenize(passage.text) for passage in corpus]
+    corpus_tokens = [significant_words(passage.text) for passage in corpus]
     idf = _idf(corpus_tokens)
-    question_tokens = _tokenize(question)
+    question_tokens = significant_words(question)
     question_vector = _tfidf_vector(question_tokens, idf)
     question_words = set(question_tokens)
 
@@ -104,7 +106,7 @@ def retrieve(
 def _title_match(title: str, question_words: set[str]) -> float:
     """The share of `title`'s words the question uses, counting a one-word title as half-named —
     sharing a single word ("Coal") is weaker evidence than naming "Coal-Powered Generator"."""
-    title_words = set(_tokenize(title))
+    title_words = set(significant_words(title))
     if not title_words:
         return 0.0
     return len(title_words & question_words) / max(len(title_words), 2)

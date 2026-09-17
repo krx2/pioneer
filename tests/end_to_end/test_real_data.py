@@ -112,14 +112,34 @@ def test_find_item_resolves_a_partial_name(context) -> None:
     assert result["items"][0]["item_id"] == "Desc_ModularFrameHeavy_C"
 
 
-def test_unknown_item_comes_back_with_suggestions(context) -> None:
+def test_an_ambiguous_item_comes_back_with_suggestions(context) -> None:
     artifact, [result] = _ask(
         context,
-        ("plan_production", {"target_item_id": "Reinforced Plates", "target_rate_per_minute": 5}),
+        ("plan_production", {"target_item_id": "Plates", "target_rate_per_minute": 5}),
     )
     assert artifact.graph is None
-    assert "Reinforced Plates" in result["error"]
+    assert "'Plates' could be several items" in result["error"]
     assert "Desc_IronPlateReinforced_C" in [s["item_id"] for s in result["did_you_mean"]]
+
+
+@pytest.mark.parametrize(
+    ("name", "item_id"),
+    [
+        ("Screw", "Desc_IronScrew_C"),
+        ("Reinforced Plates", "Desc_IronPlateReinforced_C"),
+        ("Batteries", "Desc_Battery_C"),
+        ("heavy modular", "Desc_ModularFrameHeavy_C"),
+    ],
+)
+def test_names_players_use_resolve_to_the_real_item(context, name, item_id) -> None:
+    artifact, [result] = _ask(
+        context, ("plan_production", {"target_item_id": name, "target_rate_per_minute": 5})
+    )
+    assert "error" not in result
+    assert artifact.graph is not None
+    assert any(
+        flow.item_id == item_id for flow in artifact.graph.flows if flow.target_node_id is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -230,7 +250,7 @@ needs_node_data = pytest.mark.skipif(
 
 
 @needs_node_data
-@pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna"])
+@pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna", "alfa", "tak"])
 def test_every_node_a_real_save_mines_is_in_the_node_data(save_name) -> None:
     known = {node.node_id for node in load_resource_nodes(RESOURCE_NODES_JSON)}
     state = load_save_state(_SAVES / f"{save_name}.sav")
@@ -263,7 +283,7 @@ def test_location_ranking_on_a_real_save_skips_the_nodes_it_already_mines(kb) ->
 
 
 @needs_node_data
-@pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna"])
+@pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna", "alfa", "tak"])
 def test_with_node_data_the_real_saves_power_and_ore_add_up(kb, save_name) -> None:
     """With extraction known, ore gets judged like everything else; hand-gathered items still
     don't, and neither save is in a blackout."""
@@ -335,3 +355,30 @@ def test_a_game_question_is_answered_from_the_real_corpus(context) -> None:
 
     assert answered
     assert "Transports up to 60 resources per minute" in answered[0]
+
+
+@needs_node_data
+def test_an_expansion_on_a_real_save_names_where_to_build(kb) -> None:
+    """stal_mielec's screws, rods and ingots mostly come from one factory: that's where 400 more
+    screws a minute get built, and the ore for them comes from a free deposit."""
+    state = load_save_state(_SAVE)
+    context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
+
+    artifact, [result] = _ask(
+        context,
+        ("expand_existing_factory", {"target_item_id": "Screws", "target_rate_per_minute": 400}),
+    )
+
+    assert {change["at_site"] for change in result["changes"]} == {"site_1"}
+    assert result["sites"]["site_1"]["buildings"] > 50
+    assert artifact.factory_sites is not None
+    assert [site.site_id for site in artifact.factory_sites] == ["site_1"]
+    assert set(result["suggested_sites"]) == {"Desc_OreIron_C"}
+    mined = {p.resource_node_id for p in state.placements if p.resource_node_id}
+    assert result["suggested_sites"]["Desc_OreIron_C"]["resource_node_id"] not in mined
+
+
+def test_real_saves_group_into_factory_sites(kb) -> None:
+    for save_name, expected in (("alfa", 4), ("tak", 6), ("stal_mielec", 22)):
+        context = build_context(kb, load_save_state(_SAVES / f"{save_name}.sav"))
+        assert len(context.factory_sites) == expected, save_name

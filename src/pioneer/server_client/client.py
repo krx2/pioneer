@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from pioneer.contracts import GameState
+from pioneer.contracts import GameState, TransportError
 
 _FUNCTION_NAME = "QueryServerState"
 
@@ -36,17 +36,11 @@ class ServerUnavailable:
     reason: str
 
 
-class TransportError(Exception):
-    """Raised by a `PostJson` implementation when the request couldn't be completed at all
-    (connection refused, timeout, DNS failure, TLS handshake failure, ...) — distinct from the
-    server successfully responding with a non-2xx status, which `query_server_state` handles
-    itself without needing this exception."""
-
-
 class PostJson(Protocol):
     """POSTs `body` (already JSON-serializable) to `url` with `headers`, returning
     `(status_code, parsed_json_body)` — `parsed_json_body` is `None` if the response wasn't valid
-    JSON. Raises `TransportError` if the request couldn't complete at all."""
+    JSON. Raises `contracts.TransportError` if the request couldn't complete at all — a non-2xx
+    status is an answer, and `query_server_state` handles that itself."""
 
     def __call__(
         self, url: str, body: dict[str, Any], headers: dict[str, str]

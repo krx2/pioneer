@@ -15,6 +15,10 @@ reconstructed from the LLM's prose -- so every number in a response still traces
 specific module call (invariant #6). The LLM only ever sees a compact JSON summary of a tool's
 result and is responsible for *phrasing*, not producing, the numbers in it.
 
+**Tool calls written as text.** A local model sometimes puts a tool call in its answer instead of
+the API's `tool_calls` field. One naming a real tool is executed like any other, rather than shown
+to the player as a line of JSON -- see `_tool_calls_written_as_text`.
+
 **Nothing a tool does escapes as an exception (invariant #5).** Expected failures (unknown item,
 no save loaded) and unexpected ones (a module choking on data it didn't anticipate) alike come back
 to the model as an `{"error": ...}` tool result it can explain to the player -- see `_run_tool`.
@@ -24,10 +28,20 @@ answer in the names a player knows. Every result it saw, and every knowledge pas
 retrieved, is kept on the artifact as `grounding`: what the
 answer is checked against (see verification.py) and what its claims trace back to.
 
+**Conversations.** `history` is the earlier turns of the same conversation, oldest first, as
+(question, answer) pairs: the model sees them before the new question, so "and how much power is
+that?" makes sense. They're grounding too — a follow-up may repeat a number an earlier answer gave,
+which was checked against that turn's own tools when it was given.
+
 **Items by name.** Tools accept an item's in-game name ("Reinforced Iron Plate") as well as its id
 (`Desc_IronPlateReinforced_C`): a local model can't be expected to know the export's class names.
-An unrecognized item comes back as an error listing the closest matches, so the model can correct
-itself on the next round.
+Plurals and a name only one item fits are taken too ("Screw", "reinforced plates"); a name that
+fits several items, or none, comes back as an error listing the closest matches, so the model can
+correct itself on the next round.
+
+**What the player has unlocked.** With a save loaded, planning uses the recipes the player has
+unlocked first; only when those can't make the item does it plan with every recipe, and then it
+says which stages need what unlocked. `plan_unlocks` turns that into an unlock order.
 
 **The existing factory, as the Verifier sees it.** Expansion and diagnosis both start from the
 factory's net per-item balance: what its recipes make, its extractors mine and its generators leave
@@ -48,40 +62,57 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from pioneer.anomaly_detector import detect_anomalies
 from pioneer.contracts import (
     Building,
+    ChangeAction,
     Coordinates,
+    FactorySite,
     GameState,
     Item,
     MaterialFlow,
     PlacementRecord,
     ProductionGraph,
+    ProductionNode,
     RankedLocation,
     Recipe,
     ResourceNode,
     ResponseArtifact,
+    Technology,
+    TransportError,
+    TransportTier,
 )
 from pioneer.expansion_advisor import advise_expansion
-from pioneer.knowledge_base import find_items
+from pioneer.knowledge_base import (
+    easiest_unlock,
+    find_items,
+    recipe_is_unlocked,
+    resolve_item,
+    unlock_order,
+)
 from pioneer.location_advisor import rank_locations
 from pioneer.production_planner.planner import plan_production, recipes_for_output
 from pioneer.qa_engine import ChatCompletion, LLMUnavailable, NoRelevantPassages, Passage, QAAnswer
 from pioneer.qa_engine import answer_question as qa_answer_question
 from pioneer.verifier import (
+    added_machines,
     balance,
     consumption,
+    distance,
     extraction_rates,
+    extractors_needed,
     generator_byproducts,
     generator_fuel_demand,
     generator_supplemental_demand,
     placed_generation_capacity_mw,
     placed_power_consumption_mw,
     power_balance,
+    power_plants,
+    transport_needs,
 )
 
 _MAX_TOOL_ROUNDS = 6
@@ -91,25 +122,26 @@ _SYSTEM_PROMPT = (
     "player plan, expand, locate, and diagnose their factory, and answer game-mechanics questions. "
     "You MUST use the provided tools for every calculation: machine counts, throughput, power "
     "balance, and distances are never something you compute or estimate yourself, only the tools "
-    "do that. Tools accept items by id (e.g. Desc_IronPlate_C) or by in-game name (e.g. 'Iron "
-    "Plate'); call find_item first if you're unsure which item the player means. Tool results "
-    "carry a `names` map from ids to in-game names: answer with the names. Call whichever "
-    "tool(s) match the player's request, then write one clear, concise natural-language answer "
+    "do that. The same goes for facts about the game -- rates, capacities, recipes, unlock costs: "
+    "call answer_game_question instead of recalling them, because what you remember about "
+    "Satisfactory is out of date. Tools accept items by id (e.g. Desc_IronPlate_C) or by in-game "
+    "name (e.g. 'Iron Plate'); call find_item first if you're unsure which item the player means. "
+    "Tool results carry a `names` map from ids to in-game names: answer with the names. Call "
+    "whichever tool(s) match the player's request, then write one clear, concise answer "
     "summarizing the tool results -- never invent numbers that didn't come from a tool. If a tool "
     "reports an error (e.g. no save data loaded), explain that limitation to the player plainly "
     "instead of guessing or making up factory state."
 )
 
 _ITEM_DESCRIPTION = "Item id (e.g. Desc_IronPlate_C) or in-game name (e.g. 'Iron Plate')"
+_ITEM_HINT = "(item id or in-game name)"
+_DEFAULT_COMPARISON_RATE = 10.0
+_WATER_ID = "Desc_Water_C"
+_CM_PER_M = 100.0
+"""Save coordinates are centimetres; tool results speak metres, so the model never converts."""
 _GEYSER_ID = "Desc_Geyser_C"
 """The resource database's id for geysers -- made up by the community data, since no item
 backs a geyser (see resource_db/loader.py)."""
-
-
-class TransportError(Exception):
-    """Raised by a `ToolCallingLLM` implementation when the request couldn't complete at all
-    (connection refused, timeout, ...) -- distinct from the model successfully replying, which
-    `handle_query` handles itself without needing this exception."""
 
 
 @dataclass(frozen=True)
@@ -126,8 +158,8 @@ class ToolCallingLLM(Protocol):
     `base_url` for `model`, returning the assistant's reply as `{"content": str | None,
     "tool_calls": [{"id": str, "name": str, "arguments": dict[str, Any]}, ...]}` -- each tool
     call's arguments already parsed from the wire format's JSON string, so this module never
-    touches that wire format directly. Raises `TransportError` if the request couldn't complete at
-    all."""
+    touches that wire format directly. Raises `contracts.TransportError` if the request couldn't
+    complete at all."""
 
     def __call__(
         self,
@@ -162,6 +194,13 @@ class OrchestratorContext:
     game_state: GameState | None = None
     available_power_mw: float | None = None
     """Overrides the grid capacity diagnosis would otherwise derive from the placed generators."""
+    technologies: tuple[Technology, ...] = ()
+    transport_tiers: tuple[TransportTier, ...] = ()
+    factory_sites: tuple[FactorySite, ...] = ()
+    """Where the player's factories stand (see `location_advisor.find_factory_sites`)."""
+    unlocked_technology_ids: frozenset[str] | None = None
+    """Every technology the player has unlocked, from the save. `None`: unknown, so every recipe is
+    treated as available."""
 
 
 @dataclass
@@ -172,6 +211,7 @@ class _ArtifactAccumulator:
     graph: ProductionGraph | None = None
     map_locations: tuple[RankedLocation, ...] | None = None
     map_reference: Coordinates | None = None
+    factory_sites: tuple[FactorySite, ...] | None = None
     grounding: list[str] = field(default_factory=list)
 
 
@@ -213,8 +253,11 @@ def handle_query(
     llm_api_key: str | None = None,
     response_id: str,
     max_tool_rounds: int = _MAX_TOOL_ROUNDS,
+    history: Sequence[tuple[str, str]] = (),
 ) -> ResponseArtifact | OrchestratorUnavailable:
-    accumulator = _ArtifactAccumulator(grounding=[question])
+    accumulator = _ArtifactAccumulator(
+        grounding=[question, *(text for turn in history for text in turn)]
+    )
     names = display_names(context)
     tools = _build_tools(
         context, accumulator, qa_chat_completion, llm_base_url, llm_model, llm_api_key
@@ -223,9 +266,12 @@ def handle_query(
     tools_by_name = {tool.name: tool for tool in tools}
 
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": f"{_SYSTEM_PROMPT}\n\n{_context_note(context)}"},
-        {"role": "user", "content": question},
+        {"role": "system", "content": f"{_SYSTEM_PROMPT}\n\n{context_note(context)}"},
     ]
+    for earlier_question, earlier_answer in history:
+        messages.append({"role": "user", "content": earlier_question})
+        messages.append({"role": "assistant", "content": earlier_answer})
+    messages.append({"role": "user", "content": question})
 
     for _ in range(max_tool_rounds):
         try:
@@ -233,7 +279,9 @@ def handle_query(
         except TransportError as error:
             return OrchestratorUnavailable(reason=f"could not reach LLM endpoint: {error}")
 
-        tool_calls = message.get("tool_calls") or []
+        tool_calls = message.get("tool_calls") or _tool_calls_written_as_text(
+            message.get("content"), tools_by_name
+        )
         if not tool_calls:
             return ResponseArtifact(
                 response_id=response_id,
@@ -241,6 +289,7 @@ def handle_query(
                 graph=accumulator.graph,
                 map_locations=accumulator.map_locations,
                 map_reference=accumulator.map_reference,
+                factory_sites=accumulator.factory_sites,
                 question=question,
                 grounding=tuple(accumulator.grounding),
             )
@@ -256,7 +305,7 @@ def handle_query(
     )
 
 
-def _context_note(context: OrchestratorContext) -> str:
+def context_note(context: OrchestratorContext) -> str:
     """What this conversation has to go on, so the model can say what it doesn't know instead of
     assuming it (architecture.md invariant #5)."""
     lines = [
@@ -264,12 +313,13 @@ def _context_note(context: OrchestratorContext) -> str:
         if context.recipes
         else "Knowledge base: not loaded -- no recipe data.",
         f"Player's factory (latest save): {len(context.existing_placements)} buildings running "
-        f"{len(context.existing_graph.nodes)} recipes."
+        f"{len(context.existing_graph.nodes)} recipes in {len(context.factory_sites)} factories."
         if context.existing_graph is not None
         else "Player's factory: no save loaded -- nothing is known about what they have built.",
         f"Resource node data: {len(context.resource_nodes)} nodes."
         if context.resource_nodes
         else "Resource node data: not loaded -- build locations can't be ranked.",
+        _unlocks_note(context),
     ]
     state = context.game_state
     lines.append(
@@ -279,6 +329,52 @@ def _context_note(context: OrchestratorContext) -> str:
         else "Live server state: unavailable."
     )
     return "Data available in this conversation:\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def _unlocks_note(context: OrchestratorContext) -> str:
+    unlocked = context.unlocked_technology_ids
+    if unlocked is None:
+        return "Unlocked technologies: unknown -- plans may use recipes the player doesn't have."
+    tiers = [
+        t.tier
+        for t in context.technologies
+        if t.kind == "milestone" and t.technology_id in unlocked
+    ]
+    highest = f", milestones up to tier {max(tiers)}" if tiers else ""
+    return (
+        f"Unlocked technologies: {len(unlocked)}{highest}. Plans prefer unlocked recipes and "
+        "say what else a stage needs."
+    )
+
+
+_TEXT_TOOL_CALL = re.compile(r"[\[{].*[\]}]", re.DOTALL)
+"""A JSON object or list inside an answer -- local models like to wrap it in prose or fences."""
+
+
+def _tool_calls_written_as_text(
+    content: str | None, tools_by_name: Mapping[str, _Tool]
+) -> list[dict[str, Any]]:
+    """Tool calls a model wrote into its answer instead of the API's `tool_calls` field -- local
+    models do that often enough to be worth reading, rather than handing the player a line of JSON
+    as their answer. Only a call naming a real tool counts; anything else is just an answer that
+    happens to contain braces."""
+    match = _TEXT_TOOL_CALL.search(content or "")
+    if match is None:
+        return []
+    try:
+        written = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    calls = []
+    for index, call in enumerate(written if isinstance(written, list) else [written]):
+        if not isinstance(call, dict):
+            continue
+        call = call.get("function", call)
+        name = call.get("name")
+        arguments = call.get("arguments", call.get("parameters", {}))
+        if isinstance(name, str) and name in tools_by_name and isinstance(arguments, dict):
+            calls.append({"id": f"text_call_{index}", "name": name, "arguments": arguments})
+    return calls
 
 
 def _assistant_message(message: dict[str, Any], tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
@@ -380,7 +476,8 @@ def _build_tools(
             name="plan_production",
             description=(
                 "Plan a brand-new production chain from raw resources up to a target item and "
-                "rate. Use for 'I want to produce N/min of X' when nothing needs to be extended."
+                "rate: each stage's recipe, building, machine count and power. Use for 'I want "
+                "to produce N/min of X' when nothing needs to be extended."
             ),
             parameters={
                 "type": "object",
@@ -398,7 +495,8 @@ def _build_tools(
             description=(
                 "Given a new target item and rate, compute the minimal change (extend/add) to the "
                 "player's *existing* factory instead of planning from scratch -- the existing "
-                "factory's spare output is used first. Requires save data."
+                "factory's spare output is used first. Reports the buildings to add, the power "
+                "they draw and what the grid has to spare. Requires save data."
             ),
             parameters={
                 "type": "object",
@@ -410,6 +508,63 @@ def _build_tools(
                 "required": ["target_item_id", "target_rate_per_minute"],
             },
             handler=lambda args: _handle_expand_existing_factory(args, context, accumulator),
+        ),
+        _Tool(
+            name="compare_recipes",
+            description=(
+                "Compare every recipe for an item -- the standard one and each alternate -- as a "
+                "whole production chain at the given rate: machines, power, the resources it "
+                "takes in, byproducts, and whether the player has it unlocked. Use for 'which "
+                "recipe/alternate is best for X' questions."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "item": {"type": "string", "description": _ITEM_DESCRIPTION},
+                    "target_rate_per_minute": {
+                        "type": "number",
+                        "description": "Rate to compare at, default 10",
+                    },
+                },
+                "required": ["item"],
+            },
+            handler=lambda args: _handle_compare_recipes(args, context),
+        ),
+        _Tool(
+            name="plan_power",
+            description=(
+                "Ways to generate a given amount of power: for each generator and fuel, how many "
+                "generators, the fuel and water they need at full load, the water extractors for "
+                "that, and waste. Name a fuel to also get the production chain that makes it. Use "
+                "for 'how do I get N MW' questions; diagnose_factory_problems tells the current "
+                "draw and capacity."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "target_mw": {"type": "number"},
+                    "fuel": {
+                        "type": "string",
+                        "description": "Optional: only plants burning this fuel " + _ITEM_HINT,
+                    },
+                },
+                "required": ["target_mw"],
+            },
+            handler=lambda args: _handle_plan_power(args, context),
+        ),
+        _Tool(
+            name="plan_unlocks",
+            description=(
+                "What the player still has to unlock to make an item: the technologies its "
+                "production chain needs, with their prerequisites, in the order to get them, and "
+                "what each costs. Use for 'what do I need to research/unlock for X' questions."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"item": {"type": "string", "description": _ITEM_DESCRIPTION}},
+                "required": ["item"],
+            },
+            handler=lambda args: _handle_plan_unlocks(args, context),
         ),
         _Tool(
             name="rank_build_locations",
@@ -476,12 +631,14 @@ def _handle_list_recipes(args: dict[str, Any], context: OrchestratorContext) -> 
     item_id = _resolve_item_id(args["item"], context)
     return {
         "item_id": item_id,
-        "raw_resource": item_id in _raw_item_ids(context),
+        "raw_resource": item_id in raw_resource_ids(context),
         "recipes": [
             {
                 "recipe_id": recipe.recipe_id,
                 "name": recipe.name,
                 "alternate": recipe.is_alternate,
+                "unlocked": recipe_is_unlocked(recipe, context.unlocked_technology_ids),
+                "unlocked_by": list(recipe.unlockable_by),
                 "building_id": recipe.building_ids[0] if recipe.building_ids else None,
                 "inputs_per_machine_per_minute": {
                     ingredient.item_id: ingredient.amount_per_minute for ingredient in recipe.inputs
@@ -499,20 +656,22 @@ def _handle_plan_production(
     args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
 ) -> dict[str, Any]:
     target_item_id = _resolve_item_id(args["target_item_id"], context)
+    target_rate = _target_rate(args)
     try:
-        graph = plan_production(
-            target_item_id,
-            _target_rate(args),
-            context.recipes,
-            _recipe_choices(args, context),
-            raw_item_ids=_raw_item_ids(context),
-        )
+        graph = _plan(context, target_item_id, target_rate, _recipe_choices(args, context))
     except (ValueError, KeyError) as error:
         return {"error": str(error)}
 
-    summary = _graph_summary(graph, context)  # before publishing: it can fail on unknown buildings
+    summary = {  # built before publishing: it fails on a building the knowledge base doesn't list
+        "target_item_id": target_item_id,
+        "target_rate_per_minute": target_rate,
+        **_graph_summary(graph, context),
+        **_needs_unlocking(graph, context),
+    }
     accumulator.graph = graph
-    return summary
+    raw_inputs = _per_item(f for f in graph.flows if f.source_node_id is None)
+    summary.update(_suggest_sites(raw_inputs, context, accumulator))
+    return _with_spare_power(summary, context)
 
 
 def _handle_expand_existing_factory(
@@ -525,7 +684,7 @@ def _handle_expand_existing_factory(
         }
     target_item_id = _resolve_item_id(args["target_item_id"], context)
     target_rate = _target_rate(args)
-    raw_item_ids = _raw_item_ids(context)
+    raw_item_ids = raw_resource_ids(context)
     try:
         existing_balance = _existing_item_balance(context)
         surplus = {
@@ -533,18 +692,43 @@ def _handle_expand_existing_factory(
             for item_id, rate in existing_balance.items()
             if rate > 0 and item_id not in raw_item_ids
         }
-        additions = plan_production(
+        additions = _plan(
+            context,
             target_item_id,
             target_rate,
-            context.recipes,
             _recipe_choices(args, context),
-            raw_item_ids=raw_item_ids,
             available_supply=surplus,
         )
     except (ValueError, KeyError) as error:
         return {"error": str(error)}
 
     change_set = advise_expansion(context.existing_graph, additions)
+    buildings = {node.recipe_id: node.building_id for node in change_set.resulting_graph.nodes}
+    at_site = {
+        change.recipe_id: site
+        for change in change_set.changes
+        if change.action is ChangeAction.EXTEND
+        and (site := _main_site(change.recipe_id, context)) is not None
+    }
+    changes = [
+        {
+            "action": change.action.value,
+            "recipe_id": change.recipe_id,
+            "building_id": buildings[change.recipe_id],
+            "additional_machine_count": change.additional_machine_count,
+            **_stage_power(buildings[change.recipe_id], change.additional_machine_count, context),
+            "target_node_id": change.target_node_id,
+            **(
+                {"at_site": at_site[change.recipe_id].site_id}
+                if change.recipe_id in at_site
+                else {}
+            ),
+        }
+        for change in change_set.changes
+    ]
+    extended_sites = tuple({site.site_id: site for site in at_site.values()}.values())
+    if extended_sites:
+        accumulator.factory_sites = extended_sites
     if change_set.resulting_graph.nodes:  # nothing to build is nothing to draw
         accumulator.graph = change_set.resulting_graph
     items_in_plan = {flow.item_id for flow in additions.flows}
@@ -553,16 +737,10 @@ def _handle_expand_existing_factory(
         for flow in additions.flows
         if flow.source_node_id is None and flow.item_id in raw_item_ids
     )
-    return {
-        "changes": [
-            {
-                "action": change.action.value,
-                "recipe_id": change.recipe_id,
-                "additional_machine_count": change.additional_machine_count,
-                "target_node_id": change.target_node_id,
-            }
-            for change in change_set.changes
-        ],
+    result: dict[str, Any] = {
+        "target_item_id": target_item_id,
+        "target_rate_per_minute": target_rate,
+        "changes": changes,
         "drawn_from_existing_surplus_per_minute": _per_item(
             flow
             for flow in additions.flows
@@ -580,6 +758,168 @@ def _handle_expand_existing_factory(
             if rate < 0 and item_id in items_in_plan and item_id not in raw_item_ids
         },
     }
+    result.update(_needs_unlocking(additions, context))
+    if extended_sites:
+        result["sites"] = {site.site_id: _site_summary(site, context) for site in extended_sites}
+    uncovered = {
+        item_id: rate - max(existing_balance.get(item_id, 0.0), 0.0)
+        for item_id, rate in raw_needed.items()
+        if rate > max(existing_balance.get(item_id, 0.0), 0.0)
+    }
+    result.update(_suggest_sites(uncovered, context, accumulator))
+    if all("power_mw" in change for change in changes):
+        added = added_machines(change_set.resulting_graph)
+        result["added_power_draw_mw"] = power_balance(added, context.buildings)
+    return _with_spare_power(result, context)
+
+
+def _handle_compare_recipes(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+    item_id = _resolve_item_id(args["item"], context)
+    rate = _target_rate(
+        {"target_rate_per_minute": args.get("target_rate_per_minute", _DEFAULT_COMPARISON_RATE)}
+    )
+    candidates = recipes_for_output(item_id, context.recipes)
+    if not candidates:
+        raise _ToolError(f"no recipe makes {item_id} -- nothing to compare")
+    primary = [r for r in candidates if r.outputs[0].item_id == item_id] or list(candidates)
+
+    options: list[dict[str, Any]] = []
+    for recipe in primary:
+        try:
+            graph = _plan(context, item_id, rate, {item_id: recipe.recipe_id})
+        except ValueError as error:
+            options.append({"recipe_id": recipe.recipe_id, "error": str(error)})
+            continue
+        net = balance(graph, context.recipes)
+        option: dict[str, Any] = {
+            "recipe_id": recipe.recipe_id,
+            "alternate": recipe.is_alternate,
+            "unlocked": recipe_is_unlocked(recipe, context.unlocked_technology_ids),
+            "stages": len(graph.nodes),
+            "machines": sum(node.machine_count for node in graph.nodes),
+            "inputs_per_minute": {i: -rate for i, rate in net.items() if rate < -_RATE_EPSILON},
+            "byproducts_per_minute": {
+                i: rate for i, rate in net.items() if rate > _RATE_EPSILON and i != item_id
+            },
+            **_needs_unlocking(graph, context),
+        }
+        if all(_stage_power(n.building_id, 1, context) for n in graph.nodes):
+            option["power_mw"] = power_balance(graph, context.buildings)
+        options.append(option)
+
+    planned = [option for option in options if "error" not in option]
+
+    def best(key: Callable[[dict[str, Any]], float]) -> str | None:
+        return min(planned, key=key)["recipe_id"] if planned else None
+
+    result: dict[str, Any] = {
+        "item_id": item_id,
+        "target_rate_per_minute": rate,
+        "options": options,
+        "fewest_machines": best(lambda o: o["machines"]),
+        "least_input": best(lambda o: sum(o["inputs_per_minute"].values())),
+    }
+    if planned and all("power_mw" in o for o in planned):
+        result["least_power"] = best(lambda o: o["power_mw"])
+    return result
+
+
+def _handle_plan_power(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+    if not context.buildings or not context.items:
+        raise _ToolError("no knowledge base loaded -- power can't be planned")
+    target_mw = float(args["target_mw"])
+    if not target_mw > 0:
+        raise _ToolError(f"target_mw must be positive, got {target_mw:g}")
+    fuel_id = _resolve_item_id(args["fuel"], context) if args.get("fuel") else None
+    plants = [
+        p
+        for p in power_plants(target_mw, context.buildings, context.items)
+        if fuel_id is None or p.fuel_item_id == fuel_id
+    ]
+    if not plants:
+        raise _ToolError(f"no generator burns {fuel_id}" if fuel_id else "no generator data")
+    extractors = {b.fixed_resource_id: b for b in context.buildings if b.fixed_resource_id}
+
+    options = []
+    for plant in plants:
+        option: dict[str, Any] = {
+            "generator_id": plant.generator_id,
+            "generators": plant.generators,
+            "capacity_mw": plant.capacity_mw,
+            "fuel_id": plant.fuel_item_id,
+            "fuel_per_minute": plant.fuel_per_minute,
+        }
+        supplemental = plant.supplemental_item_id
+        if supplemental is not None:
+            option["supplemental_id"] = supplemental
+            option["supplemental_per_minute"] = plant.supplemental_per_minute
+            extractor = extractors.get(supplemental)
+            if extractor is not None:
+                count = extractors_needed(plant.supplemental_per_minute, extractor)
+                option["extractors"] = {
+                    "building_id": extractor.building_id,
+                    "count": count,
+                    **_stage_power(extractor.building_id, count, context),
+                }
+        if plant.byproduct_item_id is not None:
+            option["waste_id"] = plant.byproduct_item_id
+            option["waste_per_minute"] = plant.byproduct_per_minute
+        options.append(option)
+
+    result: dict[str, Any] = {"target_mw": target_mw, "options": options}
+    if fuel_id is not None:
+        result["fuel_supply"] = _fuel_supply(fuel_id, plants[0].fuel_per_minute, context)
+    return _with_spare_power(result, context)
+
+
+def _fuel_supply(fuel_id: str, per_minute: float, context: OrchestratorContext) -> dict[str, Any]:
+    """How the named fuel gets made: mined, or the production chain for it."""
+    if fuel_id in raw_resource_ids(context) or not recipes_for_output(fuel_id, context.recipes):
+        return {"mined": True, "per_minute": per_minute}
+    try:
+        graph = _plan(context, fuel_id, per_minute, None)
+    except ValueError as error:
+        return {"error": str(error)}
+    return {"per_minute": per_minute, **_graph_summary(graph, context)}
+
+
+def _handle_plan_unlocks(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+    if not context.technologies:
+        raise _ToolError("no technology data loaded -- unlocks can't be planned")
+    item_id = _resolve_item_id(args["item"], context)
+    if item_id in raw_resource_ids(context):
+        raise _ToolError(f"{item_id} is a raw resource: it's mined, not unlocked")
+    graph = _plan(context, item_id, 1.0, None)
+    recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
+    unlocked = context.unlocked_technology_ids
+    wanted = []
+    for node in graph.nodes:
+        recipe = recipes[node.recipe_id]
+        if unlocked is not None and recipe_is_unlocked(recipe, unlocked):
+            continue  # with nothing known about unlocks, every stage's technology is listed
+        technology = easiest_unlock(recipe.unlockable_by, context.technologies)
+        if technology is not None:
+            wanted.append(technology.technology_id)
+    order = unlock_order(wanted, context.technologies, unlocked or ())
+    unlocks_recipes: dict[str, list[str]] = {}
+    for node in graph.nodes:
+        for technology_id in recipes[node.recipe_id].unlockable_by:
+            unlocks_recipes.setdefault(technology_id, []).append(node.recipe_id)
+    return {
+        "item_id": item_id,
+        "unlocked_known": unlocked is not None,
+        "already_unlocked": unlocked is not None and not order,
+        "unlock_order": [
+            {
+                "technology_id": technology.technology_id,
+                "kind": technology.kind,
+                "tier": technology.tier,
+                "cost": {cost.item_id: cost.amount for cost in technology.cost},
+                "unlocks_recipes": unlocks_recipes.get(technology.technology_id, []),
+            }
+            for technology in order
+        ],
+    }
 
 
 def _handle_rank_locations(
@@ -591,7 +931,7 @@ def _handle_rank_locations(
             "locations can't be ranked"
         )
     item_id = _resolve_item_id(args["item_id"], context)
-    reference = _reference_point(args, context)
+    reference = reference_point(args, context)
     count = int(args.get("count", 5))
     if count < 1:
         raise _ToolError(f"count must be at least 1, got {count}")
@@ -605,7 +945,7 @@ def _handle_rank_locations(
             {
                 "resource_node_id": location.resource_node_id,
                 "purity": location.purity.value,
-                "distance_to_reference": location.distance_to_reference,
+                "distance_m": location.distance_to_reference / _CM_PER_M,
                 "score": location.score,
             }
             for location in top
@@ -748,7 +1088,10 @@ def _existing_power(context: OrchestratorContext) -> tuple[float, float | None]:
     return draw, context.available_power_mw
 
 
-def _raw_item_ids(context: OrchestratorContext) -> frozenset[str]:
+def raw_resource_ids(context: OrchestratorContext) -> frozenset[str]:
+    """Every raw resource the knowledge base knows — what planning stops at, and what a graph is
+    allowed to take in from outside. The same set as `knowledge_base.raw_resource_ids`, read off a
+    context instead of a `KnowledgeBase`."""
     return frozenset(item.item_id for item in context.items if item.is_raw_resource)
 
 
@@ -756,12 +1099,12 @@ def _inputs_from_outside(context: OrchestratorContext, item_ids: Iterable[str]) 
     """Items diagnosis doesn't judge as short: hand-gathered ones always, and raw resources unless
     resource node data is loaded -- without it, what the extractors mine is unknown and every ore
     would look short."""
-    raw = _raw_item_ids(context)
+    raw = raw_resource_ids(context)
     gathered = _uncraftable_item_ids(context, item_ids) - raw
     return gathered if context.resource_nodes else gathered | raw
 
 
-def _reference_point(args: dict[str, Any], context: OrchestratorContext) -> Coordinates:
+def reference_point(args: dict[str, Any], context: OrchestratorContext) -> Coordinates:
     """The point the model asked to measure from; else the middle of the player's buildings --
     their base, near enough -- else the map origin."""
     if any(key in args for key in ("reference_x", "reference_y", "reference_z")):
@@ -789,25 +1132,152 @@ def _uncraftable_item_ids(context: OrchestratorContext, item_ids: Iterable[str])
 
 
 def _resolve_item_id(raw: object, context: OrchestratorContext) -> str:
-    """The item id `raw` names: the id itself, or the item's in-game name (case-insensitive).
-    Anything else raises a `_ToolError` carrying the closest matches. Passed through unchecked when
-    no knowledge base is loaded -- there's nothing to check it against."""
+    """The item id `raw` names: the id itself, or whatever name `knowledge_base.resolve_item`
+    takes as unambiguous ("Screw", "iron plates"). Anything else raises a `_ToolError` carrying
+    the closest matches. Passed through unchecked when no knowledge base is loaded -- there's
+    nothing to check it against."""
     query = str(raw).strip()
     if query.casefold() in ("geyser", "geysers", _GEYSER_ID.casefold()):
         return _GEYSER_ID
     if not context.items:
         return query
 
-    matches = find_items(context.items, query)
-    folded = query.casefold()
-    for item in matches:
-        if folded in (item.item_id.casefold(), item.name.casefold()):
-            return item.item_id
+    item = resolve_item(context.items, query)
+    if item is not None:
+        return item.item_id
     if any(product.item_id == query for recipe in context.recipes for product in recipe.outputs):
         return query  # a real recipe product the export just has no item descriptor for
-    raise _ToolError(
-        f"unknown item {query!r}", did_you_mean=[_item_summary(item) for item in matches]
+    matches = find_items(context.items, query)
+    message = (
+        f"{query!r} could be several items -- pass one of these by id or full name"
+        if matches
+        else f"unknown item {query!r}"
     )
+    raise _ToolError(message, did_you_mean=[_item_summary(match) for match in matches])
+
+
+def _main_site(recipe_id: str, context: OrchestratorContext) -> FactorySite | None:
+    """The factory site running the most of `recipe_id`, by clock speed."""
+
+    def running(site: FactorySite) -> float:
+        return sum(p.clock_speed for p in site.placements if p.recipe_id == recipe_id)
+
+    best = max(context.factory_sites, key=running, default=None)
+    return best if best is not None and running(best) > 0 else None
+
+
+def _site_summary(site: FactorySite, context: OrchestratorContext) -> dict[str, Any]:
+    reference = reference_point({}, context)
+    counts: dict[str, float] = {}
+    for placement in site.placements:
+        if placement.recipe_id is not None:
+            counts[placement.recipe_id] = counts.get(placement.recipe_id, 0.0) + 1
+    return {
+        "x": site.position.x,
+        "y": site.position.y,
+        "z": site.position.z,
+        "distance_from_base_m": distance(site.position, reference) / _CM_PER_M,
+        "buildings": len(site.placements),
+        "main_recipes": sorted(counts, key=lambda r: -counts[r])[:3],
+    }
+
+
+def _suggest_sites(
+    raw_rates: Mapping[str, float],
+    context: OrchestratorContext,
+    accumulator: _ArtifactAccumulator,
+) -> dict[str, Any]:
+    """`{"suggested_sites": ...}`: the best free deposit for each raw resource in `raw_rates`, from
+    the player's base -- also published as the answer's map, unless something already is. Water
+    needs no deposit (extractors go on any open water), so it gets none."""
+    if not context.resource_nodes:
+        return {}
+    reference = reference_point({}, context)
+    suggestions: dict[str, Any] = {}
+    locations = []
+    for item_id in sorted(raw_rates):
+        if item_id == _WATER_ID:
+            continue
+        ranked = rank_locations(
+            item_id, context.resource_nodes, context.existing_placements, reference
+        )
+        if not ranked:
+            continue
+        best = ranked[0]
+        locations.append(best)
+        suggestions[item_id] = {
+            "resource_node_id": best.resource_node_id,
+            "purity": best.purity.value,
+            "distance_m": best.distance_to_reference / _CM_PER_M,
+        }
+    if locations and accumulator.map_locations is None:
+        accumulator.map_locations = tuple(locations)
+        accumulator.map_reference = reference
+    return {"suggested_sites": suggestions} if suggestions else {}
+
+
+def _plan(
+    context: OrchestratorContext,
+    target_item_id: str,
+    target_rate: float,
+    recipe_choices: dict[str, str] | None,
+    *,
+    available_supply: Mapping[str, float] | None = None,
+) -> ProductionGraph:
+    """A plan from the recipes the player has unlocked, when those can make the item; otherwise
+    from every recipe (see `_needs_unlocking`). Raises what `plan_production` raises."""
+    raw_item_ids = raw_resource_ids(context)
+    unlocked = _unlocked_recipes(context)
+    if len(unlocked) < len(context.recipes):
+        try:
+            return plan_production(
+                target_item_id,
+                target_rate,
+                unlocked,
+                recipe_choices,
+                raw_item_ids=raw_item_ids,
+                available_supply=available_supply,
+            )
+        except ValueError:
+            pass  # not with what's unlocked: plan with everything, and say what's missing
+    return plan_production(
+        target_item_id,
+        target_rate,
+        context.recipes,
+        recipe_choices,
+        raw_item_ids=raw_item_ids,
+        available_supply=available_supply,
+    )
+
+
+def _unlocked_recipes(context: OrchestratorContext) -> tuple[Recipe, ...]:
+    unlocked = context.unlocked_technology_ids
+    if unlocked is None:
+        return context.recipes
+    return tuple(r for r in context.recipes if recipe_is_unlocked(r, unlocked))
+
+
+def _needs_unlocking(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:
+    """`{"needs_unlocking": [...]}` naming, for each stage of `graph` the player hasn't unlocked,
+    the easiest technology that unlocks it -- empty when every stage is unlocked or it's unknown
+    what is."""
+    unlocked = context.unlocked_technology_ids
+    recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
+    locked = []
+    for node in graph.nodes:
+        recipe = recipes.get(node.recipe_id)
+        if recipe is None or recipe_is_unlocked(recipe, unlocked) is not False:
+            continue
+        technology = easiest_unlock(recipe.unlockable_by, context.technologies)
+        locked.append(
+            {
+                "recipe_id": recipe.recipe_id,
+                "unlock_with": technology.technology_id if technology else None,
+                "tier": technology.tier if technology else None,
+                "kind": technology.kind if technology else None,
+            }
+        )
+    return {"needs_unlocking": locked} if locked else {}
 
 
 def _target_rate(args: dict[str, Any]) -> float:
@@ -835,7 +1305,9 @@ def _per_item(flows: Iterable[MaterialFlow]) -> dict[str, float]:
     return totals
 
 
-_CLASS_ID = re.compile(r"\b(?:Desc|Recipe|Build|BP)_\w+_C\b")
+_RATE_EPSILON = 1e-6
+
+_CLASS_ID = re.compile(r"\b(?:Desc|Recipe|Build|BP|Schematic|Research)_[\w-]+?_C\b")
 
 
 def display_names(context: OrchestratorContext) -> dict[str, str]:
@@ -843,6 +1315,7 @@ def display_names(context: OrchestratorContext) -> dict[str, str]:
     names = {recipe.recipe_id: recipe.name for recipe in context.recipes}
     names.update({building.building_id: building.name for building in context.buildings})
     names.update({item.item_id: item.name for item in context.items})
+    names.update({t.technology_id: t.name for t in context.technologies})
     return names
 
 
@@ -853,11 +1326,71 @@ def _names_mentioned(text: str, names: Mapping[str, str]) -> dict[str, str]:
 
 
 def _graph_summary(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:
+    """Each stage of a plan -- recipe, the building it runs in, how many, and their draw -- with
+    the plan's net item balance and power."""
     summary: dict[str, Any] = {
-        "machine_counts": {node.recipe_id: node.machine_count for node in graph.nodes},
+        "stages": [
+            {
+                "recipe_id": node.recipe_id,
+                "building_id": node.building_id,
+                "machines": node.machine_count,
+                **_stage_power(node.building_id, node.machine_count, context),
+            }
+            for node in graph.nodes
+        ],
     }
     if context.recipes:
         summary["net_item_balance"] = balance(graph, context.recipes)
     if context.buildings:
         summary["net_power_draw_mw"] = power_balance(graph, context.buildings)
+    if context.transport_tiers:
+        summary["transport"] = _transport(graph, context)
     return summary
+
+
+def _transport(graph: ProductionGraph, context: OrchestratorContext) -> list[dict[str, Any]]:
+    """The belt or pipe each flow in `graph` needs, between the recipes it links ("outside" and
+    "output" at the graph's edges)."""
+    recipe_of = {node.node_id: node.recipe_id for node in graph.nodes}
+    return [
+        {
+            "item_id": need.flow.item_id,
+            "per_minute": need.flow.amount_per_minute,
+            "from": recipe_of.get(need.flow.source_node_id or "", "outside"),
+            "to": recipe_of.get(need.flow.target_node_id or "", "output"),
+            "tier": need.tier.building_id if need.tier else None,
+            "lines": need.lines,
+        }
+        for need in transport_needs(graph.flows, context.items, context.transport_tiers)
+    ]
+
+
+def _stage_power(
+    building_id: str, machines: float, context: OrchestratorContext
+) -> dict[str, float]:
+    """`{"power_mw": ...}` for `machines` of `building_id` -- empty when the knowledge base doesn't
+    list the building: its draw is extra information, not worth failing a tool over."""
+    if not any(building.building_id == building_id for building in context.buildings):
+        return {}
+    stage = ProductionNode(
+        node_id=building_id, recipe_id="", building_id=building_id, machine_count=machines
+    )
+    return {"power_mw": power_balance(ProductionGraph(nodes=(stage,), flows=()), context.buildings)}
+
+
+def _with_spare_power(result: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+    """`result`, plus what the player's grid has to spare, when the save tells."""
+    spare = spare_power_mw(context)
+    return result if spare is None else {**result, "grid_spare_power_mw": spare}
+
+
+def spare_power_mw(context: OrchestratorContext) -> float | None:
+    """What the player's grid can still supply: its capacity minus its draw, from the save. `None`
+    with no save loaded, or no way to tell the capacity."""
+    if context.existing_graph is None:
+        return None
+    try:
+        draw, capacity = _existing_power(context)
+    except ValueError:
+        return None
+    return None if capacity is None else capacity - draw

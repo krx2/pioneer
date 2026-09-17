@@ -231,7 +231,7 @@ def test_an_expansion_is_scored_on_the_machines_it_adds_against_spare_power() ->
         ),
     )
     expansion = ProductionGraph(
-        nodes=(replace(existing_node, machine_count=8),),
+        nodes=(replace(existing_node, machine_count=8, existing_machine_count=3),),
         flows=(
             MaterialFlow(
                 item_id="Desc_IronIngot_C",

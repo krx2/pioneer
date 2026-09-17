@@ -183,6 +183,34 @@ def test_a_flow_to_an_unknown_node_becomes_a_boundary_not_a_dangling_link() -> N
     assert {n["kind"] for n in data["nodes"]} == {"machine", "boundary-in", "boundary-out"}
 
 
+def test_an_extended_node_says_how_many_of_its_machines_are_new() -> None:
+    graph = ProductionGraph(
+        nodes=(
+            ProductionNode(
+                node_id="save_smelters",
+                recipe_id="Recipe_IngotIron_C",
+                building_id="Build_SmelterMk1_C",
+                machine_count=11,
+                is_existing=True,
+                existing_machine_count=10,
+            ),
+        ),
+        flows=(),
+    )
+
+    (node,) = graph_to_d3_data(graph, {"Recipe_IngotIron_C": "Iron Ingot"})["nodes"]
+
+    assert node["label"] == "Iron Ingot ×11 (+1 new)"
+    assert node["extended"] is True
+    assert "node-extended" in render_page(graph)
+
+
+def test_only_existing_nodes_with_new_machines_count_as_extended() -> None:
+    data = graph_to_d3_data(_GRAPH)
+
+    assert not any(node.get("extended") for node in data["nodes"])
+
+
 def test_render_page_embeds_the_data_and_loads_d3() -> None:
     page = render_page(_GRAPH)
 

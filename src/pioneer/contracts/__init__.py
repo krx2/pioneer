@@ -1,7 +1,8 @@
 """Shared data contracts (implementation.md Stage 1).
 
-Plain data definitions only — no logic, no I/O. Every other module in this package depends on
-these shapes and nothing else; this package must never import from any sibling module.
+Plain data definitions, plus the one exception an injected transport raises — no logic, no I/O.
+Every other module in this package depends on these shapes and nothing else; this package must
+never import from any sibling module.
 
 Everything is re-exported here so other modules can do `from pioneer.contracts import Recipe`
 instead of reaching into individual files.
@@ -11,7 +12,7 @@ from pioneer.contracts.anomalies import AnomalyKind, AnomalyRecord, AnomalySever
 from pioneer.contracts.game_state import GameState
 from pioneer.contracts.geometry import Coordinates
 from pioneer.contracts.intent import Intent, IntentKind
-from pioneer.contracts.locations import RankedLocation
+from pioneer.contracts.locations import FactorySite, RankedLocation
 from pioneer.contracts.placement import PlacementRecord
 from pioneer.contracts.planning import ChangeAction, ChangeItem, ChangeSet
 from pioneer.contracts.production_graph import MaterialFlow, ProductionGraph, ProductionNode
@@ -21,11 +22,14 @@ from pioneer.contracts.recipes import (
     GeneratorFuel,
     Item,
     ItemAmount,
+    ItemCount,
     Recipe,
     Technology,
+    TransportTier,
 )
 from pioneer.contracts.resources import Purity, ResourceNode
 from pioneer.contracts.responses import Feedback, ResponseArtifact
+from pioneer.contracts.transport import TransportError
 
 __all__ = [
     "AnomalyKind",
@@ -37,6 +41,7 @@ __all__ = [
     "ChangeSet",
     "ClassDescription",
     "Coordinates",
+    "FactorySite",
     "Feedback",
     "GameState",
     "GeneratorFuel",
@@ -44,6 +49,7 @@ __all__ = [
     "IntentKind",
     "Item",
     "ItemAmount",
+    "ItemCount",
     "MaterialFlow",
     "PlacementRecord",
     "ProductionGraph",
@@ -54,4 +60,6 @@ __all__ = [
     "ResourceNode",
     "ResponseArtifact",
     "Technology",
+    "TransportError",
+    "TransportTier",
 ]

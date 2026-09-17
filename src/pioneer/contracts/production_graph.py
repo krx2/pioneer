@@ -23,6 +23,12 @@ class ProductionNode:
     Lets Graph presentation (Stage 13) distinguish "already built" from "new" nodes, per the
     worked example in architecture.md §5.
     """
+    existing_machine_count: float = 0.0
+    """How many of `machine_count` already stand; the rest are to be built. All of them for a node
+    straight from a save; some for an existing node an expansion extends; none for a new node."""
+    production_boost: float = 1.0
+    """How much Somersloops multiply the node's output, averaged over its machines by clock speed
+    (see `PlacementRecord.production_boost`). Its inputs don't scale with it."""
 
 
 @dataclass(frozen=True)

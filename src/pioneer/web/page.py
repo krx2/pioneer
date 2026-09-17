@@ -78,6 +78,8 @@ const chat = document.getElementById("chat");
 const form = document.getElementById("ask");
 const input = document.getElementById("question");
 const submit = form.querySelector("button");
+const history = [];  // this tab's conversation, sent with every question
+const KEPT_TURNS = 8;
 
 function append(node) {
   chat.appendChild(node);
@@ -218,7 +220,7 @@ form.addEventListener("submit", async (event) => {
     const response = await fetch("/api/ask", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({question}),
+      body: JSON.stringify({question, history: history.slice(-KEPT_TURNS)}),
     });
     const body = await response.json();
     if (!response.ok) {
@@ -226,6 +228,8 @@ form.addEventListener("submit", async (event) => {
       addError(`Pioneer could not answer: ${detail}`);
       return;
     }
+    if (body.status) document.querySelector(".status").textContent = body.status;
+    history.push({question, answer: body.chat || ""});
     addAnswerHtml(body.chat_html);
     if (body.graph_url) addPanel(body.graph_url, "Production graph");
     if (body.map_url) addPanel(body.map_url, "Factory map");

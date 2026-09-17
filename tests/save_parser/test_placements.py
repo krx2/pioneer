@@ -3,6 +3,7 @@
 
 import pytest
 from tests.save_parser.byte_builders import (
+    bool_property_tag_bytes,
     float_property_tag_bytes,
     level_object_reference_tag_bytes,
     object_property_tag_bytes,
@@ -166,6 +167,20 @@ def test_clock_speed_and_fuel_are_read_from_the_buildings_own_span() -> None:
     assert (generator.clock_speed, generator.fuel_item_id) == (2.5, "Desc_Coal_C")
     assert generator.recipe_id is None
     assert (smelter.clock_speed, smelter.fuel_item_id) == (1.0, None)  # nothing saved: defaults
+
+
+def test_standby_and_somersloop_boost_are_read_from_the_buildings_own_span() -> None:
+    boosted_and_paused = (
+        bool_property_tag_bytes(name="mIsProductionPaused")
+        + float_property_tag_bytes(name="mCurrentProductionBoost", value=1.5)
+        + _RECIPE_TAG
+    )
+    body, spans = _body_with_spans(boosted_and_paused, _RECIPE_TAG)
+
+    first, second = to_placement_records_with_recipes((_SMELTER, _SMELTER), body, spans)
+
+    assert (first.is_paused, first.production_boost) == (True, 1.5)
+    assert (second.is_paused, second.production_boost) == (False, 1.0)  # nothing saved: defaults
 
 
 def test_what_an_extractor_extracts_from_is_read_from_its_span() -> None:

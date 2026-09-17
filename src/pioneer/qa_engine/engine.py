@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from pioneer.contracts import TransportError
 from pioneer.qa_engine.retrieval import Passage, ScoredPassage, retrieve
 
 _SYSTEM_PROMPT = (
@@ -48,15 +49,10 @@ class LLMUnavailable:
     reason: str
 
 
-class TransportError(Exception):
-    """Raised by a `ChatCompletion` implementation when the request couldn't complete at all
-    (connection refused, timeout, ...) — distinct from the model successfully replying, which
-    `answer_question` handles itself without needing this exception."""
-
-
 class ChatCompletion(Protocol):
     """Sends `messages` (OpenAI chat/completions shape) to `base_url` for `model`, returning the
-    assistant's reply text. Raises `TransportError` if the request couldn't complete at all."""
+    assistant's reply text. Raises `contracts.TransportError` if the request couldn't complete at
+    all — the model replying with something unusable is `answer_question`'s own business."""
 
     def __call__(
         self,

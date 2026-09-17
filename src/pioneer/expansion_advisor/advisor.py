@@ -17,11 +17,11 @@ alternate) does not match — feed Stage 7 the right `recipe_choices` if you wan
 alternate-recipe factory extended.
 
 `resulting_graph` is the production chain for the request after the change: every extended node
-(`is_existing=True`, `machine_count` bumped by the addition) and every added node
-(`is_existing=False`), with the plan's flows rewired onto those node ids — so every flow endpoint is
-a node in the graph, or `None` for material entering from outside (raw resources, or the existing
-factory's surplus). Existing nodes the change doesn't touch are left out: they're the rest of the
-factory, not part of this chain.
+(`is_existing=True`, `machine_count` bumped by the addition, `existing_machine_count` what already
+stood) and every added node (`is_existing=False`, nothing standing yet), with the plan's flows
+rewired onto those node ids — so every flow endpoint is a node in the graph, or `None` for material
+entering from outside (raw resources, or the existing factory's surplus). Existing nodes the change
+doesn't touch are left out: they're the rest of the factory, not part of this chain.
 """
 
 from __future__ import annotations
@@ -62,9 +62,15 @@ def advise_expansion(existing: ProductionGraph, additions: ProductionGraph) -> C
                     target_node_id=anchor.node_id,
                 )
             )
-            extended = result_nodes.get(anchor.node_id, replace(anchor, is_existing=True))
+            extended = result_nodes.get(
+                anchor.node_id,
+                replace(anchor, is_existing=True, existing_machine_count=anchor.machine_count),
+            )
+            machines = extended.machine_count + node.machine_count
+            # New machines carry no Somersloops: the boost thins out over the larger count.
+            boosted = extended.machine_count * extended.production_boost + node.machine_count
             result_nodes[anchor.node_id] = replace(
-                extended, machine_count=extended.machine_count + node.machine_count
+                extended, machine_count=machines, production_boost=boosted / machines
             )
             rewired[node.node_id] = anchor.node_id
         else:
@@ -77,7 +83,9 @@ def advise_expansion(existing: ProductionGraph, additions: ProductionGraph) -> C
                 )
             )
             new_id = _unique_id(node.node_id, existing_ids | result_nodes.keys())
-            result_nodes[new_id] = replace(node, node_id=new_id, is_existing=False)
+            result_nodes[new_id] = replace(
+                node, node_id=new_id, is_existing=False, existing_machine_count=0.0
+            )
             rewired[node.node_id] = new_id
 
     flows = tuple(_rewire(flow, rewired) for flow in additions.flows)

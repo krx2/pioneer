@@ -26,6 +26,8 @@ def known_recipe_ids() -> frozenset[str]:
     [
         pytest.param("stal_mielec.sav", 500, id="stal_mielec"),
         pytest.param("wielka_polska_niesmiertelna.sav", 900, id="wielka_polska"),
+        pytest.param("alfa.sav", 20, id="alfa"),
+        pytest.param("tak.sav", 63, id="tak"),
     ],
 )
 def test_every_current_recipe_resolves_to_a_real_recipe(

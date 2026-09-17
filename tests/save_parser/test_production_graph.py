@@ -38,6 +38,48 @@ def test_machine_count_is_the_sum_of_clock_speeds() -> None:
     assert node.machine_count == 1.5
 
 
+def test_paused_buildings_run_nothing() -> None:
+    paused = PlacementRecord(
+        building_id="Build_SmelterMk1_C",
+        position=Coordinates(x=0.0, y=0.0, z=0.0),
+        recipe_id="Recipe_IngotIron_C",
+        is_paused=True,
+    )
+
+    graph = to_production_graph((paused, _placement("Recipe_IngotIron_C"), paused))
+
+    assert [node.machine_count for node in graph.nodes] == [1]
+    assert to_production_graph((paused,)).nodes == ()
+
+
+def test_somersloop_boost_is_averaged_by_clock_speed() -> None:
+    """A doubled machine at 100% and a plain one at 50%: 1.5 machines turning out 2.5 machines'
+    worth, a boost of 5/3."""
+    doubled = PlacementRecord(
+        building_id="Build_ConstructorMk1_C",
+        position=Coordinates(x=0.0, y=0.0, z=0.0),
+        recipe_id="Recipe_IronPlate_C",
+        production_boost=2.0,
+    )
+    half = PlacementRecord(
+        building_id="Build_ConstructorMk1_C",
+        position=Coordinates(x=0.0, y=0.0, z=0.0),
+        recipe_id="Recipe_IronPlate_C",
+        clock_speed=0.5,
+    )
+
+    (node,) = to_production_graph((doubled, half)).nodes
+
+    assert node.machine_count == 1.5
+    assert abs(node.machine_count * node.production_boost - 2.5) < 1e-9
+
+
+def test_machines_without_somersloops_have_no_boost() -> None:
+    (node,) = to_production_graph((_placement("Recipe_IngotIron_C"),)).nodes
+
+    assert node.production_boost == 1.0
+
+
 def test_placements_without_a_recipe_are_skipped() -> None:
     graph = to_production_graph((_placement(None, "Build_ConveyorBeltMk1_C"), _placement(None)))
 
@@ -49,6 +91,7 @@ def test_nodes_are_marked_existing_and_carry_their_building() -> None:
 
     (node,) = graph.nodes
     assert node.is_existing is True
+    assert node.existing_machine_count == node.machine_count == 1
     assert node.building_id == "Build_SmelterMk1_C"
     assert node.node_id == "save_Recipe_IngotIron_C"
 

@@ -17,6 +17,8 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
     [
         pytest.param("stal_mielec.sav", 7000, id="stal_mielec"),
         pytest.param("wielka_polska_niesmiertelna.sav", 13000, id="wielka_polska"),
+        pytest.param("alfa.sav", 280, id="alfa"),
+        pytest.param("tak.sav", 1300, id="tak"),
     ],
 )
 def test_finds_plausible_number_of_buildings(filename: str, expected_min_buildings: int) -> None:

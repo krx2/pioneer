@@ -2,6 +2,8 @@
 (the same recipe rates as tests/knowledge_base/fixtures/mini_docs.json) — no loader, no Planner,
 no Save Parser."""
 
+from dataclasses import replace
+
 import pytest
 
 from pioneer.contracts import (
@@ -17,6 +19,7 @@ from pioneer.contracts import (
     Purity,
     Recipe,
     ResourceNode,
+    TransportTier,
 )
 from pioneer.verifier.calculations import (
     added_machines,
@@ -24,6 +27,7 @@ from pioneer.verifier.calculations import (
     consumption,
     distance,
     extraction_rates,
+    extractors_needed,
     generator_byproducts,
     generator_fuel_demand,
     generator_supplemental_demand,
@@ -32,6 +36,8 @@ from pioneer.verifier.calculations import (
     placed_generation_capacity_mw,
     placed_power_consumption_mw,
     power_balance,
+    power_plants,
+    transport_needs,
 )
 
 _SMELTER = Building(
@@ -122,6 +128,8 @@ def _placed(
     clock_speed: float = 1.0,
     fuel_item_id: str | None = None,
     resource_node_id: str | None = None,
+    is_paused: bool = False,
+    production_boost: float = 1.0,
 ) -> PlacementRecord:
     return PlacementRecord(
         building_id=building_id,
@@ -129,6 +137,8 @@ def _placed(
         clock_speed=clock_speed,
         fuel_item_id=fuel_item_id,
         resource_node_id=resource_node_id,
+        is_paused=is_paused,
+        production_boost=production_boost,
     )
 
 
@@ -301,6 +311,37 @@ _FUEL_RODS = (
 )
 
 
+def test_paused_buildings_draw_make_and_burn_nothing() -> None:
+    placements = (
+        _placed("Build_SmelterMk1_C", is_paused=True),
+        _placed("Build_MinerMk1_C"),
+        _placed("Build_GeneratorCoal_C", fuel_item_id="Desc_Coal_C", is_paused=True),
+    )
+
+    assert placed_power_consumption_mw(placements, _PLACED_BUILDINGS) == pytest.approx(5.0)
+    assert placed_generation_capacity_mw(placements, _PLACED_BUILDINGS) == 0
+    assert generator_fuel_demand(placements, _PLACED_BUILDINGS, _FUELS) == {}
+    assert generator_supplemental_demand(placements, _WATER_COOLED) == {}
+
+
+def test_somersloops_multiply_draw_by_the_boost_squared() -> None:
+    draw = placed_power_consumption_mw(
+        (_placed("Build_SmelterMk1_C", production_boost=2.0),), _PLACED_BUILDINGS
+    )
+    assert draw == pytest.approx(16.0)
+
+
+def test_boost_multiplies_a_nodes_output_but_not_its_input() -> None:
+    graph = ProductionGraph(
+        nodes=(replace(_graph(smelters=1, constructors=0).nodes[0], production_boost=2.0),),
+        flows=(),
+    )
+
+    assert balance(graph, RECIPES) == pytest.approx(
+        {"Desc_IronIngot_C": 60.0, "Desc_OreIron_C": -30.0}
+    )
+
+
 def test_generators_consume_water_as_in_game() -> None:
     """Coal: 45 m³/min at 100%, half that underclocked to 50%. Nuclear: 240 m³/min."""
     placements = (
@@ -342,7 +383,6 @@ def test_consumption_is_gross_demand_by_machine_count() -> None:
 
 
 def test_added_machines_keeps_only_what_an_expansion_builds() -> None:
-    existing = _graph(smelters=2, constructors=4)
     expanded = ProductionGraph(
         nodes=(
             ProductionNode(
@@ -351,6 +391,7 @@ def test_added_machines_keeps_only_what_an_expansion_builds() -> None:
                 building_id="Build_SmelterMk1_C",
                 machine_count=3,
                 is_existing=True,
+                existing_machine_count=2,
             ),
             ProductionNode(
                 node_id="constructor_1",
@@ -358,6 +399,7 @@ def test_added_machines_keeps_only_what_an_expansion_builds() -> None:
                 building_id="Build_ConstructorMk1_C",
                 machine_count=4,
                 is_existing=True,
+                existing_machine_count=4,
             ),
             ProductionNode(
                 node_id="new_constructor",
@@ -369,14 +411,14 @@ def test_added_machines_keeps_only_what_an_expansion_builds() -> None:
         flows=(MaterialFlow(item_id="Desc_IronRod_C", amount_per_minute=15),),
     )
 
-    added = added_machines(expanded, existing)
+    added = added_machines(expanded)
 
     assert {node.node_id: node.machine_count for node in added.nodes} == {
         "smelter_1": 1,
         "new_constructor": 2,
     }
+    assert all(node.existing_machine_count == 0 for node in added.nodes)
     assert added.flows == expanded.flows
-    assert added_machines(expanded, None) is expanded
 
 
 def _rod_plan(*, smelters: float, constructors: float) -> ProductionGraph:
@@ -465,3 +507,70 @@ def test_a_miner_on_a_node_the_data_does_not_know_extracts_nothing_known() -> No
     placements = (_placed("Build_MinerMk2_C", resource_node_id="node_elsewhere"),)
 
     assert extraction_rates(placements, (_MINER_MK2,), _NODES) == {}
+
+
+def test_power_plants_cover_the_target_with_whole_generators() -> None:
+    """200 MW: three 75 MW coal generators (225 MW) burning 45 coal and drinking 135 m³ a
+    minute at full load, or a single 2500 MW nuclear plant."""
+    plants = power_plants(200, _WATER_COOLED, _FUEL_RODS)
+
+    by_generator = {(p.generator_id, p.fuel_item_id): p for p in plants}
+    coal = by_generator[("Build_GeneratorCoal_C", "Desc_Coal_C")]
+    assert (coal.generators, coal.capacity_mw) == (3, 225)
+    assert coal.fuel_per_minute == pytest.approx(45.0)
+    assert (coal.supplemental_item_id, coal.supplemental_per_minute) == ("Desc_Water_C", 135)
+    nuclear = by_generator[("Build_GeneratorNuclear_C", "Desc_NuclearFuelRod_C")]
+    assert nuclear.generators == 1
+    assert nuclear.fuel_per_minute == pytest.approx(0.2)
+    assert nuclear.byproduct_per_minute == pytest.approx(10.0)
+    assert [p.generator_id for p in plants] == [  # the closest past 200 MW first
+        "Build_GeneratorCoal_C",  # 225 MW
+        "Build_GeneratorFuel_C",  # 250 MW
+        "Build_GeneratorNuclear_C",
+    ]
+
+
+def test_power_plants_need_fuel_with_known_energy() -> None:
+    plants = power_plants(100, _WATER_COOLED, ())
+
+    assert plants == ()
+
+
+def test_extractors_needed_rounds_up() -> None:
+    assert extractors_needed(135, _WATER_EXTRACTOR) == 2
+    assert extractors_needed(0, _WATER_EXTRACTOR) == 0
+    with pytest.raises(ValueError):
+        extractors_needed(10, _SMELTER)
+
+
+_TIERS = (
+    TransportTier(building_id="belt1", name="Mk.1", capacity_per_minute=60, carries_fluids=False),
+    TransportTier(building_id="belt2", name="Mk.2", capacity_per_minute=120, carries_fluids=False),
+    TransportTier(building_id="pipe1", name="Pipe", capacity_per_minute=300, carries_fluids=True),
+)
+
+
+def test_transport_picks_the_slowest_tier_that_carries_the_flow() -> None:
+    flows = (
+        MaterialFlow(item_id="Desc_OreIron_C", amount_per_minute=60),
+        MaterialFlow(item_id="Desc_OreIron_C", amount_per_minute=61),
+        MaterialFlow(item_id="Desc_LiquidFuel_C", amount_per_minute=40),
+        MaterialFlow(item_id="Desc_OreIron_C", amount_per_minute=250),
+    )
+
+    needs = transport_needs(flows, _FUELS, _TIERS)
+
+    assert [(n.tier.building_id if n.tier else None, n.lines) for n in needs] == [
+        ("belt1", 1),
+        ("belt2", 1),
+        ("pipe1", 1),
+        ("belt2", 3),  # faster than any belt: three Mk.2 lines
+    ]
+
+
+def test_transport_without_a_tier_for_the_form_says_so() -> None:
+    needs = transport_needs(
+        (MaterialFlow(item_id="Desc_LiquidFuel_C", amount_per_minute=40),), _FUELS, _TIERS[:2]
+    )
+
+    assert (needs[0].tier, needs[0].lines) == (None, 0)

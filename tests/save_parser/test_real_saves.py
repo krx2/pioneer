@@ -14,6 +14,8 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 _SAVE_FILES = [
     pytest.param("stal_mielec.sav", id="stal_mielec"),
     pytest.param("wielka_polska_niesmiertelna.sav", id="wielka_polska_niesmiertelna"),
+    pytest.param("alfa.sav", id="alfa"),
+    pytest.param("tak.sav", id="tak"),
 ]
 
 

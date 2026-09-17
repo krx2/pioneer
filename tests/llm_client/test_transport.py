@@ -8,9 +8,8 @@ from typing import Any
 
 import pytest
 
+from pioneer.contracts import TransportError
 from pioneer.llm_client import transport
-from pioneer.orchestrator.orchestrator import TransportError as OrchestratorTransportError
-from pioneer.qa_engine.engine import TransportError as QATransportError
 
 _BASE_URL = "http://localhost:11434/v1"
 _MODEL = "test-model"
@@ -89,7 +88,7 @@ def test_chat_completion_unreachable_raises_qa_transport_error(
 ) -> None:
     _install_failing_urlopen(monkeypatch)
 
-    with pytest.raises(QATransportError):
+    with pytest.raises(TransportError):
         transport.chat_completion(_BASE_URL, _MODEL, [], None)
 
 
@@ -98,7 +97,7 @@ def test_chat_completion_malformed_response_raises_qa_transport_error(
 ) -> None:
     _install_fake_urlopen(monkeypatch, {"unexpected": "shape"})
 
-    with pytest.raises(QATransportError):
+    with pytest.raises(TransportError):
         transport.chat_completion(_BASE_URL, _MODEL, [], None)
 
 
@@ -161,7 +160,7 @@ def test_tool_calling_chat_completion_unreachable_raises_orchestrator_transport_
 ) -> None:
     _install_failing_urlopen(monkeypatch)
 
-    with pytest.raises(OrchestratorTransportError):
+    with pytest.raises(TransportError):
         transport.tool_calling_chat_completion(_BASE_URL, _MODEL, [], [], None)
 
 
@@ -187,5 +186,5 @@ def test_tool_calling_chat_completion_malformed_arguments_raises_orchestrator_tr
         },
     )
 
-    with pytest.raises(OrchestratorTransportError):
+    with pytest.raises(TransportError):
         transport.tool_calling_chat_completion(_BASE_URL, _MODEL, [], [], None)

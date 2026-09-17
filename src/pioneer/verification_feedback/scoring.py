@@ -6,6 +6,10 @@ Each channel mixes deterministic checks with, where architecture.md calls for it
 use for their own external calls: the caller supplies a plain callable, so the real LLM-as-a-judge
 call (Stage 16's job) never needs to exist for these functions to be fully unit-tested.
 
+The Chat channel measures word overlap with the same notion of a significant word that retrieval
+ranks passages by (`qa_engine.significant_words`) — the answer is being compared against retrieved
+text, so the two have to agree on what a word worth matching is.
+
 - Chat: `check_rag_consistency` is fully deterministic (grounding is a fact-check, not a matter of
   taste, so it doesn't need a judge) — architecture.md's own three-way split reserves LLM-as-a-judge
   for *subjective* fit, never arithmetic-or-fact correctness. The numbers decide consistency:
@@ -23,7 +27,6 @@ call (Stage 16's job) never needs to exist for these functions to be fully unit-
 from __future__ import annotations
 
 import re
-from collections import Counter
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
@@ -38,7 +41,14 @@ from pioneer.contracts import (
     ResourceNode,
     ResponseArtifact,
 )
-from pioneer.verifier import balance, distance, power_balance
+from pioneer.qa_engine import significant_words
+from pioneer.verifier import (
+    added_machines,
+    balance,
+    distance,
+    minimal_machine_graph,
+    power_balance,
+)
 
 # --- Shared ----------------------------------------------------------------------------------
 
@@ -52,20 +62,6 @@ class JudgeVerdict:
 
 
 # --- Chat channel --------------------------------------------------------------------------
-
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
-_STOPWORDS = frozenset(
-    """
-    a an and are as at be by can do for from how i in into is it made of on or than that the
-    their there this to what when where which who why with you your
-    """.split()
-)
-
-
-def _significant_tokens(text: str) -> Counter[str]:
-    tokens = (t for t in _TOKEN_RE.findall(text.lower()) if t not in _STOPWORDS)
-    return Counter(tokens)
-
 
 _LIST_MARKER_RE = re.compile(r"^\s*[0-9]+[.)]\s+", re.MULTILINE)
 _NUMBER_RE = re.compile(r"(?<![\w.,#])[0-9]+(?:[.,][0-9]+)*(?:[eE][+-]?[0-9]+)?")
@@ -159,10 +155,10 @@ def check_rag_consistency(chat_text: str, cited_passages: Sequence[str]) -> Chat
         token for token, readings in _stated_numbers(chat_text) if not _is_grounded(readings, known)
     ]
 
-    chat_words = set(_significant_tokens(chat_text))
+    chat_words = set(significant_words(chat_text))
     passage_words: set[str] = set()
     for passage in cited_passages:
-        passage_words.update(_significant_tokens(passage))
+        passage_words.update(significant_words(passage))
     fraction = len(chat_words & passage_words) / len(chat_words) if chat_words else 1.0
 
     return ChatScore(
@@ -351,40 +347,96 @@ def score_response(
     distance_tolerance: float = 1.0,
     terrain_judge: TerrainJudge | None = None,
     chat_judge: ChatJudge | None = None,
-    judge_context: str = "",
+    chat_context: str = "",
+    terrain_context: str = "",
 ) -> ResponseScore:
     """Scores whichever channels `artifact` actually populates — per architecture.md §4.4, not
-    every response needs all three."""
-    chat_score = None
-    if artifact.chat is not None:
-        chat_score = check_rag_consistency(artifact.chat, cited_passages)
-        if artifact.feedback is not None and artifact.feedback.qualitative_score is not None:
-            chat_score = replace(chat_score, qualitative_score=artifact.feedback.qualitative_score)
-        if chat_judge is not None:
-            verdict = chat_judge(artifact.question or "", artifact.chat, judge_context)
-            chat_score = replace(chat_score, judge_verdict=verdict)
+    every response needs all three — and only as far as the data allows: a channel that can't be
+    scored (no knowledge base, a graph on a building the knowledge base doesn't list) comes back
+    unscored rather than costing the others theirs.
 
-    graph_score = None
-    if artifact.graph is not None:
-        graph_score = score_graph(
-            artifact.graph,
+    The graph channel is scored for what the answer *adds*: an expansion's extended nodes count
+    only their new machines, every material the graph takes in from outside is not held against
+    it, and, unless a better `optimal_graph` is given, the optimum it's measured against is the
+    same plan in fractional machines. `chat_context` and `terrain_context` are what the two judges
+    are told about the player's situation."""
+    return ResponseScore(
+        chat=_chat_channel(artifact, cited_passages, chat_judge, chat_context),
+        graph=_graph_channel(
+            artifact, recipes, buildings, optimal_graph, available_power_mw, raw_item_ids
+        ),
+        map=_map_channel(
+            artifact, resource_nodes, placements, distance_tolerance, terrain_judge, terrain_context
+        ),
+    )
+
+
+def _chat_channel(
+    artifact: ResponseArtifact,
+    cited_passages: Sequence[str],
+    judge: ChatJudge | None,
+    judge_context: str,
+) -> ChatScore | None:
+    if not artifact.chat:
+        return None
+    score = check_rag_consistency(artifact.chat, cited_passages)
+    if artifact.feedback is not None and artifact.feedback.qualitative_score is not None:
+        score = replace(score, qualitative_score=artifact.feedback.qualitative_score)
+    if judge is not None:
+        score = replace(
+            score, judge_verdict=judge(artifact.question or "", artifact.chat, judge_context)
+        )
+    return score
+
+
+def _graph_channel(
+    artifact: ResponseArtifact,
+    recipes: tuple[Recipe, ...],
+    buildings: tuple[Building, ...],
+    optimal_graph: ProductionGraph | None,
+    available_power_mw: float | None,
+    raw_item_ids: Collection[str],
+) -> GraphScore | None:
+    graph = artifact.graph
+    if graph is None or not recipes or not buildings:
+        return None
+    added = added_machines(graph)
+    from_outside = set(raw_item_ids) | {
+        flow.item_id for flow in graph.flows if flow.source_node_id is None
+    }
+    try:
+        return score_graph(
+            added,
             recipes,
             buildings,
-            optimal_graph=optimal_graph,
+            optimal_graph=(
+                optimal_graph
+                if optimal_graph is not None
+                else minimal_machine_graph(added, recipes)
+            ),
             available_power_mw=available_power_mw,
-            raw_item_ids=raw_item_ids,
+            raw_item_ids=from_outside,
         )
+    except ValueError:
+        return None
 
-    map_score = None
-    if artifact.map_locations is not None:
-        map_score = score_map(
-            artifact.map_locations,
-            resource_nodes,
-            reference=artifact.map_reference,
-            placements=placements,
-            distance_tolerance=distance_tolerance,
-            judge=terrain_judge,
-            judge_context=judge_context,
-        )
 
-    return ResponseScore(chat=chat_score, graph=graph_score, map=map_score)
+def _map_channel(
+    artifact: ResponseArtifact,
+    resource_nodes: Sequence[ResourceNode],
+    placements: Sequence[PlacementRecord],
+    distance_tolerance: float,
+    judge: TerrainJudge | None,
+    judge_context: str,
+) -> tuple[MapScore, ...] | None:
+    if artifact.map_locations is None:
+        return None
+    return score_map(
+        artifact.map_locations,
+        resource_nodes,
+        reference=artifact.map_reference,
+        placements=placements,
+        distance_tolerance=distance_tolerance,
+        judge=judge,
+        judge_context=judge_context,
+    )

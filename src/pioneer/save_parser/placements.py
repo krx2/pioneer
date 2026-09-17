@@ -12,10 +12,13 @@ path instead, since the object table carries no equivalent field.
 uses for `Building.building_id`, so a `PlacementRecord` here and a `Building` from the Knowledge
 Base are keyed identically.
 
-`recipe_id`, `clock_speed`, `fuel_item_id` and `resource_node_id` are filled in by
-`to_placement_records_with_recipes`, which reads each building's own `mCurrentRecipe`,
-`mCurrentPotential`, `mCurrentFuelClass` and `mExtractableResource` out of its entity span (see
-entities.py for the framing and properties.py for the extraction).
+`recipe_id`, `clock_speed`, `fuel_item_id`, `resource_node_id`, `is_paused` and
+`production_boost` are filled in by `to_placement_records_with_recipes`, which reads each
+building's own `mCurrentRecipe`, `mCurrentPotential`, `mCurrentFuelClass`, `mExtractableResource`,
+`mIsProductionPaused` and `mCurrentProductionBoost` out of its entity span (see entities.py for the
+framing and properties.py for the extraction). No fixture save has a Somersloop in a machine, so
+the boost's property name is inferred from its siblings (`mCurrentPotential`/`mPendingPotential`,
+and the export's `mOnPendingProductionBoostChanged`) rather than seen in a save.
 `to_placement_records` is the headers-only version, for callers that have no decompressed body to
 search — it leaves `recipe_id` as `None`, which is a real "not known", not "not running a
 recipe", and the clock speed at its 100% default.
@@ -30,6 +33,7 @@ from pioneer.save_parser.entities import EntitySpan
 from pioneer.save_parser.object_table import RawObjectHeader
 from pioneer.save_parser.properties import (
     find_recipe_ids,
+    read_bool_property,
     read_float_property,
     read_level_object_reference,
 )
@@ -96,6 +100,8 @@ def to_placement_records_with_recipes(
             body, start=span.start, end=span.end, property_name="mCurrentFuelClass"
         )
         clock_speed = read_float_property(body, "mCurrentPotential", start=span.start, end=span.end)
+        boost = read_float_property(body, "mCurrentProductionBoost", start=span.start, end=span.end)
+        paused = read_bool_property(body, "mIsProductionPaused", start=span.start, end=span.end)
         extracts_from = read_level_object_reference(
             body, "mExtractableResource", start=span.start, end=span.end
         )
@@ -107,6 +113,8 @@ def to_placement_records_with_recipes(
                 clock_speed=1.0 if clock_speed is None else clock_speed,
                 fuel_item_id=fuel_ids[0] if fuel_ids else None,
                 resource_node_id=extracts_from,
+                is_paused=bool(paused),
+                production_boost=1.0 if boost is None else boost,
             )
         )
     return tuple(records)

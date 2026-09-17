@@ -30,6 +30,18 @@ References to an object placed *in the level* (`mExtractableResource`) are bette
 follows when it's set), then the value, and `Size` is exact — see `read_level_object_reference`
 and `read_float_property`.
 
+`BoolProperty` tags (`mIsProductionPaused`) have `Size` 0 and are followed by two bytes, seen as
+`00 10` on every occurrence in the real fixtures: `0x10` is the `BoolTrue` flag of UE's newer
+property-tag format, and the first byte sits where the older format kept `BoolVal` — see
+`read_bool_property`.
+
+The two `int32`s after a tag's type are, strictly, the number of parameters the type name carries
+(0 for a plain type) and `Size`, as UE's newer tag format writes them — which reads the same as
+`ArrayIndex`/`Size` for every plain type. An `ArrayProperty`'s one parameter is its element type,
+serialized in between: `[1][FString "ObjectProperty"][0][Size][flags byte][count]` and then the
+elements, each an object reference as a level name and a path name — how the schematic manager
+saves `mPurchasedSchematics`. See `read_object_reference_array`.
+
 **Attribution** -- which building a given property belongs to -- comes from the `start`/`end`
 bounds a caller passes in: `entities.find_entity_spans` frames each object's property blob, so
 searching one span finds only that object's own properties. Both real fixture saves attribute every
@@ -54,6 +66,8 @@ from dataclasses import dataclass
 from pioneer.save_parser.binary_reader import ByteReader
 
 _CLASS_PATH_PREFIXES = (b"/Game/", b"/Script/")
+_BOOL_TRUE_FLAG = 0x10
+"""`EPropertyTagFlags::BoolTrue` — a `BoolProperty`'s value, in UE's newer property-tag format."""
 _OBJECT_REFERENCE_SEARCH_WINDOW = 256
 """How far past an `ObjectProperty` tag's header to search for its class-path `FString` -- see
 module docstring. Generous relative to every occurrence seen in both real fixture saves (the path
@@ -185,6 +199,53 @@ def read_float_property(
             return None
         _skip_property_guid(reader)
         return reader.read_float()
+
+    return _first_value(body, property_name, start, end, value)
+
+
+def read_bool_property(
+    body: bytes, property_name: str, *, start: int = 0, end: int | None = None
+) -> bool | None:
+    """The value of the first `BoolProperty` named `property_name` in the `[start, end)` byte
+    range, or `None` if there is none — the default, like a float's. The two bytes after the tag
+    (see module docstring) read as true when either the old format's value byte or the new
+    format's `BoolTrue` flag is set: both saved occurrences seen, of a flag whose default is false
+    and so is only saved when true, read `00 10`.
+    """
+
+    def value(tag: PropertyTag, reader: ByteReader) -> bool | None:
+        if tag.type_name != "BoolProperty" or tag.size != 0:
+            return None
+        legacy_value, flags = reader.read_byte(), reader.read_byte()
+        return bool(legacy_value) or bool(flags & _BOOL_TRUE_FLAG)
+
+    return _first_value(body, property_name, start, end, value)
+
+
+def read_object_reference_array(
+    body: bytes, property_name: str, *, start: int = 0, end: int | None = None
+) -> tuple[str, ...] | None:
+    """The path names in the first `ArrayProperty` of `ObjectProperty` named `property_name` in
+    `[start, end)` — e.g. every schematic the player has unlocked,
+    `/Game/FactoryGame/Schematics/Schematic_StartingRecipes.Schematic_StartingRecipes_C` — or
+    `None` if there's none. The elements must fill the tag's `Size` exactly, which is what tells
+    the layout (see module docstring) was read right."""
+
+    def value(tag: PropertyTag, reader: ByteReader) -> tuple[str, ...] | None:
+        if tag.type_name != "ArrayProperty" or tag.array_index != 1:
+            return None
+        reader.offset -= 4  # that "size" was the element type's length prefix
+        if reader.read_fstring() != "ObjectProperty" or reader.read_int32() != 0:
+            return None
+        size = reader.read_int32()
+        if reader.read_byte():
+            return None  # a property GUID or extension this reader doesn't handle
+        value_start = reader.offset
+        paths = []
+        for _ in range(reader.read_int32()):
+            reader.read_fstring()  # the level name -- empty for a class
+            paths.append(reader.read_fstring())
+        return tuple(paths) if reader.offset - value_start == size else None
 
     return _first_value(body, property_name, start, end, value)
 

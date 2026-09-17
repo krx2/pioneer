@@ -15,9 +15,8 @@ import json
 import re
 from collections.abc import Callable
 
-from pioneer.contracts import RankedLocation
+from pioneer.contracts import RankedLocation, TransportError
 from pioneer.llm_client.transport import chat_completion
-from pioneer.qa_engine.engine import TransportError as QATransportError
 from pioneer.verification_feedback.scoring import ChatJudge, JudgeVerdict, TerrainJudge
 
 ChatCompletionFn = Callable[[str, str, list[dict[str, str]], str | None], str]
@@ -101,6 +100,6 @@ def _verdict(
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     try:
         reply = chat(base_url, model, messages, api_key)
-    except QATransportError:
+    except TransportError:
         return None
     return parse_verdict(reply)

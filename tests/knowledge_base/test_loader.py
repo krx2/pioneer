@@ -176,6 +176,19 @@ def test_recipe_the_game_presents_as_an_alternate_is_flagged(kb) -> None:
     assert standard.is_alternate is False
 
 
+def test_technology_kind_comes_from_its_schematic_type(kb) -> None:
+    kinds = {t.technology_id: t.kind for t in kb.technologies}
+    assert kinds == {
+        "Schematic_StartingRecipes_C": "custom",
+        "Schematic_Alternate_PureIronIngot_C": "alternate",
+    }
+
+
+def test_a_recipe_lists_every_technology_unlocking_it(kb) -> None:
+    rod = next(r for r in kb.recipes if r.recipe_id == "Recipe_IronRod_C")
+    assert rod.unlockable_by == ("Schematic_StartingRecipes_C",)
+
+
 def test_alternate_technology_prerequisites_are_parsed(kb) -> None:
     alt = next(
         t for t in kb.technologies if t.technology_id == "Schematic_Alternate_PureIronIngot_C"

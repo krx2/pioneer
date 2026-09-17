@@ -31,6 +31,7 @@ MODULE_NAMES = [
     "pioneer.orchestrator",
     "pioneer.llm_client",
     "pioneer.web",
+    "pioneer.startup",
 ]
 
 _SETTINGS_ENV_VARS = (
@@ -40,6 +41,7 @@ _SETTINGS_ENV_VARS = (
     "PIONEER_SERVER_HOST",
     "PIONEER_SERVER_PORT",
     "PIONEER_SERVER_API_TOKEN",
+    "PIONEER_SERVER_EXE",
     "PIONEER_SAVE_DIR",
     "PIONEER_LLM_JUDGE",
 )
@@ -68,6 +70,7 @@ def test_settings_default_to_unset(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.dedicated_server_host is None
     assert settings.dedicated_server_port is None
     assert settings.dedicated_server_api_token is None
+    assert settings.dedicated_server_exe is None
     assert settings.save_directory == default_save_directory()
     assert settings.llm_judge is False
 

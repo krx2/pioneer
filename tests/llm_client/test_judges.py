@@ -1,8 +1,7 @@
 """Tests for the LLM-as-a-judge hooks, against fake chat-completion callables — no networking."""
 
-from pioneer.contracts import Coordinates, Purity, RankedLocation
+from pioneer.contracts import Coordinates, Purity, RankedLocation, TransportError
 from pioneer.llm_client.judges import chat_judge, parse_verdict, terrain_judge
-from pioneer.qa_engine.engine import TransportError
 from pioneer.verification_feedback import JudgeVerdict
 
 

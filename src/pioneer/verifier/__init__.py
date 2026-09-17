@@ -6,11 +6,14 @@ known-correct expected results.
 """
 
 from pioneer.verifier.calculations import (
+    PowerPlant,
+    TransportNeed,
     added_machines,
     balance,
     consumption,
     distance,
     extraction_rates,
+    extractors_needed,
     generator_byproducts,
     generator_fuel_demand,
     generator_supplemental_demand,
@@ -19,14 +22,19 @@ from pioneer.verifier.calculations import (
     placed_generation_capacity_mw,
     placed_power_consumption_mw,
     power_balance,
+    power_plants,
+    transport_needs,
 )
 
 __all__ = [
+    "PowerPlant",
+    "TransportNeed",
     "added_machines",
     "balance",
     "consumption",
     "distance",
     "extraction_rates",
+    "extractors_needed",
     "generator_byproducts",
     "generator_fuel_demand",
     "generator_supplemental_demand",
@@ -35,4 +43,6 @@ __all__ = [
     "placed_generation_capacity_mw",
     "placed_power_consumption_mw",
     "power_balance",
+    "power_plants",
+    "transport_needs",
 ]
