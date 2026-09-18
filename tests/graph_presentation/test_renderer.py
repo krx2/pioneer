@@ -261,3 +261,47 @@ def test_no_label_shows_a_raw_class_id_even_with_no_names_at_all() -> None:
 )
 def test_readable_id_turns_a_class_id_into_words(class_id: str, expected: str) -> None:
     assert readable_id(class_id) == expected
+
+
+def test_nodes_carry_the_icon_of_their_recipe_or_building_or_item() -> None:
+    icons = {
+        "Recipe_IngotIron_C": "/icons/Desc_IronIngot_C.png",
+        "Build_ConstructorMk1_C": "/icons/Build_ConstructorMk1_C.png",
+        "Desc_OreIron_C": "/icons/Desc_OreIron_C.png",
+    }
+
+    nodes = {node["id"]: node for node in graph_to_d3_data(_GRAPH, icons=icons)["nodes"]}
+
+    assert nodes["node_smelter"]["icon"] == "/icons/Desc_IronIngot_C.png"
+    assert nodes["node_plate"]["icon"] == "/icons/Build_ConstructorMk1_C.png"
+    assert nodes["node_reinforced"]["icon"] is None
+    assert nodes["__in__Desc_OreIron_C"]["icon"] == "/icons/Desc_OreIron_C.png"
+
+
+def test_without_icons_no_node_has_one() -> None:
+    assert all(node["icon"] is None for node in graph_to_d3_data(_GRAPH)["nodes"])
+
+
+def test_only_mined_inputs_are_raw_and_parts_are_what_the_player_already_makes() -> None:
+    graph = ProductionGraph(
+        nodes=(ProductionNode("engine", "Recipe_ModularEngine_C", "Build_ManufacturerMk1_C", 2),),
+        flows=(
+            MaterialFlow("Desc_Motor_C", 4, target_node_id="engine"),
+            MaterialFlow("Desc_OreIron_C", 30, target_node_id="engine"),
+            MaterialFlow("Desc_ModularEngine_C", 2, source_node_id="engine"),
+        ),
+    )
+
+    inputs = {
+        node["id"]: node["raw"]
+        for node in graph_to_d3_data(graph, raw_resources={"Desc_OreIron_C"})["nodes"]
+        if node["kind"] == "boundary-in"
+    }
+
+    assert inputs == {"__in__Desc_Motor_C": False, "__in__Desc_OreIron_C": True}
+
+
+def test_without_raw_resources_every_input_counts_as_raw() -> None:
+    inputs = [node for node in graph_to_d3_data(_GRAPH)["nodes"] if node["kind"] == "boundary-in"]
+
+    assert inputs and all(node["raw"] for node in inputs)

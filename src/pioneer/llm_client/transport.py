@@ -19,6 +19,11 @@ from typing import Any
 from pioneer.contracts import TransportError
 
 _TIMEOUT_SECONDS = 120.0
+_PROBE_TIMEOUT_SECONDS = 1.0
+
+MIN_CONTEXT_TOKENS = 16384
+"""The context window a conversation needs: the system prompt and tool schemas alone come to about
+2k tokens, before the conversation so far, every tool result and the answer itself."""
 
 
 def post_chat_completion(
@@ -43,6 +48,39 @@ def post_chat_completion(
         return json.loads(raw)
     except json.JSONDecodeError as error:
         raise TransportError(f"invalid JSON from {url}: {error}") from error
+
+
+def served_context_length(base_url: str, model: str) -> int | None:
+    """The context window Ollama has `model` loaded with, from its `/api/ps`; `None` when that
+    can't be told -- the model isn't loaded yet, or the server isn't Ollama.
+
+    Ollama cuts a prompt longer than the window from the front without an error, and the front is
+    the system prompt and the tool schemas: the model then answers from the conversation alone,
+    with no tools and none of the rules, and makes up the rest. Its OpenAI-compatible API has no
+    way to ask for a bigger window (that's Ollama's own setting), so this is how Pioneer notices."""
+    root = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        with urllib.request.urlopen(f"{root}/api/ps", timeout=_PROBE_TIMEOUT_SECONDS) as response:
+            loaded = json.loads(response.read())
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+    models = loaded.get("models") if isinstance(loaded, dict) else None
+    for entry in models if isinstance(models, list) else []:
+        if isinstance(entry, dict) and model in (entry.get("name"), entry.get("model")):
+            length = entry.get("context_length")
+            return length if isinstance(length, int) else None
+    return None
+
+
+def context_window_warning(base_url: str, model: str) -> str | None:
+    """A line for the page's status when the model's window is too small to be trusted."""
+    window = served_context_length(base_url, model)
+    if window is None or window >= MIN_CONTEXT_TOKENS:
+        return None
+    return (
+        f"model context only {window} tokens, needs {MIN_CONTEXT_TOKENS}: "
+        "answers lose their tools (see README)"
+    )
 
 
 def _first_message(response: dict[str, Any]) -> dict[str, Any]:

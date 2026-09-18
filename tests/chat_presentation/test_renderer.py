@@ -105,3 +105,86 @@ def test_render_page_includes_every_message_in_order() -> None:
 
     assert page.index("How do I make Iron Plates?") < page.index("Smelt Iron Ore")
     assert "<!doctype html>" in page.lower()
+
+
+_ICONS = {
+    "Iron Plate": "/icons/Desc_IronPlate_C.png",
+    "Coal": "/icons/Desc_Coal_C.png",
+    "Coal-Powered Generator": "/icons/Build_GeneratorCoal_C.png",
+    "Miner Mk.1": "/icons/Build_MinerMk1_C.png",
+}
+
+
+def test_a_named_item_gets_its_icon_in_front_of_it() -> None:
+    result = render_message("Build **3 Iron Plates** a minute.", icons=_ICONS)
+
+    assert (
+        '<strong>3 <span class="ref"><img class="icon" alt="" '
+        'src="/icons/Desc_IronPlate_C.png">Iron Plates</span></strong>'
+    ) in result
+
+
+def test_the_longest_name_wins_and_part_of_a_word_is_not_a_name() -> None:
+    result = render_message("A Coal-Powered Generator burns Coal, not Coalition.", icons=_ICONS)
+
+    assert result.count("Build_GeneratorCoal_C.png") == 1
+    assert result.count("Desc_Coal_C.png") == 1
+    assert "Coalition" in result and "Coalition</span>" not in result
+
+
+def test_names_with_regex_characters_match_only_themselves() -> None:
+    result = render_message("Place a Miner Mk.1, not a Miner Mk11.", icons=_ICONS)
+
+    assert result.count("Build_MinerMk1_C.png") == 1
+
+
+def test_code_keeps_its_names_plain() -> None:
+    result = render_message("Try `Iron Plate` in the search.\n\n```\nIron Plate\n```", icons=_ICONS)
+
+    assert "Desc_IronPlate_C.png" not in result
+
+
+def test_without_icons_nothing_changes() -> None:
+    assert render_message("Iron Plate") == render_message("Iron Plate", icons={})
+    assert "<img" not in render_message("Iron Plate")
+
+
+def test_a_markdown_table_becomes_a_table() -> None:
+    result = render_message(
+        "Needs:\n"
+        "| Component | Per minute | Note |\n"
+        "|:----------|-----------:|:----:|\n"
+        "| **Motor** | 8 | `new` |\n"
+        "| Rubber | 60 |\n"
+        r"| a \| b | 1 | x | extra |"
+        "\n"
+        "\n"
+        "Done."
+    )
+
+    assert "<p>Needs:</p>" in result
+    assert (
+        '<div class="table"><table><thead><tr><th style="text-align:left">Component</th>'
+        '<th style="text-align:right">Per minute</th><th style="text-align:center">Note</th>'
+        "</tr></thead><tbody>"
+    ) in result
+    assert '<td style="text-align:left"><strong>Motor</strong></td>' in result
+    assert '<td style="text-align:center"><code>new</code></td>' in result
+    assert '<td style="text-align:center"></td></tr>' in result  # the short row is padded
+    assert '<td style="text-align:left">a | b</td>' in result
+    assert "extra" not in result  # the long row is cut to the header's columns
+    assert result.endswith("</tbody></table></div><p>Done.</p></div>")
+
+
+def test_a_table_needs_its_delimiter_row() -> None:
+    result = render_message("a | b\nc | d")
+
+    assert "<table>" not in result
+    assert "<p>a | b<br>c | d</p>" in result
+
+
+def test_a_table_without_outer_pipes_and_with_icons() -> None:
+    result = render_message("Item | Rate\n--- | ---\nIron Plate | 30", icons=_ICONS)
+
+    assert "<th>Item</th><th>Rate</th>" in result
+    assert "Desc_IronPlate_C.png" in result

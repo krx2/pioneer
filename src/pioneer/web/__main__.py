@@ -17,8 +17,10 @@ import uvicorn
 
 from pioneer.app import DATA_DIR, ask, live_context
 from pioneer.config import settings
+from pioneer.icons import ICON_DIR
+from pioneer.llm_client import context_window_warning
 from pioneer.llm_client.judges import chat_judge, terrain_judge
-from pioneer.orchestrator import verify_response
+from pioneer.orchestrator import OrchestratorContext, verify_response
 from pioneer.verification_feedback import JsonlFeedbackStore, ResponseLog
 from pioneer.web.server import create_app
 
@@ -39,7 +41,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     live = live_context()
-    _, status = live.current()
+
+    def current() -> tuple[OrchestratorContext, str]:
+        """The live context, its status also saying when the model's window is too small."""
+        context, status = live.current()
+        warning = context_window_warning(base_url, model)
+        return context, f"{status} | {warning}" if warning else status
+
+    _, status = current()
     print(f"[{status}]", file=sys.stderr)
 
     judges: dict[str, Any] = {}
@@ -50,11 +59,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
 
     app = create_app(
-        context=live.current,
+        context=current,
         answer=lambda question, context, history: ask(question, context, history),
         verify=lambda artifact, context: verify_response(artifact, context, **judges),
         feedback_store=JsonlFeedbackStore(DATA_DIR / "feedback.jsonl"),
         response_log=ResponseLog(DATA_DIR / "responses.jsonl"),
+        icon_dir=ICON_DIR,
     )
     uvicorn.run(app, host=args.host, port=args.port)
     return 0

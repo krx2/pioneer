@@ -188,3 +188,35 @@ def test_tool_calling_chat_completion_malformed_arguments_raises_orchestrator_tr
 
     with pytest.raises(TransportError):
         transport.tool_calling_chat_completion(_BASE_URL, _MODEL, [], [], None)
+
+
+def test_the_served_context_window_is_read_from_ollamas_loaded_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _install_fake_urlopen(
+        monkeypatch,
+        {
+            "models": [
+                {"name": "other:7b", "context_length": 32768},
+                {"name": _MODEL, "model": _MODEL, "context_length": 4096},
+            ]
+        },
+    )
+
+    assert transport.served_context_length(_BASE_URL, _MODEL) == 4096
+    assert captured["request"] == "http://localhost:11434/api/ps"
+    assert "4096 tokens, needs 16384" in (transport.context_window_warning(_BASE_URL, _MODEL) or "")
+
+
+def test_a_big_enough_or_unknown_window_gives_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_urlopen(monkeypatch, {"models": [{"name": _MODEL, "context_length": 16384}]})
+    assert transport.context_window_warning(_BASE_URL, _MODEL) is None
+
+    _install_fake_urlopen(monkeypatch, {"models": []})  # not loaded yet
+    assert transport.served_context_length(_BASE_URL, _MODEL) is None
+
+    _install_fake_urlopen(monkeypatch, {"error": "not Ollama"})
+    assert transport.served_context_length(_BASE_URL, _MODEL) is None
+
+    _install_failing_urlopen(monkeypatch)
+    assert transport.context_window_warning(_BASE_URL, _MODEL) is None

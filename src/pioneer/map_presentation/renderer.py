@@ -54,6 +54,7 @@ class MapMarker:
     label: str
     color: str
     rank: int | None = None
+    icon: str | None = None
 
 
 def build_markers(
@@ -62,13 +63,18 @@ def build_markers(
     ranked_locations: tuple[RankedLocation, ...] = (),
     names: Mapping[str, str] | None = None,
     factory_sites: tuple[FactorySite, ...] = (),
+    icons: Mapping[str, str] | None = None,
 ) -> tuple[MapMarker, ...]:
     """`names` maps item, recipe and building ids to the names labels show; an id without one
     falls back to `readable_id`, never to the raw class id. A factory site is labelled with its id
-    and the recipes most of its buildings run."""
+    and the recipes most of its buildings run. `icons` maps ids to icon URLs: a deposit and a
+    recommended site show the resource's, a building its own, a factory its main recipe's."""
 
     def name(class_id: str) -> str:
         return (names or {}).get(class_id) or readable_id(class_id)
+
+    def icon(class_id: str | None) -> str | None:
+        return (icons or {}).get(class_id) if class_id is not None else None
 
     markers = [
         MapMarker(
@@ -77,6 +83,7 @@ def build_markers(
             kind="resource",
             label=f"{name(node.item_id)} ({node.purity.value})",
             color=_PURITY_COLOR[node.purity],
+            icon=icon(node.item_id),
         )
         for node in resource_nodes
     ]
@@ -87,6 +94,7 @@ def build_markers(
             kind="existing_building",
             label=name(placement.recipe_id or placement.building_id),
             color=_EXISTING_COLOR,
+            icon=icon(placement.building_id),
         )
         for placement in placements
     ]
@@ -103,6 +111,7 @@ def build_markers(
             f"{location.purity.value}, score {location.score:.2f}",
             color=_RECOMMENDED_COLOR,
             rank=rank,
+            icon=icon(resource_of.get(location.resource_node_id)),
         )
         for rank, location in enumerate(
             sorted(ranked_locations, key=lambda loc: -loc.score), start=1
@@ -115,6 +124,7 @@ def build_markers(
             kind="factory",
             label=f"{site.site_id}: {_main_recipes(site, name)}",
             color=_FACTORY_COLOR,
+            icon=icon(next(iter(_recipe_counts(site)), None)),
         )
         for site in factory_sites
     ]
@@ -130,9 +140,14 @@ def _recommended_resource(
     return f"{name(item_id)}, " if item_id is not None else ""
 
 
-def _main_recipes(site: FactorySite, name: Callable[[str], str], shown: int = 3) -> str:
+def _recipe_counts(site: FactorySite) -> dict[str, int]:
+    """How many of the site's buildings run each recipe, most common first."""
     counts = Counter(p.recipe_id for p in site.placements if p.recipe_id is not None)
-    return ", ".join(name(recipe_id) for recipe_id, _ in counts.most_common(shown))
+    return dict(counts.most_common())
+
+
+def _main_recipes(site: FactorySite, name: Callable[[str], str], shown: int = 3) -> str:
+    return ", ".join(name(recipe_id) for recipe_id in list(_recipe_counts(site))[:shown])
 
 
 def compute_view_box(
@@ -161,22 +176,42 @@ to the real map's much larger scale."""
 
 
 def _svg_marker(marker: MapMarker, *, unit: float, show_label: bool) -> str:
+    """A marker is a dot (a square for a building) in its kind's colour. With an icon, that colour
+    becomes a ring around the icon on a dark ground, and a rank moves from the middle of the dot
+    to a small disc on its upper right."""
     radius = _MARKER_RADIUS_FACTOR[marker.kind] * unit
-    stroke_width = max(unit * 0.06, 0.5)
+    if marker.icon is not None:
+        fill, stroke, stroke_width = "#161a1d", marker.color, unit * 0.14
+    else:
+        fill, stroke, stroke_width = marker.color, "#1f2427", max(unit * 0.06, 0.5)
     shape = (
         f'<rect x="{marker.x - radius}" y="{marker.y - radius}" width="{radius * 2}" '
-        f'height="{radius * 2}" fill="{marker.color}" stroke="#0b0f14" '
+        f'height="{radius * 2}" fill="{fill}" stroke="{stroke}" '
         f'stroke-width="{stroke_width}" />'
         if marker.kind in ("existing_building", "factory")
-        else f'<circle cx="{marker.x}" cy="{marker.y}" r="{radius}" fill="{marker.color}" '
-        f'stroke="#0b0f14" stroke-width="{stroke_width}" />'
+        else f'<circle cx="{marker.x}" cy="{marker.y}" r="{radius}" fill="{fill}" '
+        f'stroke="{stroke}" stroke-width="{stroke_width}" />'
     )
-    badge = (
-        f'<text x="{marker.x}" y="{marker.y + unit * 0.13}" text-anchor="middle" class="badge" '
-        f'style="font-size:{unit:g}px">{marker.rank}</text>'
-        if marker.rank is not None
-        else ""
-    )
+    if marker.icon is not None:
+        side = radius * 1.5
+        shape += (
+            f'<image href="{html.escape(marker.icon)}" x="{marker.x - side / 2}" '
+            f'y="{marker.y - side / 2}" width="{side}" height="{side}" />'
+        )
+    if marker.rank is None:
+        badge = ""
+    elif marker.icon is None:
+        badge = (
+            f'<text x="{marker.x}" y="{marker.y + unit * 0.13}" text-anchor="middle" '
+            f'class="badge" style="font-size:{unit:g}px">{marker.rank}</text>'
+        )
+    else:
+        bx, by = marker.x + radius * 0.8, marker.y - radius * 0.8
+        badge = (
+            f'<circle cx="{bx}" cy="{by}" r="{unit * 0.42}" fill="{marker.color}" />'
+            f'<text x="{bx}" y="{by + unit * 0.21}" text-anchor="middle" class="badge" '
+            f'style="font-size:{unit * 0.6:g}px">{marker.rank}</text>'
+        )
     label_style = f"font-size:{unit:g}px;stroke-width:{unit * 0.25:g}px"
     # A recommended location's position is typically the same resource node it recommends (per
     # Location Advisor), so its label goes *above* the marker rather than below — otherwise it'd
@@ -206,11 +241,14 @@ def render_page(
     names: Mapping[str, str] | None = None,
     label_limit: int = 40,
     factory_sites: tuple[FactorySite, ...] = (),
+    icons: Mapping[str, str] | None = None,
 ) -> str:
     """Every marker keeps its label as a hover tooltip; past `label_limit` markers only the
     recommended sites and factories are also labelled on the map — a real map's hundreds of nodes
     would otherwise bury the pins under text."""
-    markers = build_markers(resource_nodes, placements, ranked_locations, names, factory_sites)
+    markers = build_markers(
+        resource_nodes, placements, ranked_locations, names, factory_sites, icons
+    )
     label_everything = len(markers) <= label_limit
     min_x, min_y, w, h = compute_view_box(markers)
     unit = max(w, h) / 45
@@ -268,15 +306,15 @@ def _svg_grid(min_x: float, min_y: float, w: float, h: float, *, unit: float) ->
 
 STYLE = """
 :root { color-scheme: dark; }
-html, body { margin:0; height:100%; background:#0b0f14; font-family: system-ui, sans-serif; }
+html, body { margin:0; height:100%; background:#1f2427; font-family: system-ui, sans-serif; }
 svg { width:100%; height:100%; display:block; cursor:grab; touch-action:none; }
 svg.dragging { cursor:grabbing; }
-.grid-line { stroke:#1c2733; }
-.label { fill:#c7ced6; paint-order: stroke; stroke:#0b0f14; }
-.badge { fill:#0b0f14; font-weight:bold; }
+.grid-line { stroke:#2c3439; }
+.label { fill:#d3dade; paint-order: stroke; stroke:#1f2427; }
+.badge { fill:#1f2427; font-weight:bold; }
 #legend {
   position:fixed; top:12px; left:12px; display:flex; flex-wrap:wrap; gap:14px;
-  color:#c7ced6; font-size:12px; background:#131a22cc; padding:8px 12px;
+  color:#d3dade; font-size:12px; background:#16191bcc; padding:8px 12px;
   border-radius:8px; max-width: 90vw;
 }
 #legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }

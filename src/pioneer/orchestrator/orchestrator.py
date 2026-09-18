@@ -31,7 +31,9 @@ answer is checked against (see verification.py) and what its claims trace back t
 **Conversations.** `history` is the earlier turns of the same conversation, oldest first, as
 (question, answer) pairs: the model sees them before the new question, so "and how much power is
 that?" makes sense. They're grounding too — a follow-up may repeat a number an earlier answer gave,
-which was checked against that turn's own tools when it was given.
+which was checked against that turn's own tools when it was given. Only the newest turns that fit
+`_HISTORY_BUDGET_CHARS` are passed on (see `recent_history`): a local model's context window is
+small, and what overflows it is cut from the front — the system prompt and the tools.
 
 **Items by name.** Tools accept an item's in-game name ("Reinforced Iron Plate") as well as its id
 (`Desc_IronPlateReinforced_C`): a local model can't be expected to know the export's class names.
@@ -147,8 +149,16 @@ _SYSTEM_PROMPT = (
     "a panel with them. So whenever the player asks to see, draw, or visualize a graph or map -- "
     "even as a follow-up to a plan you already described in text -- call the matching tool again "
     "this turn (with the same target/rate as before if that's what they mean); answering from the "
-    "earlier text alone leaves the player with no panel at all."
+    "earlier text alone leaves the player with no panel at all. The page draws those panels "
+    "itself, next to your answer: never write an image, a link or a placeholder for a graph or "
+    "map, and never say one is shown unless you called its tool this turn."
 )
+
+_HISTORY_BUDGET_CHARS = 12_000
+"""How much of the conversation so far the model is shown, newest turns first: about 3k tokens.
+The system prompt and tool schemas already take about 2k, and each tool result its own share of a
+local model's small context window -- a conversation that outgrew it would push the prompt and the
+tools out of its front, and the model would answer with neither."""
 
 _ITEM_DESCRIPTION = "Item id (e.g. Desc_IronPlate_C) or in-game name (e.g. 'Iron Plate')"
 _ITEM_HINT = "(item id or in-game name)"
@@ -272,6 +282,7 @@ def handle_query(
     max_tool_rounds: int = _MAX_TOOL_ROUNDS,
     history: Sequence[tuple[str, str]] = (),
 ) -> ResponseArtifact | OrchestratorUnavailable:
+    history = recent_history(history)  # what the model sees is also what the answer is held to
     accumulator = _ArtifactAccumulator(
         grounding=[question, *(text for turn in history for text in turn)]
     )
@@ -322,6 +333,24 @@ def handle_query(
     )
 
 
+def recent_history(
+    history: Sequence[tuple[str, str]], budget: int = _HISTORY_BUDGET_CHARS
+) -> list[tuple[str, str]]:
+    """The newest turns of `history` whose questions and answers fit `budget` characters, oldest
+    first. The newest turn always stays -- its answer cut short if that alone is over."""
+    kept: list[tuple[str, str]] = []
+    used = 0
+    for question, answer in reversed(history):
+        size = len(question) + len(answer)
+        if used + size > budget:
+            if not kept:
+                kept.append((question, answer[: max(budget - len(question), 0)] + " …"))
+            break
+        kept.append((question, answer))
+        used += size
+    return kept[::-1]
+
+
 def context_note(context: OrchestratorContext) -> str:
     """What this conversation has to go on, so the model can say what it doesn't know instead of
     assuming it (architecture.md invariant #5)."""
@@ -364,8 +393,7 @@ def _unlocks_note(context: OrchestratorContext) -> str:
     )
 
 
-_TEXT_TOOL_CALL = re.compile(r"[\[{].*[\]}]", re.DOTALL)
-"""A JSON object or list inside an answer -- local models like to wrap it in prose or fences."""
+_JSON_START = re.compile(r"[\[{]")
 
 
 _NAME_MATCH_CUTOFF = 0.6
@@ -409,16 +437,18 @@ def _tool_calls_written_as_text(
     """Tool calls a model wrote into its answer instead of the API's `tool_calls` field -- local
     models do that often enough to be worth reading, rather than handing the player a line of JSON
     as their answer. Only a call naming (or near-naming, see `_resolve_tool_name`) a real tool
-    counts; anything else is just an answer that happens to contain braces."""
-    match = _TEXT_TOOL_CALL.search(content or "")
-    if match is None:
-        return []
-    try:
-        written = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return []
+    counts; anything else is just an answer that happens to contain braces.
+
+    Every JSON value in the text is read, one after another, whatever stands between them: prose,
+    code fences, Qwen's `<tool_call>` tags, or the stray tokens it sometimes writes in place of
+    the opening tag -- which is also what keeps the backend from recognizing the call itself."""
+    written = [
+        entry
+        for value in _json_values(content or "")
+        for entry in (value if isinstance(value, list) else [value])
+    ]
     calls = []
-    for index, call in enumerate(written if isinstance(written, list) else [written]):
+    for call in written:
         if not isinstance(call, dict):
             continue
         call = call.get("function", call)
@@ -426,9 +456,24 @@ def _tool_calls_written_as_text(
         arguments = call.get("arguments", call.get("parameters", {}))
         if resolved_name is not None and isinstance(arguments, dict):
             calls.append(
-                {"id": f"text_call_{index}", "name": resolved_name, "arguments": arguments}
+                {"id": f"text_call_{len(calls)}", "name": resolved_name, "arguments": arguments}
             )
     return calls
+
+
+def _json_values(text: str) -> list[Any]:
+    """Every JSON object or list in `text`, left to right."""
+    decoder = json.JSONDecoder()
+    values: list[Any] = []
+    index = 0
+    while (start := _JSON_START.search(text, index)) is not None:
+        try:
+            value, index = decoder.raw_decode(text, start.start())
+        except json.JSONDecodeError:
+            index = start.start() + 1
+            continue
+        values.append(value)
+    return values
 
 
 def _assistant_message(message: dict[str, Any], tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1200,6 +1245,10 @@ def _resolve_item_id(raw: object, context: OrchestratorContext) -> str:
         return query
 
     item = resolve_item(context.items, query)
+    if item is None and _CLASS_ID.fullmatch(query):
+        # An id the model made up from the name, `Desc_ModularEngine_C` for what the export calls
+        # Desc_SpaceElevatorPart_4_C: the name it was made from still says which item is meant.
+        item = resolve_item(context.items, _name_in_class_id(query))
     if item is not None:
         return item.item_id
     if any(product.item_id == query for recipe in context.recipes for product in recipe.outputs):
@@ -1365,6 +1414,14 @@ def _per_item(flows: Iterable[MaterialFlow]) -> dict[str, float]:
 _RATE_EPSILON = 1e-6
 
 _CLASS_ID = re.compile(r"\b(?:Desc|Recipe|Build|BP|Schematic|Research)_[\w-]+?_C\b")
+_CLASS_ID_AFFIX = re.compile(r"^(?:Desc|Recipe|Build|BP|Schematic|Research)_|_C$")
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def _name_in_class_id(class_id: str) -> str:
+    """`Desc_ModularEngine_C` -> `Modular Engine`."""
+    words = _CAMEL_BOUNDARY.sub(" ", _CLASS_ID_AFFIX.sub("", class_id)).replace("_", " ")
+    return " ".join(words.split())
 
 
 def display_names(context: OrchestratorContext) -> dict[str, str]:

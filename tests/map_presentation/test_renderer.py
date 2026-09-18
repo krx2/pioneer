@@ -159,3 +159,45 @@ def test_factory_sites_become_labelled_pins() -> None:
     assert marker.label == "site_2: Iron Ingot"
     assert "site_2: Ingot Iron" in page  # labelled even past the label limit
     assert "factory to extend" in page
+
+
+_ICONS = {
+    "Desc_OreIron_C": "/icons/Desc_OreIron_C.png",
+    "Build_SmelterMk1_C": "/icons/Build_SmelterMk1_C.png",
+}
+
+
+def test_markers_carry_the_icon_of_their_resource_or_building() -> None:
+    markers = build_markers(_NODES, _PLACEMENTS, _RANKED, icons=_ICONS)
+
+    icons = {(m.kind, m.icon) for m in markers}
+    assert icons == {
+        ("resource", "/icons/Desc_OreIron_C.png"),
+        ("existing_building", "/icons/Build_SmelterMk1_C.png"),
+        ("recommended", "/icons/Desc_OreIron_C.png"),
+    }
+
+
+def test_a_factory_shows_the_icon_of_its_main_recipe() -> None:
+    site = FactorySite(
+        site_id="site_1",
+        position=Coordinates(x=0, y=0),
+        placements=(
+            PlacementRecord("Build_SmelterMk1_C", Coordinates(x=0, y=0), "Recipe_IngotCopper_C"),
+            PlacementRecord("Build_SmelterMk1_C", Coordinates(x=1, y=0), "Recipe_IngotIron_C"),
+            PlacementRecord("Build_SmelterMk1_C", Coordinates(x=2, y=0), "Recipe_IngotIron_C"),
+        ),
+    )
+
+    (marker,) = build_markers(
+        factory_sites=(site,), icons={"Recipe_IngotIron_C": "/icons/Desc_IronIngot_C.png"}
+    )
+
+    assert marker.icon == "/icons/Desc_IronIngot_C.png"
+
+
+def test_a_marker_with_an_icon_draws_it_and_moves_its_rank_aside() -> None:
+    page = render_page(_NODES, (), _RANKED, icons=_ICONS)
+
+    assert page.count('<image href="/icons/Desc_OreIron_C.png"') == 4
+    assert "<image" not in render_page(_NODES, (), _RANKED)

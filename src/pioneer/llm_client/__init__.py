@@ -10,15 +10,21 @@ same `Settings` reuses one logical connection rather than standing up two.
 """
 
 from pioneer.llm_client.transport import (
+    MIN_CONTEXT_TOKENS,
     TransportError,
     chat_completion,
+    context_window_warning,
     post_chat_completion,
+    served_context_length,
     tool_calling_chat_completion,
 )
 
 __all__ = [
+    "MIN_CONTEXT_TOKENS",
     "TransportError",
     "chat_completion",
+    "context_window_warning",
     "post_chat_completion",
+    "served_context_length",
     "tool_calling_chat_completion",
 ]

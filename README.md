@@ -31,6 +31,14 @@ Then fill in `.env`: at minimum `PIONEER_LLM_BASE_URL=http://localhost:11434/v1`
 `PIONEER_LLM_MODEL=qwen2.5:14b`. Every setting is documented in `.env.example`; the save folder
 defaults to the game's own dedicated-server save location.
 
+**Give the model a 16k context window.** Ollama loads models with 4096 tokens by default, and the
+system prompt and tool schemas alone take about 2000. When a conversation outgrows the window,
+Ollama silently drops the *front* of the prompt — the rules and the tools — and the model answers
+from the conversation alone: no tool calls, no graph or map, made-up recipes. Set the context
+length to 16384 in the Ollama app's settings, or set `OLLAMA_CONTEXT_LENGTH=16384` for Ollama
+and restart it (`startup.py` does that for an Ollama it starts itself). `qwen2.5:14b` then needs
+about 12 GB of VRAM. The page's status line says when the loaded model's window is too small.
+
 ## Running it
 
 ```
@@ -51,6 +59,24 @@ python -m pioneer.app "I want to produce 10/min of Iron Plate"   # one question,
 The web UI shows each answer's chat, its production graph and its map, the verification badges for
 that answer (are its numbers from the tools, does the plan balance, does it fit the spare power)
 and the feedback buttons. Feedback and a log of every answer go to `data/`, which is gitignored.
+
+## Item icons
+
+The map, the graph and the chat show the game's own icons, committed in `docs/icons/`. They come
+from the game's files, which are UE5 IoStore archives since Update 8: umodel can't read those, but
+[FModel](https://github.com/4sval/FModel) can. After a game update adds items, export them again:
+
+1. In FModel, add the game's `FactoryGame/Content/Paks` folder as an undetected game (UE version as
+   the [modding docs](https://docs.ficsit.app/satisfactory-modding/latest/Development/ExtractGameFiles.html)
+   say — `GAME_UE5_6` at the time of writing).
+2. Settings → General: turn on "Local Mapping File" and pick `CommunityResources/FactoryGame.usmap`
+   from the game folder; paste `CommunityResources/CustomVersions.json` into "Custom Versions".
+   Settings → Models: Texture Format PNG.
+3. Right-click `FactoryGame/Resource`, `FactoryGame/Buildable` and `FactoryGame/Equipment` →
+   "Save Folder's Packages Textures".
+4. `python -m pioneer.icons <FModel>/Output/Exports` picks out the icon of every item, building and
+   belt/pipe tier `docs/en-US.json` names, scales it to 96 px and writes `docs/icons/<class id>.png`.
+   It lists the folders of any icon it didn't find, to export those too.
 
 ## What it can answer
 
@@ -95,6 +121,7 @@ src/pioneer/
   verification_feedback/  scoring an answer, and player feedback
   orchestrator/         the tools the model calls, and the routing loop
   llm_client/           the HTTP transport to the model
+  icons.py              imports item and building icons (docs/icons/)
   web/, app.py, startup.py
 tests/                  mirrors the layout above
 ```

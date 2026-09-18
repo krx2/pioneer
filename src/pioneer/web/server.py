@@ -9,18 +9,23 @@ Answers are kept in memory (the most recent `_KEPT_RESPONSES`) so their graph an
 served after the fact; feedback goes to the feedback store, merged field by field, since the page
 sends each button press on its own. Feedback is taken for any answer this server gave or the
 response log holds — also once its pages have been dropped from memory, or after a restart.
+
+The icons in `icon_dir` (see `pioneer.icons`) are served under `/icons/`, and every page is told
+which ids have one: an item or building its own, a recipe the item it makes. Without the folder,
+or for an id with no icon in it, the pages draw what they drew before icons existed.
 """
 
 from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from pioneer.chat_presentation import render_message
@@ -81,12 +86,23 @@ def create_app(
     verify: Verify | None = None,
     feedback_store: FeedbackStore | None = None,
     response_log: ResponseLog | None = None,
+    icon_dir: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Pioneer")
     feedback = feedback_store if feedback_store is not None else FeedbackStore()
     answered: OrderedDict[str, AnsweredQuestion] = OrderedDict()
     lock = threading.Lock()  # FastAPI runs these sync handlers on a thread pool
-    names = display_names(context()[0])  # the knowledge base's names: they don't change
+    # The knowledge base's names and icons: they don't change.
+    first = context()[0]
+    names = display_names(first)
+    raw_resources = (
+        frozenset(item.item_id for item in first.items if item.is_raw_resource)
+        if first.items
+        else None  # no knowledge base: which inputs are mined can't be told
+    )
+    with_icons = _icon_ids(icon_dir)
+    icons = icon_urls(first, with_icons)
+    chat_icons = named_icons(first, icons)
     known_ids = set(response_log.response_ids()) if response_log is not None else set()
 
     def find(response_id: str) -> AnsweredQuestion:
@@ -130,7 +146,7 @@ def create_app(
         return {
             "response_id": result.response_id,
             "chat": result.chat,
-            "chat_html": render_message(result.chat),
+            "chat_html": render_message(result.chat, icons=chat_icons),
             "graph_url": f"{base}/graph" if result.graph is not None else None,
             "map_url": f"{base}/map" if _has_map(result) else None,
             "verification": _verification_summary(score),
@@ -142,14 +158,28 @@ def create_app(
         graph = find(response_id).artifact.graph
         if graph is None:
             raise HTTPException(status_code=404, detail="this answer has no production graph")
-        return render_graph_page(graph, title="Production graph", names=names)
+        return render_graph_page(
+            graph,
+            title="Production graph",
+            names=names,
+            icons=icons,
+            raw_resources=raw_resources,
+        )
 
     @app.get("/responses/{response_id}/map", response_class=HTMLResponse)
     def map_page(response_id: str) -> str:
         found = find(response_id)
         if not _has_map(found.artifact):
             raise HTTPException(status_code=404, detail="this answer has no map")
-        return _render_map(found.artifact, found.context, names)
+        return _render_map(found.artifact, found.context, names, icons)
+
+    @app.get("/icons/{class_id}.png")
+    def icon(class_id: str) -> FileResponse:
+        if icon_dir is None or class_id not in with_icons:  # never a path the page made up
+            raise HTTPException(status_code=404, detail="no icon for this id")
+        return FileResponse(
+            icon_dir / f"{class_id}.png", headers={"Cache-Control": "public, max-age=86400"}
+        )
 
     @app.post("/api/responses/{response_id}/feedback")
     def record_feedback(response_id: str, request: FeedbackRequest) -> dict[str, Any]:
@@ -165,12 +195,45 @@ def create_app(
     return app
 
 
+def _icon_ids(icon_dir: Path | None) -> frozenset[str]:
+    if icon_dir is None or not icon_dir.is_dir():
+        return frozenset()
+    return frozenset(path.stem for path in icon_dir.glob("*.png"))
+
+
+def icon_urls(context: OrchestratorContext, with_icons: Collection[str]) -> dict[str, str]:
+    """The icon URL of every id that has one, by id: each item, building or belt/pipe tier with
+    an icon of its own, and each recipe whose first product has one — the item it's run for."""
+    icons = {class_id: f"/icons/{class_id}.png" for class_id in with_icons}
+    for recipe in context.recipes:
+        if recipe.outputs and recipe.outputs[0].item_id in icons:
+            icons.setdefault(recipe.recipe_id, icons[recipe.outputs[0].item_id])
+    return icons
+
+
+def named_icons(context: OrchestratorContext, icons: dict[str, str]) -> dict[str, str]:
+    """The icon URL by in-game name, for the chat to put next to the names it mentions. Items,
+    buildings and belt/pipe tiers only: a recipe is usually named after its item, which already
+    has the icon, and an alternate's name ("Cast Screw") is not the item the player gets."""
+    named = [(item.item_id, item.name) for item in context.items]
+    named += [(building.building_id, building.name) for building in context.buildings]
+    named += [(tier.building_id, tier.name) for tier in context.transport_tiers]
+    by_name: dict[str, str] = {}
+    for class_id, name in named:
+        if class_id in icons:
+            by_name.setdefault(name, icons[class_id])
+    return by_name
+
+
 def _has_map(artifact: ResponseArtifact) -> bool:
     return artifact.map_locations is not None or bool(artifact.factory_sites)
 
 
 def _render_map(
-    artifact: ResponseArtifact, context: OrchestratorContext, names: dict[str, str]
+    artifact: ResponseArtifact,
+    context: OrchestratorContext,
+    names: dict[str, str],
+    icons: dict[str, str],
 ) -> str:
     """The recommended sites, every node of the same resource, the player's extractors and the
     factories the answer points at — the rest of a real save's thousands of buildings would bury
@@ -190,6 +253,7 @@ def _render_map(
         ranked,
         title="Factory map",
         names=names,
+        icons=icons,
         factory_sites=artifact.factory_sites or (),
     )
 

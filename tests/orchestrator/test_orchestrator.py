@@ -31,6 +31,7 @@ from pioneer.orchestrator.orchestrator import (
     OrchestratorContext,
     OrchestratorUnavailable,
     handle_query,
+    recent_history,
 )
 from pioneer.qa_engine import Passage
 
@@ -1516,6 +1517,36 @@ def test_earlier_turns_come_before_the_question_and_ground_the_answer() -> None:
     )
 
 
+def test_only_the_newest_turns_that_fit_the_budget_are_passed_on() -> None:
+    """A local model's context window is small, and what overflows it is cut from the front --
+    the system prompt and the tools -- so a long conversation keeps only its newest turns."""
+    history = [(f"question {i}", "x" * 5_000) for i in range(4)]
+    llm = _scripted_tool_calling_llm([{"content": "Fine.", "tool_calls": []}])
+
+    result = handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "and now?",
+        OrchestratorContext(),
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="r",
+        history=history,
+    )
+
+    messages = llm.calls[0]["messages"]  # type: ignore[attr-defined]
+    questions = [m["content"] for m in messages if m["role"] == "user"]
+    assert questions == ["question 2", "question 3", "and now?"]
+    assert "question 1" not in result.grounding
+
+
+def test_an_answer_too_long_on_its_own_is_cut_short_rather_than_dropped() -> None:
+    kept = recent_history([("earlier", "y" * 50)], budget=20)
+
+    assert kept == [("earlier", "y" * 13 + " …")]
+    assert recent_history([]) == []
+
+
 def test_a_tool_call_the_model_wrote_as_text_is_executed_anyway() -> None:
     """Local models sometimes answer with the call instead of making it."""
     written = json.dumps(
@@ -1544,6 +1575,62 @@ def test_a_tool_call_the_model_wrote_as_text_is_executed_anyway() -> None:
     assert result.chat == "You need 1 Constructor."
     assert result.graph is not None
     assert result.graph.nodes[0].recipe_id == "Recipe_IronPlate_C"
+
+
+def test_several_tool_calls_written_as_text_between_stray_tokens_all_run() -> None:
+    """Qwen sometimes writes junk where its `<tool_call>` tag belongs -- then the backend doesn't
+    recognize the calls, and they arrive as text, two JSON objects with the junk around them."""
+    junk = "范冰春"  # what came out where <tool_call> belongs
+    written = (
+        f'{junk}\n{{"name": "plan_production", "arguments": '
+        '{"target_item_id": "Iron Plate", "target_rate_per_minute": 20}}\n</tool_call>'
+        f'{junk}\n{{"name": "find_item", "arguments": {{"query": "Iron"}}}}\n</tool_call>'
+    )
+    llm = _scripted_tool_calling_llm(
+        [
+            {"content": written, "tool_calls": []},
+            {"content": "You need 1 Constructor.", "tool_calls": []},
+        ]
+    )
+
+    result = handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "20 plates a minute please",
+        OrchestratorContext(recipes=_RECIPES, items=_ITEMS),
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="r",
+    )
+
+    tool_messages = [m for m in llm.calls[1]["messages"] if m["role"] == "tool"]  # type: ignore[attr-defined]
+    assert [m["name"] for m in tool_messages] == ["plan_production", "find_item"]
+    assert result.chat == "You need 1 Constructor."
+    assert result.graph is not None
+
+
+def test_an_id_the_model_made_up_from_a_name_resolves_by_that_name() -> None:
+    engine = Item(item_id="Desc_SpaceElevatorPart_4_C", name="Modular Engine")
+    context = OrchestratorContext(
+        recipes=(
+            Recipe(
+                recipe_id="Recipe_SpaceElevatorPart_4_C",
+                name="Modular Engine",
+                building_ids=("Build_ManufacturerMk1_C",),
+                inputs=(ItemAmount(item_id="Desc_IronPlate_C", amount_per_minute=2),),
+                outputs=(ItemAmount(item_id=engine.item_id, amount_per_minute=1),),
+            ),
+        ),
+        items=(*_ITEMS, engine),
+    )
+
+    _, seen = _run_single_tool(
+        context,
+        "plan_production",
+        {"target_item_id": "Desc_ModularEngine_C", "target_rate_per_minute": 6},
+    )
+
+    assert seen["target_item_id"] == "Desc_SpaceElevatorPart_4_C"
 
 
 def test_a_near_miss_tool_name_and_argument_keys_written_as_text_still_runs() -> None:

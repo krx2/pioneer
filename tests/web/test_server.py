@@ -5,15 +5,19 @@ import json
 from fastapi.testclient import TestClient
 
 from pioneer.contracts import (
+    Building,
     Coordinates,
     FactorySite,
     Feedback,
+    Item,
+    ItemAmount,
     MaterialFlow,
     PlacementRecord,
     ProductionGraph,
     ProductionNode,
     Purity,
     RankedLocation,
+    Recipe,
     ResourceNode,
     ResponseArtifact,
 )
@@ -341,3 +345,63 @@ def test_the_conversation_so_far_is_passed_on_and_bounded() -> None:
     assert histories == [[("how do I make plates?", "Use a Constructor.")]]
     assert body["chat"] == "Build two <Smelters>."
     assert too_long.status_code == 422
+
+
+def test_icons_are_served_and_put_into_the_chat_graph_and_map(tmp_path) -> None:
+    for class_id in ("Desc_OreIron_C", "Desc_IronIngot_C", "Build_SmelterMk1_C"):
+        (tmp_path / f"{class_id}.png").write_bytes(b"\x89PNG fake")
+    context = OrchestratorContext(
+        items=(
+            Item(item_id="Desc_IronIngot_C", name="Iron Ingot"),
+            Item(item_id="Desc_OreIron_C", name="Iron Ore", is_raw_resource=True),
+        ),
+        buildings=(
+            Building(
+                building_id="Build_SmelterMk1_C",
+                name="Smelter",
+                power_consumption_mw=4,
+                input_slots=1,
+                output_slots=1,
+            ),
+        ),
+        recipes=(
+            Recipe(
+                recipe_id="Recipe_IngotIron_C",
+                name="Iron Ingot",
+                building_ids=("Build_SmelterMk1_C",),
+                inputs=(ItemAmount("Desc_OreIron_C", 30),),
+                outputs=(ItemAmount("Desc_IronIngot_C", 30),),
+            ),
+        ),
+        resource_nodes=(_IRON_NODE,),
+    )
+    artifact = ResponseArtifact(
+        response_id="r1",
+        chat="Two Smelters make Iron Ingots. `Smelter`",
+        graph=_GRAPH,
+        map_locations=(_SITE,),
+    )
+    client, _ = _client(artifact, context=context, icon_dir=tmp_path)
+
+    body = _ask(client).json()
+    graph = client.get(body["graph_url"]).text
+    map_page = client.get(body["map_url"]).text
+
+    assert client.get("/icons/Desc_OreIron_C.png").content == b"\x89PNG fake"
+    assert client.get("/icons/Desc_Unknown_C.png").status_code == 404
+    assert client.get("/icons/..%2F..%2Fpyproject.png").status_code == 404
+    assert body["chat_html"].count("/icons/Build_SmelterMk1_C.png") == 1  # not in the code span
+    assert "/icons/Desc_IronIngot_C.png" in body["chat_html"]
+    assert '"icon": "/icons/Desc_IronIngot_C.png"' in graph  # the recipe shows what it makes
+    assert '<image href="/icons/Desc_OreIron_C.png"' in map_page
+    assert '"raw": true' in graph  # iron ore is mined
+
+
+def test_without_an_icon_folder_no_icons_are_offered() -> None:
+    client, _ = _client(_artifact(graph=_GRAPH))
+
+    body = _ask(client).json()
+
+    assert "<img" not in body["chat_html"]
+    assert "/icons/" not in client.get(body["graph_url"]).text
+    assert client.get("/icons/Desc_OreIron_C.png").status_code == 404

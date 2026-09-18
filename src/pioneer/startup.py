@@ -12,11 +12,15 @@ the model is, `PIONEER_SERVER_HOST`/`PIONEER_SERVER_PORT` where the game server 
 `PIONEER_SERVER_EXE` where its executable lives — `_DEFAULT_SERVER_EXE` is the usual Steam
 location. A piece that isn't installed is reported and skipped: the assistant degrades to
 whatever data it has (architecture.md invariant #5), so it's still worth serving the UI.
+
+An Ollama started here gets the context window a conversation needs (`OLLAMA_CONTEXT_LENGTH`,
+unless that's set already); one that was already running keeps its own setting -- see README.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import socket
 import subprocess
@@ -28,6 +32,7 @@ from urllib.parse import urlparse
 
 from pioneer.app import DEFAULT_SERVER_PORT
 from pioneer.config import settings
+from pioneer.llm_client import MIN_CONTEXT_TOKENS
 from pioneer.web.__main__ import main as serve_web
 
 _DEFAULT_SERVER_EXE = Path(r"D:\SteamLibrary\steamapps\common\SatisfactoryDedicatedServer")
@@ -190,6 +195,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     services = []
     if not args.no_model:
+        os.environ.setdefault("OLLAMA_CONTEXT_LENGTH", str(MIN_CONTEXT_TOKENS))
         services.append(ollama_service(settings.llm_base_url))
     if not args.no_game_server:
         services.append(game_server_service(args.server_exe or settings.dedicated_server_exe))

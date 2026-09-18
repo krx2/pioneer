@@ -43,12 +43,16 @@ _ALLOWED_IMPORTS: dict[str, set[str]] = {
         "chat_presentation",
         "config",
         "graph_presentation",
+        "icons",
         "llm_client",
         "map_presentation",
         "orchestrator",
         "verification_feedback",
     },
-    "startup": {"app", "config", "web"},
+    # The icon import picks out what the knowledge base can name.
+    "icons": {"knowledge_base"},
+    # The launcher starts Ollama with the context window the client needs.
+    "startup": {"app", "config", "llm_client", "web"},
 }
 
 
@@ -96,5 +100,6 @@ def test_every_module_is_covered_by_the_rule() -> None:
     packages = {
         path.parent.name for path in _SOURCE_ROOT.rglob("*.py") if path.name != "__init__.py"
     }
+    top_level = {path.stem for path in _SOURCE_ROOT.glob("*.py") if path.name != "__init__.py"}
     assert "contracts" in packages
-    assert set(_ALLOWED_IMPORTS) <= packages | {"app", "startup"}
+    assert set(_ALLOWED_IMPORTS) <= packages | top_level

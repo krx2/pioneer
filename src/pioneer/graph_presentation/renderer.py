@@ -17,7 +17,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
 from pioneer.contracts import ProductionGraph
@@ -67,17 +67,28 @@ def _compute_layers(node_ids: Iterable[str], links: list[dict[str, Any]]) -> dic
 
 
 def graph_to_d3_data(
-    graph: ProductionGraph, names: Mapping[str, str] | None = None
+    graph: ProductionGraph,
+    names: Mapping[str, str] | None = None,
+    icons: Mapping[str, str] | None = None,
+    raw_resources: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Machine nodes come straight from `graph.nodes`. A flow endpoint that isn't one of them —
     `None` (material entering from outside, or leaving as the final output), or an id no node in
     the graph has — gets a synthesized boundary node instead of a dangling edge, so every link in
     the output has two real endpoints: D3's `forceLink` throws on a link to an unknown node, which
     blanks the whole diagram. `names` maps recipe and item ids to the names labels show; an id
-    without one falls back to `readable_id`, never to the raw class id."""
+    without one falls back to `readable_id`, never to the raw class id. `icons` maps ids to icon
+    URLs: a machine node shows its recipe's (else its building's), a boundary node its item's.
+
+    An input is `raw` when its item is one of `raw_resources` — what miners and extractors take
+    out of the ground — and otherwise a part the player already makes, drawn like an existing
+    stage. Without `raw_resources` every input counts as raw, as none can be told apart."""
 
     def name(class_id: str) -> str:
         return (names or {}).get(class_id) or readable_id(class_id)
+
+    def icon(*class_ids: str) -> str | None:
+        return next((icons[i] for i in class_ids if icons and i in icons), None)
 
     nodes: dict[str, dict[str, Any]] = {}
     for node in graph.nodes:
@@ -91,6 +102,7 @@ def graph_to_d3_data(
             "existing": node.is_existing,
             "extended": extended,
             "kind": "machine",
+            "icon": icon(node.recipe_id, node.building_id),
         }
     machine_ids = set(nodes)
 
@@ -113,6 +125,8 @@ def graph_to_d3_data(
                 "buildingId": None,
                 "existing": True,
                 "kind": "boundary-in",
+                "raw": raw_resources is None or flow.item_id in raw_resources,
+                "icon": icon(flow.item_id),
             }
         if target not in nodes:
             nodes[target] = {
@@ -121,6 +135,7 @@ def graph_to_d3_data(
                 "buildingId": None,
                 "existing": True,
                 "kind": "boundary-out",
+                "icon": icon(flow.item_id),
             }
         links.append(
             {
@@ -144,8 +159,10 @@ def render_page(
     *,
     title: str = "Production Graph",
     names: Mapping[str, str] | None = None,
+    icons: Mapping[str, str] | None = None,
+    raw_resources: Collection[str] | None = None,
 ) -> str:
-    data_json = json.dumps(graph_to_d3_data(graph, names))
+    data_json = json.dumps(graph_to_d3_data(graph, names, icons, raw_resources))
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -175,28 +192,36 @@ const data = {data_json};
 
 STYLE = """
 :root { color-scheme: dark; }
-html, body { margin:0; height:100%; background:#0b0f14; font-family: system-ui, sans-serif; }
+html, body { margin:0; height:100%; background:#1f2427; font-family: system-ui, sans-serif; }
 svg { width:100%; height:100%; display:block; }
-/* Orange is what the player already has, blue is what this plan adds -- so an extended stage is
-   orange ringed in blue (existing machines, more of them added). The two ends of the chain get
-   their own colours: grey for what comes out of the ground, green for what the plan produces.
-   Raw and output keep the dashed edge that marks a node as a boundary rather than a machine. */
+/* Orange is what the player already has, blue is what this plan adds -- so an extended stage's
+   edge alternates orange and blue (existing machines, more of them added): blue dashes laid over
+   an orange edge. An input the plan takes in is grey if it comes out of the ground and orange if
+   it's a part, which the player already makes; what the plan produces is green. Raw resources and
+   output keep the dashed edge that marks a node as a boundary rather than a machine. */
 .node-existing circle { fill:#e0812f; stroke:#f5bc84; }
 .node-new circle { fill:#2f6fed; stroke:#9db8f7; }
-.node-extended circle { fill:#e0812f; stroke:#2f6fed; stroke-width:4px; }
+.node-extended circle { fill:#e0812f; stroke:#e0812f; stroke-width:4px; }
+.node.node-extended .dash { fill:none; stroke:#2f6fed; stroke-dasharray:1 1; }
 .node-raw circle { fill:#5b6b7c; stroke:#aab6c2; stroke-dasharray:3 2; }
 .node-output circle { fill:#33c17a; stroke:#8fe0b6; stroke-dasharray:3 2; }
-.node text { fill:#e8eaed; font-size:11px; paint-order: stroke; stroke:#0b0f14; stroke-width:3px; }
-.link { stroke:#3a4552; stroke-opacity:0.8; }
-.link-label { fill:#9aa4af; font-size:9px; }
-#legend { position:fixed; top:12px; left:12px; display:flex; gap:16px; color:#c7ced6;
-  font-size:12px; background:#131a22cc; padding:8px 12px; border-radius:8px; }
+.node text { fill:#edf1f3; font-size:11px; paint-order: stroke; stroke:#1f2427; stroke-width:3px; }
+.link { stroke:#4a565e; stroke-opacity:0.8; }
+.link-label { fill:#9fabb3; font-size:9px; }
+#legend { position:fixed; top:12px; left:12px; display:flex; gap:16px; color:#d3dade;
+  font-size:12px; background:#16191bcc; padding:8px 12px; border-radius:8px; }
 #legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
 #legend .raw { background:#5b6b7c; border:1px dashed #aab6c2; }
 #legend .existing { background:#e0812f; }
 #legend .new { background:#2f6fed; }
-#legend .extended { background:#e0812f; box-shadow: 0 0 0 2px #2f6fed; }
+#legend .extended { background:repeating-conic-gradient(#e0812f 0 45deg, #2f6fed 0 90deg); }
 #legend .output { background:#33c17a; border:1px dashed #8fe0b6; }
+/* A node with an icon keeps its colour as a ring around the icon. */
+.node.has-icon circle { fill:#161a1d; stroke-width:3px; }
+.node-existing.has-icon circle, .node-extended.has-icon circle { stroke:#e0812f; }
+.node-new.has-icon circle { stroke:#2f6fed; }
+.node-raw.has-icon circle { stroke:#aab6c2; }
+.node-output.has-icon circle { stroke:#33c17a; }
 """
 
 GRAPH_SCRIPT = """
@@ -208,6 +233,9 @@ svg.call(d3.zoom().scaleExtent([0.2, 4]).on("zoom", (event) => {
 }));
 
 const NODE_RADIUS = 10;
+const ICON_RADIUS = 17;  // a node with an icon: room for a 24px icon inside its ring
+const ICON_SIZE = 24;
+const radius = d => d.icon ? ICON_RADIUS : NODE_RADIUS;
 
 // A plain, natural force-directed layout: charge repels every node from every other, forceLink
 // pulls connected nodes to a comfortable resting distance, forceCollide keeps circles from
@@ -222,7 +250,7 @@ data.nodes.forEach(d => {
 const simulation = d3.forceSimulation(data.nodes)
   .force("link", d3.forceLink(data.links).id(d => d.id).distance(110).strength(0.5))
   .force("charge", d3.forceManyBody().strength(-320))
-  .force("collide", d3.forceCollide(NODE_RADIUS * 2.5))
+  .force("collide", d3.forceCollide(d => radius(d) + NODE_RADIUS * 1.5))
   .force("center", d3.forceCenter(width / 2, height / 2));
 
 const link = container.append("g").selectAll("line")
@@ -232,12 +260,14 @@ const linkLabel = container.append("g").selectAll("text")
   .data(data.links).join("text").attr("class", "link-label")
   .text(d => `${d.itemName} ${+d.ratePerMinute.toFixed(2)}/min`);
 
-function nodeClass(d) {
-  if (d.kind === "boundary-out") return "node node-output";
-  if (d.kind !== "machine") return "node node-raw";
-  if (d.extended) return "node node-extended";
-  return d.existing ? "node node-existing" : "node node-new";
+function nodeKind(d) {
+  if (d.kind === "boundary-out") return "node-output";
+  // An input: grey if it comes out of the ground, else a part the player already makes.
+  if (d.kind === "boundary-in") return d.raw ? "node-raw" : "node-existing";
+  if (d.extended) return "node-extended";
+  return d.existing ? "node-existing" : "node-new";
 }
+const nodeClass = d => `node ${nodeKind(d)}${d.icon ? " has-icon" : ""}`;
 
 function dragStart(event, d) {
   if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -257,8 +287,16 @@ const node = container.append("g").selectAll("g")
 // Machine and boundary (raw input / final output) nodes are drawn the same size: the machine
 // count and flow rate already carried in the label distinguish them, so a bigger circle for
 // machines was just visual noise, not information.
-node.append("circle").attr("r", NODE_RADIUS);
-node.append("text").attr("text-anchor", "middle").attr("dy", NODE_RADIUS + 16).text(d => d.label);
+node.append("circle").attr("r", radius);
+// An extended node's edge: blue dashes over its orange one. pathLength splits the circle into 12
+// equal parts whatever its radius, so the two colours take turns evenly and meet where they start.
+node.filter(d => d.extended).append("circle").attr("class", "dash").attr("r", radius)
+  .attr("pathLength", 12);
+node.filter(d => d.icon).append("image").attr("href", d => d.icon)
+  .attr("x", -ICON_SIZE / 2).attr("y", -ICON_SIZE / 2)
+  .attr("width", ICON_SIZE).attr("height", ICON_SIZE);
+node.append("text").attr("text-anchor", "middle").attr("dy", d => radius(d) + 16)
+  .text(d => d.label);
 
 simulation.on("tick", () => {
   link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
