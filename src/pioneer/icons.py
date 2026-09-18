@@ -107,7 +107,7 @@ def import_icons(
 def _index_pngs(export_dir: Path) -> dict[str, list[Path]]:
     """Every PNG under `export_dir` by lower-cased file stem. FModel mirrors the game's folders
     (`/Game/` becomes `FactoryGame/Content/`), but which folder the player points this at, and
-    how deep, is up to them — so textures are found by name, the full path only settling a tie."""
+    how deep, is up to them — so textures are found by name, the folders only settling a tie."""
     index: dict[str, list[Path]] = defaultdict(list)
     for path in export_dir.rglob("*.png"):
         index[path.stem.lower()].append(path)
@@ -115,12 +115,23 @@ def _index_pngs(export_dir: Path) -> dict[str, list[Path]]:
 
 
 def _find(texture: str, exported: dict[str, list[Path]]) -> Path | None:
-    candidates = exported.get(texture.rsplit("/", 1)[-1].lower(), [])
-    suffix = f"{texture}.png".lower()
-    for path in candidates:
-        if path.as_posix().lower().endswith(suffix):
-            return path
-    return candidates[0] if candidates else None
+    """The PNG named like `texture` that shares the most trailing folders with its game path --
+    all of them in a full FModel export, fewer when only part of that tree was exported. A tie
+    goes to the first path alphabetically, not whichever the file system happened to list
+    first, so the same export gives the same icons everywhere."""
+    wanted = texture.lower().split("/")
+
+    def shared(path: Path) -> int:
+        parts = [part.lower() for part in path.with_suffix("").parts]
+        count = 0
+        for have, want in zip(reversed(parts), reversed(wanted), strict=False):
+            if have != want:
+                break
+            count += 1
+        return count
+
+    candidates = sorted(exported.get(wanted[-1], []))
+    return max(candidates, key=shared) if candidates else None
 
 
 def main(argv: Sequence[str] | None = None) -> int:

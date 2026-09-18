@@ -77,15 +77,27 @@ def test_import_scales_each_icon_down_and_names_it_by_class_id(tmp_path: Path) -
             assert icon.size == (32, 32)
 
 
-def test_a_texture_is_found_by_name_and_its_folder_settles_a_tie(tmp_path: Path) -> None:
-    right = _png(tmp_path / "Parts/IronPlate/UI/IconDesc_IronPlates_256.png", size=64)
-    _png(tmp_path / "Somewhere/Else/IconDesc_IronPlates_256.png", size=16)
+def _imported_size(export: Path, out: Path) -> tuple[int, int]:
+    import_icons(export, ["Desc_IronPlate_C"], icon_textures(_DOCS), out, size=48)
+    with Image.open(out / "Desc_IronPlate_C.png") as icon:
+        return icon.size  # 48 from a 64 px source; a smaller one isn't scaled up
 
-    import_icons(tmp_path, ["Desc_IronPlate_C"], icon_textures(_DOCS), tmp_path / "out", size=48)
 
-    with Image.open(tmp_path / "out" / "Desc_IronPlate_C.png") as icon:
-        assert icon.size == (48, 48)  # from the 64px one: the 16px one isn't scaled up
-    assert right.exists()
+def test_a_texture_is_found_by_name_and_its_folders_settle_a_tie(tmp_path: Path) -> None:
+    """Only part of the game's tree exported: the file sharing more of its folders wins, even
+    where the file system -- or the alphabet -- lists the other one first."""
+    _png(tmp_path / "Another/Place/IconDesc_IronPlates_256.png", size=16)
+    _png(tmp_path / "Parts/IronPlate/UI/IconDesc_IronPlates_256.png", size=64)
+
+    assert _imported_size(tmp_path, tmp_path / "out") == (48, 48)
+
+
+def test_the_full_game_path_beats_a_partial_one(tmp_path: Path) -> None:
+    content = tmp_path / "Exports" / "FactoryGame" / "Content"
+    _png(content / "FactoryGame/Resource/Parts/IronPlate/UI/IconDesc_IronPlates_256.png", 64)
+    _png(content / "Parts/IronPlate/UI/IconDesc_IronPlates_256.png", size=16)
+
+    assert _imported_size(tmp_path / "Exports", tmp_path / "out") == (48, 48)
 
 
 def test_a_missing_texture_is_reported_with_the_path_it_wanted(tmp_path: Path) -> None:
