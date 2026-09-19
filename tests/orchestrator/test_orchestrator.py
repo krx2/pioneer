@@ -25,6 +25,7 @@ from pioneer.contracts import (
     ResourceNode,
     ResponseArtifact,
     Technology,
+    TransportLink,
     TransportTier,
 )
 from pioneer.orchestrator.orchestrator import (
@@ -1683,3 +1684,180 @@ def test_an_answer_that_merely_contains_braces_stays_an_answer() -> None:
 
     assert result.chat == 'Set it to {"clock": 250} in the UI.'
     assert result.graph is None
+
+
+def _built_at(site_x: float, recipe_id: str, building_id: str, clock: float) -> PlacementRecord:
+    return PlacementRecord(
+        building_id=building_id,
+        position=Coordinates(x=site_x, y=0),
+        recipe_id=recipe_id,
+        clock_speed=clock,
+    )
+
+
+_SMELTING_AND_PLATES = FactorySite(
+    site_id="site_1",
+    position=Coordinates(x=0, y=0),
+    placements=(
+        _built_at(0, "Recipe_IngotIron_C", "Build_SmelterMk1_C", 1.0),
+        _built_at(0, "Recipe_IngotIron_C", "Build_SmelterMk1_C", 1.0),
+        _built_at(0, "Recipe_IronPlate_C", "Build_ConstructorMk1_C", 0.5),
+    ),
+)
+_MORE_PLATES = FactorySite(
+    site_id="site_2",
+    position=Coordinates(x=90_000, y=0),
+    placements=(_built_at(90_000, "Recipe_IronPlate_C", "Build_ConstructorMk1_C", 1.0),),
+)
+
+
+def _built_factory() -> OrchestratorContext:
+    return OrchestratorContext(
+        recipes=(*_RECIPES, _IRON_INGOT),
+        items=_ITEMS,
+        existing_graph=ProductionGraph(
+            nodes=(
+                ProductionNode(
+                    "save_Recipe_IngotIron_C",
+                    "Recipe_IngotIron_C",
+                    "Build_SmelterMk1_C",
+                    2.0,
+                    is_existing=True,
+                    existing_machine_count=2.0,
+                ),
+                ProductionNode(
+                    "save_Recipe_IronPlate_C",
+                    "Recipe_IronPlate_C",
+                    "Build_ConstructorMk1_C",
+                    1.5,
+                    is_existing=True,
+                    existing_machine_count=1.5,
+                ),
+            ),
+            flows=(),
+        ),
+        existing_placements=_SMELTING_AND_PLATES.placements + _MORE_PLATES.placements,
+        factory_sites=(_SMELTING_AND_PLATES, _MORE_PLATES),
+    )
+
+
+def test_one_factory_is_drawn_with_the_flows_its_recipes_imply() -> None:
+    result, seen = _run_single_tool(_built_factory(), "show_existing_factory", {"site_id": "1"})
+
+    assert seen["drawn"] == "site_1"
+    assert [stage["effective_machines"] for stage in seen["stages"]] == [2.0, 0.5]
+    assert seen["stages"][1]["makes_per_minute"] == {"Desc_IronPlate_C": 10}
+    assert seen["stages"][1]["uses_per_minute"] == {"Desc_IronIngot_C": 15}
+    assert seen["raw_resources_in_per_minute"] == {"Desc_OreIron_C": 60}
+    assert seen["parts_brought_in_per_minute"] == {}
+    assert seen["goes_out_per_minute"] == {"Desc_IronIngot_C": 45, "Desc_IronPlate_C": 10}
+    assert all(node.is_existing for node in result.graph.nodes)
+    assert result.factory_sites == (_SMELTING_AND_PLATES,)  # the map shows where it stands
+
+
+def test_the_chain_behind_one_item_is_drawn_across_every_factory() -> None:
+    result, seen = _run_single_tool(
+        _built_factory(), "show_existing_factory", {"item_id": "Iron Plate"}
+    )
+
+    assert seen["drawn"] == "Desc_IronPlate_C"
+    assert {node.recipe_id for node in result.graph.nodes} == {
+        "Recipe_IngotIron_C",
+        "Recipe_IronPlate_C",
+    }
+    assert seen["goes_out_per_minute"] == {"Desc_IronIngot_C": 15, "Desc_IronPlate_C": 30}
+
+
+def test_a_factory_too_big_to_draw_is_offered_as_a_list_of_its_sites(monkeypatch) -> None:
+    monkeypatch.setattr("pioneer.orchestrator.orchestrator._MAX_DRAWN_STAGES", 1)
+
+    result, seen = _run_single_tool(_built_factory(), "show_existing_factory", {})
+
+    assert result.graph is None
+    assert "too many to draw" in seen["not_drawn"]
+    assert [site["site_id"] for site in seen["factories"]] == ["site_1", "site_2"]
+
+
+def test_showing_the_factory_needs_a_save_and_a_real_site() -> None:
+    _, no_save = _run_single_tool(
+        OrchestratorContext(recipes=_RECIPES), "show_existing_factory", {}
+    )
+    result, unknown = _run_single_tool(
+        _built_factory(), "show_existing_factory", {"site_id": "site_9"}
+    )
+
+    assert "no save loaded" in no_save["error"]
+    assert unknown["error"] == "no factory 'site_9'"
+    assert [site["site_id"] for site in unknown["factories"]] == ["site_1", "site_2"]
+    assert result.graph is None
+
+
+def _at(object_id: str, building_id: str, recipe_id: str | None = None) -> PlacementRecord:
+    return PlacementRecord(
+        building_id=building_id,
+        position=Coordinates(x=0, y=0),
+        recipe_id=recipe_id,
+        object_id=object_id,
+    )
+
+
+def test_a_drawing_follows_the_belts_when_the_save_has_them() -> None:
+    """The plate constructor at site_1 is belted to nothing there: its ingots come from elsewhere,
+    and the smelters' ingots leave -- however well the recipes alone would pair them."""
+    smelters = [_at(f"s{i}", "Build_SmelterMk1_C", "Recipe_IngotIron_C") for i in (1, 2)]
+    plates = _at("p1", "Build_ConstructorMk1_C", "Recipe_IronPlate_C")
+    site = replace(_SMELTING_AND_PLATES, placements=(*smelters, plates))
+    context = replace(
+        _built_factory(),
+        factory_sites=(site,),
+        existing_placements=site.placements,
+        existing_links=(TransportLink("elsewhere", "p1", "belt"),),
+    )
+
+    result, seen = _run_single_tool(context, "show_existing_factory", {"site_id": "site_1"})
+
+    assert seen["flows_follow"] == "the save's belts and pipes"
+    ingots = {
+        (flow.source_node_id, flow.target_node_id): flow.amount_per_minute
+        for flow in result.graph.flows
+        if flow.item_id == "Desc_IronIngot_C"
+    }
+    assert ingots == {("save_Recipe_IngotIron_C", None): 60, (None, "save_Recipe_IronPlate_C"): 30}
+
+
+def test_the_diagnosis_finds_what_the_belts_leave_undone() -> None:
+    smelters = [_at(f"s{i}", "Build_SmelterMk1_C", "Recipe_IngotIron_C") for i in (1, 2, 3)]
+    plates = [_at(f"p{i}", "Build_ConstructorMk1_C", "Recipe_IronPlate_C") for i in (1, 2, 3, 4)]
+    lonely = _at("p5", "Build_ConstructorMk1_C", "Recipe_IronPlate_C")
+    station = _at("station", "Build_TrainDockingStation_C")
+    belt = _at("belt", "Build_ConveyorBeltMk1_C")
+    links = [TransportLink("station", s.object_id, "belt") for s in smelters]
+    links += [
+        TransportLink(s.object_id, p.object_id, "belt", via=("belt",))
+        for s in smelters
+        for p in plates
+    ]
+    context = replace(
+        _built_factory(),
+        existing_placements=(*smelters, *plates, lonely, station, belt),
+        existing_links=tuple(links),
+        factory_sites=(),
+        transport_tiers=(
+            TransportTier("Build_ConveyorBeltMk1_C", "Conveyor Belt Mk.1", 60, False),
+        ),
+    )
+
+    _, seen = _run_single_tool(context, "diagnose_factory_problems", {})
+
+    assert seen["wiring_problems_found"] == {
+        "machine_not_fed": 1,
+        "output_blocked": 5,
+        "congestion": 1,
+    }
+    groups = {group["kind"]: group for group in seen["wiring_problems"]}
+    assert groups["output_blocked"]["machines"] == 5
+    assert groups["output_blocked"]["items"] == ["Desc_IronPlate_C"]
+    assert groups["machine_not_fed"]["items"] == ["Desc_IronIngot_C"]
+    assert groups["congestion"]["carries_per_minute"] == 90
+    assert groups["congestion"]["rated_per_minute"] == 60
+    assert "p5" not in json.dumps(seen)  # a save's object ids mean nothing to a player

@@ -88,7 +88,11 @@ from the game's files, which are UE5 IoStore archives since Update 8: umodel can
 - "What do I need to unlock for Computers?" — the technologies, their prerequisites and costs.
 - "How do I get 500 MW?" — generators, fuel, water and the extractors for it.
 - "Where should I build a copper mine?" — free deposits ranked by purity and distance.
-- "What's wrong with my factory?" — shortfalls, waste and blackouts in the current save.
+- "What's wrong with my factory?" — shortfalls, waste and blackouts in the current save, and its
+  wiring: machines no belt or pipe feeds, products with nowhere to go, belts over their tier.
+- "Show me how my factory makes Computers" / "draw site_2" — a graph of what's already built, from
+  the save: the stages behind one item across every factory, or one factory and where it stands.
+  The arrows follow the save's belts and pipes; the rates on them come from the recipes.
 - "How fast is a Mk.3 belt?" — retrieval over the game's own descriptions.
 
 ## Tests and lint

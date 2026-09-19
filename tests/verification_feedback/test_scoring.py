@@ -2,6 +2,8 @@
 per channel, with known-correct expected scores (implementation.md Stage 15) — no live
 orchestrator, no rendered UI."""
 
+from dataclasses import replace
+
 from pioneer.contracts import (
     Building,
     Coordinates,
@@ -452,6 +454,15 @@ def test_score_response_scores_the_graph_channel() -> None:
 
     assert result.graph is not None
     assert result.graph.balanced
+
+
+def test_a_graph_of_what_is_already_built_has_nothing_to_score() -> None:
+    built = replace(_single_smelter_graph(2).nodes[0], is_existing=True, existing_machine_count=2)
+    artifact = ResponseArtifact(response_id="r5", graph=ProductionGraph(nodes=(built,), flows=()))
+
+    result = score_response(artifact, recipes=_RECIPES, buildings=_BUILDINGS)
+
+    assert result.graph is None
 
 
 def test_score_response_scores_the_map_channel() -> None:

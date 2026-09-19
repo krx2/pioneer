@@ -1,4 +1,4 @@
-"""Save-file building placement shape.
+"""Save-file building placement shape, and how the save's belts and pipes join buildings.
 
 Produced by the Save Parser (Stage 5); consumed by the Location Advisor (Stage 9) and Anomaly
 Detector (Stage 10).
@@ -7,8 +7,11 @@ Detector (Stage 10).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from pioneer.contracts.geometry import Coordinates
+
+Carrier = Literal["belt", "pipe"]
 
 
 @dataclass(frozen=True)
@@ -33,3 +36,19 @@ class PlacementRecord:
     """Production amplification from Somersloops (`mCurrentProductionBoost`): 1.0 is none, 2.0 a
     fully slotted building. It multiplies what the building makes, not what it consumes, and its
     power draw by the boost squared."""
+    object_id: str | None = None
+    """The building's own name in the save (`Persistent_Level:PersistentLevel.Build_SmelterMk1_C_
+    2147483647`): what a `TransportLink` points at. `None` for a placement not read from a save."""
+
+
+@dataclass(frozen=True)
+class TransportLink:
+    """One way items get from one building to another: out of an output of `source_id` and into
+    an input of `target_id` (both `PlacementRecord.object_id`s), along the save's belts or pipes."""
+
+    source_id: str
+    target_id: str
+    carrier: Carrier
+    via: tuple[str, ...] = ()
+    """The belts and lifts on the way, by object id -- one route of them where splitters and
+    mergers offer several. Empty for a pipe: a pipe network carries fluid either way."""

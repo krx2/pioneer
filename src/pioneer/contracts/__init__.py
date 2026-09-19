@@ -13,7 +13,7 @@ from pioneer.contracts.game_state import GameState
 from pioneer.contracts.geometry import Coordinates
 from pioneer.contracts.intent import Intent, IntentKind
 from pioneer.contracts.locations import FactorySite, RankedLocation
-from pioneer.contracts.placement import PlacementRecord
+from pioneer.contracts.placement import Carrier, PlacementRecord, TransportLink
 from pioneer.contracts.planning import ChangeAction, ChangeItem, ChangeSet
 from pioneer.contracts.production_graph import MaterialFlow, ProductionGraph, ProductionNode
 from pioneer.contracts.recipes import (
@@ -36,6 +36,7 @@ __all__ = [
     "AnomalyRecord",
     "AnomalySeverity",
     "Building",
+    "Carrier",
     "ChangeAction",
     "ChangeItem",
     "ChangeSet",
@@ -61,5 +62,6 @@ __all__ = [
     "ResponseArtifact",
     "Technology",
     "TransportError",
+    "TransportLink",
     "TransportTier",
 ]

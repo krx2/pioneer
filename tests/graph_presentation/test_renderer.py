@@ -305,3 +305,35 @@ def test_without_raw_resources_every_input_counts_as_raw() -> None:
     inputs = [node for node in graph_to_d3_data(_GRAPH)["nodes"] if node["kind"] == "boundary-in"]
 
     assert inputs and all(node["raw"] for node in inputs)
+
+
+def test_every_node_says_what_it_makes_with_what_and_how_much_in_three_lines() -> None:
+    names = {
+        "Desc_IronIngot_C": "Iron Ingot",
+        "Desc_IronPlate_C": "Iron Plate",
+        "Desc_OreIron_C": "Iron Ore",
+        "Build_SmelterMk1_C": "Smelter",
+        "Build_ConstructorMk1_C": "Constructor",
+    }
+    products = {
+        "Recipe_IngotIron_C": ("Desc_IronIngot_C", 30.0),
+        "Recipe_IronPlate_C": ("Desc_IronPlate_C", 20.0),
+    }
+
+    data = graph_to_d3_data(_GRAPH, names, raw_resources={"Desc_OreIron_C"}, products=products)
+    lines = {node["id"]: node["lines"] for node in data["nodes"]}
+
+    assert lines["node_smelter"] == ["Iron Ingot", "Smelter ×4", "120/min"]
+    assert lines["node_plate"] == ["Iron Plate", "Constructor ×3", "60/min"]
+    assert lines["__in__Desc_OreIron_C"] == ["Iron Ore", "raw resource", "120/min"]
+    assert lines["node_screw"][2] == "60/min"  # no product known: what its flows carry away
+
+
+def test_every_node_and_link_is_placed_left_to_right() -> None:
+    data = graph_to_d3_data(_GRAPH)
+    x = {node["id"]: node["x"] for node in data["nodes"]}
+
+    for link in data["links"]:
+        assert x[link["source"]] < x[link["target"]]
+        assert link["back"] is False
+        assert all(x[link["source"]] < px < x[link["target"]] for px, _ in link["points"])

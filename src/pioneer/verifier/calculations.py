@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from pioneer.contracts import (
@@ -88,6 +88,150 @@ def balance(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -> dict[str, fl
             rate = item.amount_per_minute * node.machine_count
             net[item.item_id] = net.get(item.item_id, 0.0) - rate
     return net
+
+
+def implied_flows(
+    graph: ProductionGraph,
+    recipes: tuple[Recipe, ...],
+    links: Collection[tuple[str, str]] | None = None,
+) -> ProductionGraph:
+    """`graph` with the flows its recipes imply -- for a graph read from a save, which says what
+    the machines run but not what they hand each other. Each item's producers feed its consumers
+    (see `allocate_supply`): all of them, or with `links` (source node, target node) only those
+    the save's belts and pipes join. What the graph makes beyond that leaves as output (target
+    `None`), and what it uses beyond it comes in from outside (source `None`), so the flows into
+    and out of every node add up to its recipe rates, and per item to `balance` -- the recipes'
+    arithmetic, shared out along the belts where they're known, never a measurement of them. A
+    node making and using the same item feeds itself first; only the rest is shown."""
+    made: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    used: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for node in graph.nodes:
+        recipe = _recipe_by_id(recipes, node.recipe_id)
+        for item in recipe.outputs:
+            rate = item.amount_per_minute * node.machine_count * node.production_boost
+            made[node.node_id][item.item_id] += rate
+        for item in recipe.inputs:
+            used[node.node_id][item.item_id] += item.amount_per_minute * node.machine_count
+    for node_id in made.keys() & used.keys():  # a node's own use never leaves it
+        for item_id in made[node_id].keys() & used[node_id].keys():
+            own = min(made[node_id][item_id], used[node_id][item_id])
+            made[node_id][item_id] -= own
+            used[node_id][item_id] -= own
+
+    moved = allocate_supply(made, used, links)
+    sent: dict[tuple[str, str], float] = defaultdict(float)
+    received: dict[tuple[str, str], float] = defaultdict(float)
+    for (source, target, item_id), rate in moved.items():
+        sent[(source, item_id)] += rate
+        received[(target, item_id)] += rate
+    total_made: dict[str, float] = defaultdict(float)
+    total_used: dict[str, float] = defaultdict(float)
+    for totals, per_node in ((total_made, made), (total_used, used)):
+        for rates in per_node.values():
+            for item_id, rate in rates.items():
+                totals[item_id] += rate
+
+    def noise(item_id: str) -> float:
+        return _FLOW_NOISE * max(total_made[item_id], total_used[item_id])
+
+    flows = [
+        MaterialFlow(item_id, rate, source, target)
+        for (source, target, item_id), rate in moved.items()
+        if rate > noise(item_id)
+    ]
+    flows += [
+        MaterialFlow(item_id, left, node_id, None)
+        for node_id, rates in made.items()
+        for item_id, rate in rates.items()
+        if (left := rate - sent[(node_id, item_id)]) > noise(item_id)
+    ]
+    flows += [
+        MaterialFlow(item_id, short, None, node_id)
+        for node_id, rates in used.items()
+        for item_id, rate in rates.items()
+        if (short := rate - received[(node_id, item_id)]) > noise(item_id)
+    ]
+    return replace(graph, flows=tuple(flows))
+
+
+def allocate_supply(
+    supply: Mapping[str, Mapping[str, float]],
+    demand: Mapping[str, Mapping[str, float]],
+    links: Collection[tuple[str, str]] | None = None,
+    *,
+    open_ends: Collection[str] = (),
+) -> dict[tuple[str, str, str], float]:
+    """How much of each item each supplier sends each consumer a minute, by `(supplier, consumer,
+    item)`, from what each makes (`supply`) and uses (`demand`), per item.
+
+    A consumer's need for an item is shared among the suppliers of it that reach it -- every one,
+    or with `links` (supplier, consumer) only those it joins -- in proportion to what they make. A
+    supplier asked for more than it makes sends each consumer the same fraction of what it does
+    make; the consumer then goes short. What a supplier has left after that goes, in equal parts,
+    to the `open_ends` it reaches -- a container, a sink or a station takes whatever arrives."""
+    feeders: dict[str, set[str]] = defaultdict(set)
+    for supplier, consumer in links or ():
+        feeders[consumer].add(supplier)
+
+    def reaching(consumer: str, makers: Iterable[str]) -> list[str]:
+        return [
+            supplier
+            for supplier in makers
+            if supplier != consumer and (links is None or supplier in feeders[consumer])
+        ]
+
+    flows: dict[tuple[str, str, str], float] = defaultdict(float)
+    for item_id in dict.fromkeys(item for rates in demand.values() for item in rates):
+        makers = {s: rates[item_id] for s, rates in supply.items() if rates.get(item_id, 0) > 0}
+        asked: dict[str, float] = defaultdict(float)
+        wanted: dict[tuple[str, str], float] = {}
+        for consumer, rates in demand.items():
+            need = rates.get(item_id, 0.0)
+            sources = reaching(consumer, makers) if need > 0 else []
+            total = sum(makers[source] for source in sources)
+            for source in sources:
+                wanted[(source, consumer)] = need * makers[source] / total
+                asked[source] += wanted[(source, consumer)]
+        for (source, consumer), rate in wanted.items():
+            flows[(source, consumer, item_id)] = rate * min(1.0, makers[source] / asked[source])
+
+    if open_ends:
+        sent: dict[tuple[str, str], float] = defaultdict(float)
+        for (source, _, item_id), rate in flows.items():
+            sent[(source, item_id)] += rate
+        ends_of: dict[str, list[str]] = defaultdict(list)
+        for end in open_ends:
+            for source in reaching(end, supply):
+                ends_of[source].append(end)
+        for source, ends in ends_of.items():
+            for item_id, rate in supply[source].items():
+                if (left := rate - sent[(source, item_id)]) > _RATE_TOLERANCE:
+                    for end in ends:
+                        flows[(source, end, item_id)] += left / len(ends)
+    return dict(flows)
+
+
+def belt_loads(
+    routes: Mapping[tuple[str, str], Iterable[str]],
+    flows: Mapping[tuple[str, str, str], float],
+) -> dict[str, float]:
+    """What each belt carries a minute: every flow's rate, added to each belt on its route
+    (`routes` by (supplier, consumer), as `TransportLink.via` gives them)."""
+    loads: dict[str, float] = defaultdict(float)
+    for (source, target, _), rate in flows.items():
+        for belt in routes.get((source, target), ()):
+            loads[belt] += rate
+    return dict(loads)
+
+
+_FLOW_NOISE = 1e-5
+"""A flow this small a fraction of its item's throughput is rounding, not material: a save keeps
+clock speeds as 32-bit floats (a third is 0.33333334), so a factory balanced to the item still
+leaves a millionth of one over -- which would otherwise be drawn as an input or output itself."""
+
+
+def _positive(rates: dict[str, float]) -> dict[str, float]:
+    return {key: rate for key, rate in rates.items() if rate > _RATE_TOLERANCE}
 
 
 def consumption(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -> dict[str, float]:

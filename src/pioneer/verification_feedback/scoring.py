@@ -401,6 +401,8 @@ def _graph_channel(
     if graph is None or not recipes or not buildings:
         return None
     added = added_machines(graph)
+    if not added.nodes:  # nothing to build -- e.g. a drawing of the factory as it stands
+        return None
     from_outside = set(raw_item_ids) | {
         flow.item_id for flow in graph.flows if flow.source_node_id is None
     }

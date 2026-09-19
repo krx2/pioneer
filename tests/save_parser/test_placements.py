@@ -64,7 +64,9 @@ def test_building_actor_becomes_a_placement_record() -> None:
     result = to_placement_records((_SMELTER,))
     assert result == (
         PlacementRecord(
-            building_id="Build_SmelterMk1_C", position=Coordinates(x=1.0, y=2.0, z=3.0)
+            building_id="Build_SmelterMk1_C",
+            position=Coordinates(x=1.0, y=2.0, z=3.0),
+            object_id=_SMELTER.path_name,
         ),
     )
 

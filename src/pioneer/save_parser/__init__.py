@@ -18,6 +18,7 @@ The graph's `flows` are empty (see production_graph.py) — routing isn't recove
 parser reads.
 """
 
+from pioneer.save_parser.connections import Port, read_ports, trace_links
 from pioneer.save_parser.entities import EntitySpan, find_entity_spans
 from pioneer.save_parser.header import SaveHeader
 from pioneer.save_parser.loader import (
@@ -49,6 +50,7 @@ from pioneer.save_parser.properties import (
 __all__ = [
     "EntitySpan",
     "ObjectTable",
+    "Port",
     "PropertyTag",
     "RawObjectHeader",
     "SaveHeader",
@@ -63,8 +65,10 @@ __all__ = [
     "load_body_from_file",
     "load_save_state",
     "read_object_reference_value",
+    "read_ports",
     "read_property_tag",
     "to_placement_records",
     "to_placement_records_with_recipes",
     "to_production_graph",
+    "trace_links",
 ]

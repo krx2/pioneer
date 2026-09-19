@@ -19,9 +19,10 @@ building's own `mCurrentRecipe`, `mCurrentPotential`, `mCurrentFuelClass`, `mExt
 framing and properties.py for the extraction). No fixture save has a Somersloop in a machine, so
 the boost's property name is inferred from its siblings (`mCurrentPotential`/`mPendingPotential`,
 and the export's `mOnPendingProductionBoostChanged`) rather than seen in a save.
-`to_placement_records` is the headers-only version, for callers that have no decompressed body to
-search — it leaves `recipe_id` as `None`, which is a real "not known", not "not running a
-recipe", and the clock speed at its 100% default.
+`object_id` is the building's path name in the save, which the save's belts and pipes point at
+(see connections.py). `to_placement_records` is the headers-only version, for callers that have
+no decompressed body to search — it leaves `recipe_id` as `None`, which is a real "not known",
+not "not running a recipe", and the clock speed at its 100% default.
 """
 
 from __future__ import annotations
@@ -63,7 +64,11 @@ def to_placement_records(headers: tuple[RawObjectHeader, ...]) -> tuple[Placemen
             continue
         assert header.position is not None  # guaranteed by is_building, for the type checker
         records.append(
-            PlacementRecord(building_id=_building_id(header.class_name), position=header.position)
+            PlacementRecord(
+                building_id=_building_id(header.class_name),
+                position=header.position,
+                object_id=header.path_name,
+            )
         )
     return tuple(records)
 
@@ -115,6 +120,7 @@ def to_placement_records_with_recipes(
                 resource_node_id=extracts_from,
                 is_paused=bool(paused),
                 production_boost=1.0 if boost is None else boost,
+                object_id=header.path_name,
             )
         )
     return tuple(records)

@@ -23,7 +23,9 @@ from pioneer.contracts import (
 )
 from pioneer.verifier.calculations import (
     added_machines,
+    allocate_supply,
     balance,
+    belt_loads,
     consumption,
     distance,
     extraction_rates,
@@ -31,6 +33,7 @@ from pioneer.verifier.calculations import (
     generator_byproducts,
     generator_fuel_demand,
     generator_supplemental_demand,
+    implied_flows,
     machine_count,
     minimal_machine_graph,
     placed_generation_capacity_mw,
@@ -574,3 +577,156 @@ def test_transport_without_a_tier_for_the_form_says_so() -> None:
     )
 
     assert (needs[0].tier, needs[0].lines) == (None, 0)
+
+
+def _built(node_id: str, recipe_id: str, machines: float, boost: float = 1.0) -> ProductionNode:
+    building = (
+        "Build_SmelterMk1_C" if recipe_id == "Recipe_IngotIron_C" else "Build_ConstructorMk1_C"
+    )
+    return ProductionNode(
+        node_id=node_id,
+        recipe_id=recipe_id,
+        building_id=building,
+        machine_count=machines,
+        is_existing=True,
+        existing_machine_count=machines,
+        production_boost=boost,
+    )
+
+
+def _flows(graph: ProductionGraph) -> dict[tuple[str, str | None, str | None], float]:
+    return {
+        (flow.item_id, flow.source_node_id, flow.target_node_id): flow.amount_per_minute
+        for flow in implied_flows(graph, RECIPES).flows
+    }
+
+
+def test_implied_flows_feed_each_user_in_proportion_and_send_the_surplus_out() -> None:
+    graph = ProductionGraph(
+        nodes=(
+            _built("smelters", "Recipe_IngotIron_C", 2),
+            _built("rods_a", "Recipe_IronRod_C", 2),
+            _built("rods_b", "Recipe_IronRod_C", 1),
+        ),
+        flows=(),
+    )
+
+    assert _flows(graph) == pytest.approx(
+        {
+            ("Desc_OreIron_C", None, "smelters"): 60,
+            ("Desc_IronIngot_C", "smelters", "rods_a"): 30,
+            ("Desc_IronIngot_C", "smelters", "rods_b"): 15,
+            ("Desc_IronIngot_C", "smelters", None): 15,
+            ("Desc_IronRod_C", "rods_a", None): 30,
+            ("Desc_IronRod_C", "rods_b", None): 15,
+        }
+    )
+
+
+def test_implied_flows_bring_a_shortfall_in_from_outside() -> None:
+    graph = ProductionGraph(
+        nodes=(
+            _built("smelter", "Recipe_IngotIron_C", 1),
+            _built("rods_a", "Recipe_IronRod_C", 2),
+            _built("rods_b", "Recipe_IronRod_C", 1),
+        ),
+        flows=(),
+    )
+
+    flows = _flows(graph)
+
+    assert flows[("Desc_IronIngot_C", "smelter", "rods_a")] == pytest.approx(20)
+    assert flows[("Desc_IronIngot_C", "smelter", "rods_b")] == pytest.approx(10)
+    assert flows[("Desc_IronIngot_C", None, "rods_a")] == pytest.approx(10)
+    assert flows[("Desc_IronIngot_C", None, "rods_b")] == pytest.approx(5)
+
+
+def test_implied_flows_add_up_to_the_balance_and_count_somersloops() -> None:
+    graph = ProductionGraph(
+        nodes=(
+            _built("smelter", "Recipe_IngotIron_C", 1, boost=2.0),
+            _built("rods", "Recipe_IronRod_C", 1.5),
+        ),
+        flows=(),
+    )
+
+    net: dict[str, float] = {}
+    for (item_id, source, target), rate in _flows(graph).items():
+        if target is None:
+            net[item_id] = net.get(item_id, 0.0) + rate
+        if source is None:
+            net[item_id] = net.get(item_id, 0.0) - rate
+
+    assert net == pytest.approx(balance(graph, RECIPES))
+    assert net["Desc_IronIngot_C"] == pytest.approx(60 - 22.5)
+
+
+def test_implied_flows_ignore_what_32_bit_clock_speeds_leave_over() -> None:
+    """Three rod constructors at a third each (as a save stores a third) use what one smelter at
+    half makes: the millionths left over are no output of their own."""
+    third = 0.3333333432674408
+    graph = ProductionGraph(
+        nodes=(
+            _built("smelter", "Recipe_IngotIron_C", 0.5),
+            _built("rods", "Recipe_IronRod_C", 3 * third),
+        ),
+        flows=(),
+    )
+
+    assert ("Desc_IronIngot_C", "rods", None) not in _flows(graph)
+    assert ("Desc_IronIngot_C", "smelter", None) not in _flows(graph)
+    assert ("Desc_IronIngot_C", None, "rods") not in _flows(graph)
+
+
+def test_with_links_each_user_takes_only_from_the_makers_its_belts_reach() -> None:
+    """Two smelters, each belted to its own rod line: the second line's shortfall isn't made up
+    from the first smelter's surplus, however the recipes alone would share it."""
+    graph = ProductionGraph(
+        nodes=(
+            _built("smelter_a", "Recipe_IngotIron_C", 2),
+            _built("smelter_b", "Recipe_IngotIron_C", 1),
+            _built("rods_a", "Recipe_IronRod_C", 1),
+            _built("rods_b", "Recipe_IronRod_C", 3),
+        ),
+        flows=(),
+    )
+    links = {("smelter_a", "rods_a"), ("smelter_b", "rods_b")}
+
+    flows = {
+        (f.item_id, f.source_node_id, f.target_node_id): f.amount_per_minute
+        for f in implied_flows(graph, RECIPES, links).flows
+        if f.item_id == "Desc_IronIngot_C"
+    }
+
+    assert flows == pytest.approx(
+        {
+            ("Desc_IronIngot_C", "smelter_a", "rods_a"): 15,
+            ("Desc_IronIngot_C", "smelter_a", None): 45,
+            ("Desc_IronIngot_C", "smelter_b", "rods_b"): 30,
+            ("Desc_IronIngot_C", None, "rods_b"): 15,
+        }
+    )
+
+
+def test_what_a_supplier_has_left_goes_to_the_open_ends_it_reaches() -> None:
+    flows = allocate_supply(
+        {"smelter": {"Desc_IronIngot_C": 60}},
+        {"rods": {"Desc_IronIngot_C": 15}},
+        {("smelter", "rods"), ("smelter", "sink"), ("smelter", "box")},
+        open_ends=("sink", "box"),
+    )
+
+    assert flows == pytest.approx(
+        {
+            ("smelter", "rods", "Desc_IronIngot_C"): 15,
+            ("smelter", "sink", "Desc_IronIngot_C"): 22.5,
+            ("smelter", "box", "Desc_IronIngot_C"): 22.5,
+        }
+    )
+
+
+def test_a_belt_carries_every_flow_routed_along_it() -> None:
+    flows = {("a", "c", "Desc_IronIngot_C"): 30.0, ("b", "c", "Desc_IronIngot_C"): 20.0}
+    routes = {("a", "c"): ("belt_1", "belt_3"), ("b", "c"): ("belt_2", "belt_3")}
+
+    assert belt_loads(routes, flows) == {"belt_1": 30, "belt_2": 20, "belt_3": 50}

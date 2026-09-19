@@ -5,12 +5,12 @@ which is exactly what the Expansion Advisor (Stage 8) matches on when deciding w
 an existing factory or add a new stage, and what the Verifier (Stage 4) needs to compute balance
 and power draw over the existing factory.
 
-**`flows` is empty, deliberately.** Material routing between machines isn't recoverable from what
-this parser reads: a belt's endpoints live in conveyor-specific trailing data that needs per-class
-parsing (see entities.py). Deriving flows would instead mean asking the Knowledge Base what each
-recipe consumes — a different module's data, which this one must not import. The Stage 8 consumer
-doesn't need them (`advise_expansion` takes its flows from the plan of additions), so an empty
-tuple is the honest shape here rather than a guessed one.
+**`flows` is empty, deliberately.** A flow is an amount of an item a minute, and how much of what
+a machine makes goes where is the recipes' arithmetic — the Knowledge Base's data, which this
+module must not import. Which machines the belts and pipes join *is* read, though, as the save
+state's `links` (see connections.py), and `verifier.implied_flows` shares the recipes' rates out
+along them. The Stage 8 consumer needs neither (`advise_expansion` takes its flows from the plan
+of additions).
 
 **Machines are clock-scaled.** A node's `machine_count` is the sum of its buildings' clock speeds
 (`PlacementRecord.clock_speed`) — effective machines at 100% — because that, not the number of
