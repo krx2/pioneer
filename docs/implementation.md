@@ -238,9 +238,11 @@ Parser to generate them, write them by hand.
 - Saves from before 1.0 (header version 6, save version 22-25, e.g. Update 5) use an older chunk
   and body layout the parser doesn't read; loading one fails at decompression. Re-saving them in
   the current game fixes that.
-- Not recoverable from a save, by design or by format: belt routing (the graph's `flows` stay
-  empty — see production_graph.py), and resource node purity/type (resource node actors carry only
-  `mResourcesLeft`), which has to come from Stage 3's static data instead.
+- Belt and pipe routing is read from the connection components every port is saved as (see
+  connections.py): which buildings they join, not how much flows — the graph's `flows` stay empty,
+  and `verifier.implied_flows` shares the recipes' rates out along the links.
+- Not recoverable from a save, by design or by format: resource node purity/type (resource node
+  actors carry only `mResourcesLeft`), which has to come from Stage 3's static data instead.
 
 **Test fixtures:** real sample `.sav` files with known contents — two developed factories
 (`stal_mielec`, `wielka_polska_niesmiertelna`) and two small early-game ones (`alfa`, `tak`).

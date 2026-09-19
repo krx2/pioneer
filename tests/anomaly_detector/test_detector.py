@@ -2,13 +2,20 @@
 numbers (as if from the Verifier). The core fixture is a deliberately under-provisioned smelter
 stage, per implementation.md Stage 10."""
 
-from pioneer.anomaly_detector.detector import detect_anomalies
+from pioneer.anomaly_detector.detector import (
+    detect_anomalies,
+    detect_belt_overloads,
+    detect_wiring_problems,
+)
 from pioneer.contracts import (
     AnomalyKind,
     AnomalySeverity,
+    ItemAmount,
     MaterialFlow,
     ProductionGraph,
     ProductionNode,
+    Recipe,
+    TransportLink,
 )
 
 
@@ -194,3 +201,82 @@ def test_record_ordering_is_deficits_then_power_then_congestion_then_surplus() -
         AnomalyKind.CONGESTION,
         AnomalyKind.RESOURCE_SURPLUS,
     ]
+
+
+_RODS = Recipe(
+    recipe_id="Recipe_IronRod_C",
+    name="Iron Rod",
+    building_ids=("Build_ConstructorMk1_C",),
+    inputs=(ItemAmount("Desc_IronIngot_C", 15),),
+    outputs=(ItemAmount("Desc_IronRod_C", 15),),
+)
+_PLASTIC = Recipe(
+    recipe_id="Recipe_Plastic_C",
+    name="Plastic",
+    building_ids=("Build_OilRefinery_C",),
+    inputs=(ItemAmount("Desc_LiquidOil_C", 30),),
+    outputs=(ItemAmount("Desc_Plastic_C", 20), ItemAmount("Desc_HeavyOilResidue_C", 10)),
+)
+_FLUIDS = ("Desc_LiquidOil_C", "Desc_HeavyOilResidue_C")
+
+
+def _wiring(links, **known):
+    return {
+        (record.kind, record.node_id, record.item_id)
+        for record in detect_wiring_problems(
+            [("rods", _RODS), ("refinery", _PLASTIC)],
+            links,
+            supplies=known.get("supplies", {}),
+            accepts=known.get("accepts", {}),
+            fluid_item_ids=_FLUIDS,
+        )
+    }
+
+
+def test_wiring_flags_what_no_belt_or_pipe_brings_or_takes_away() -> None:
+    links = [
+        TransportLink("plates", "rods", "belt"),  # the wrong item: plates, not ingots
+        TransportLink("rods", "box", "belt"),
+        TransportLink("oil_extractor", "refinery", "pipe"),
+        TransportLink("refinery", "sink", "belt"),
+    ]
+
+    problems = _wiring(
+        links,
+        supplies={"plates": {"Desc_IronPlate_C"}, "oil_extractor": {"Desc_LiquidOil_C"}},
+    )
+
+    assert problems == {
+        (AnomalyKind.MACHINE_NOT_FED, "rods", "Desc_IronIngot_C"),
+        (AnomalyKind.OUTPUT_BLOCKED, "refinery", "Desc_HeavyOilResidue_C"),  # no pipe out
+    }
+
+
+def test_a_station_may_bring_anything_but_a_machine_takes_only_its_ingredients() -> None:
+    links = [
+        TransportLink("train_station", "rods", "belt"),
+        TransportLink("rods", "smelter", "belt"),
+        TransportLink("oil_extractor", "refinery", "pipe"),
+        TransportLink("refinery", "sink", "belt"),
+        TransportLink("refinery", "fuel_generator", "pipe"),
+    ]
+
+    problems = _wiring(links, accepts={"smelter": {"Desc_OreIron_C"}})
+
+    assert problems == {(AnomalyKind.OUTPUT_BLOCKED, "rods", "Desc_IronRod_C")}
+
+
+def test_a_belt_over_its_rating_is_congested_as_far_over_as_it_is() -> None:
+    records = detect_belt_overloads(
+        {"belt_1": 130.0, "belt_2": 240.0, "belt_3": 60.0, "belt_4": 999.0},
+        {"belt_1": 120.0, "belt_2": 120.0, "belt_3": 60.0},
+        belt_ids={"belt_1": "Build_ConveyorBeltMk2_C"},
+    )
+
+    assert [(r.kind, r.node_id, r.severity) for r in records] == [
+        (AnomalyKind.CONGESTION, "belt_1", AnomalySeverity.LOW),
+        (AnomalyKind.CONGESTION, "belt_2", AnomalySeverity.HIGH),
+    ]
+    assert records[0].description == (
+        "a Build_ConveyorBeltMk2_C has to carry 130/min but is rated 120/min"
+    )

@@ -64,13 +64,20 @@ from __future__ import annotations
 import difflib
 import json
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
-from pioneer.anomaly_detector import detect_anomalies
+from pioneer.anomaly_detector import (
+    detect_anomalies,
+    detect_belt_overloads,
+    detect_wiring_problems,
+)
 from pioneer.contracts import (
+    AnomalyKind,
+    AnomalyRecord,
+    AnomalySeverity,
     Building,
     ChangeAction,
     Coordinates,
@@ -87,6 +94,7 @@ from pioneer.contracts import (
     ResponseArtifact,
     Technology,
     TransportError,
+    TransportLink,
     TransportTier,
 )
 from pioneer.expansion_advisor import advise_expansion
@@ -103,7 +111,9 @@ from pioneer.qa_engine import ChatCompletion, LLMUnavailable, NoRelevantPassages
 from pioneer.qa_engine import answer_question as qa_answer_question
 from pioneer.verifier import (
     added_machines,
+    allocate_supply,
     balance,
+    belt_loads,
     consumption,
     distance,
     extraction_rates,
@@ -111,6 +121,7 @@ from pioneer.verifier import (
     generator_byproducts,
     generator_fuel_demand,
     generator_supplemental_demand,
+    implied_flows,
     placed_generation_capacity_mw,
     placed_power_consumption_mw,
     power_balance,
@@ -145,6 +156,7 @@ _SYSTEM_PROMPT = (
     "instead of guessing or making up factory state.\n\n"
     "Graph and map panels shown to the player come only from a tool call made in THIS turn: "
     "plan_production, expand_existing_factory, and compare_recipes draw the production graph; "
+    "show_existing_factory draws what the player has already built; "
     "rank_build_locations draws the map. Numbers you already gave in an earlier turn don't carry "
     "a panel with them. So whenever the player asks to see, draw, or visualize a graph or map -- "
     "even as a follow-up to a plan you already described in text -- call the matching tool again "
@@ -217,6 +229,9 @@ class OrchestratorContext:
     """The player's current factory state, e.g. from the Save Parser. `None` means no save is
     loaded -- expansion/diagnosis tools report that explicitly rather than fabricating a factory."""
     existing_placements: tuple[PlacementRecord, ...] = ()
+    existing_links: tuple[TransportLink, ...] = ()
+    """Which of `existing_placements` the save's belts and pipes join. Empty when unknown: then a
+    drawing's flows are shared out by the recipes alone, and wiring isn't diagnosed."""
     qa_corpus: tuple[Passage, ...] = ()
     game_state: GameState | None = None
     available_power_mw: float | None = None
@@ -612,6 +627,25 @@ def _build_tools(
             handler=lambda args: _handle_expand_existing_factory(args, context, accumulator),
         ),
         _Tool(
+            name="show_existing_factory",
+            description=(
+                "Draw a production graph of what the player has ALREADY BUILT, from the latest "
+                "save. When they ask about an item ('how does my factory make Computers?'), pass "
+                "item_id: the stages making it, across all their factories. Pass site_id only "
+                "when they name one of their factories, as an earlier result listed it. With "
+                "neither: the whole factory, or a list of its factories if too big to draw. "
+                "Flows are what the recipes imply, not traced belts. Requires save data."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "site_id": {"type": "string"},
+                    "item_id": {"type": "string", "description": _ITEM_DESCRIPTION},
+                },
+            },
+            handler=lambda args: _handle_show_existing_factory(args, context, accumulator),
+        ),
+        _Tool(
             name="compare_recipes",
             description=(
                 "Compare every recipe for an item -- the standard one and each alternate -- as a "
@@ -699,7 +733,8 @@ def _build_tools(
             name="diagnose_factory_problems",
             description=(
                 "Scan the player's existing factory for resource deficits/surpluses, power "
-                "blackouts, and belt congestion. Requires save data."
+                "blackouts, and its wiring: machines no belt or pipe feeds, products with "
+                "nowhere to go, belts carrying more than their tier can. Requires save data."
             ),
             parameters={"type": "object", "properties": {}},
             handler=lambda args: _handle_diagnose_factory(args, context),
@@ -873,6 +908,169 @@ def _handle_expand_existing_factory(
         added = added_machines(change_set.resulting_graph)
         result["added_power_draw_mw"] = power_balance(added, context.buildings)
     return _with_spare_power(result, context)
+
+
+def _handle_show_existing_factory(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+) -> dict[str, Any]:
+    """Draws what the save says is built: one site, the chain behind one item, or all of it. The
+    flows are `verifier.implied_flows` -- what the stages' recipes make at their clock speeds,
+    shared out along the save's belts and pipes where it has them."""
+    if context.existing_graph is None:
+        return {"error": "no save loaded -- nothing is known about what the player has built"}
+    if not context.recipes:
+        return {"error": "no knowledge base loaded -- the stages' recipes are unknown"}
+    site_id, item = args.get("site_id"), args.get("item_id")
+    site = None
+    if site_id:
+        site = _find_site(str(site_id), context)
+        graph, drawn = _site_graph(site), site.site_id
+    elif item:
+        item_id = _resolve_item_id(item, context)
+        graph, drawn = _chain_graph(context.existing_graph, item_id, context.recipes), item_id
+        if not graph.nodes:
+            raise _ToolError(f"nothing in the player's factory makes {item_id}")
+    else:
+        graph, drawn = context.existing_graph, "whole factory"
+        if len(graph.nodes) > _MAX_DRAWN_STAGES:
+            return {
+                "not_drawn": f"the whole factory has {len(graph.nodes)} stages, too many to draw "
+                "at once -- call again with one site_id, or the item_id the player cares about",
+                "factories": [_site_entry(s, context) for s in context.factory_sites],
+            }
+
+    known = {recipe.recipe_id for recipe in context.recipes}
+    graph = replace(graph, nodes=tuple(node for node in graph.nodes if node.recipe_id in known))
+    members = site.placements if site is not None else context.existing_placements
+    links = _node_links(graph, members, context)
+    graph = implied_flows(graph, context.recipes, links)
+    accumulator.graph = graph
+    if site is not None:
+        accumulator.factory_sites = (site,)
+    raw = raw_resource_ids(context)
+    recipe_of = {recipe.recipe_id: recipe for recipe in context.recipes}
+    result: dict[str, Any] = {
+        "drawn": drawn,
+        "flows_follow": "the save's belts and pipes" if links is not None else "the recipes alone",
+        "stages": [
+            {
+                "recipe_id": node.recipe_id,
+                "building_id": node.building_id,
+                "effective_machines": round(node.machine_count, 2),
+                **_stage_power(node.building_id, node.machine_count, context),
+                **_stage_rates(node, recipe_of[node.recipe_id]),
+            }
+            for node in graph.nodes
+        ],
+        "raw_resources_in_per_minute": _per_item(
+            f for f in graph.flows if f.source_node_id is None and f.item_id in raw
+        ),
+        "parts_brought_in_per_minute": _per_item(
+            f for f in graph.flows if f.source_node_id is None and f.item_id not in raw
+        ),
+        "goes_out_per_minute": _per_item(f for f in graph.flows if f.target_node_id is None),
+    }
+    if site is not None:
+        result["site"] = _site_entry(site, context)
+    return result
+
+
+def _stage_rates(node: ProductionNode, recipe: Recipe) -> dict[str, dict[str, float]]:
+    """What one stage makes and uses a minute, so the model can say it of that stage rather than
+    guess it from the whole drawing's totals."""
+    return {
+        "makes_per_minute": {
+            product.item_id: round(
+                product.amount_per_minute * node.machine_count * node.production_boost, 2
+            )
+            for product in recipe.outputs
+        },
+        "uses_per_minute": {
+            ingredient.item_id: round(ingredient.amount_per_minute * node.machine_count, 2)
+            for ingredient in recipe.inputs
+        },
+    }
+
+
+_MAX_DRAWN_STAGES = 25
+"""The most stages `show_existing_factory` draws of the whole factory at once: past that the
+force-directed graph is a tangle of labels, so the model is handed the factories to pick from."""
+
+
+def _find_site(site_id: str, context: OrchestratorContext) -> FactorySite:
+    """The site `site_id` names -- also as "2" or "Site 2", the way a player might say it."""
+    wanted = site_id.strip().casefold().replace(" ", "_")
+    wanted = f"site_{wanted}" if wanted.isdigit() else wanted
+    for site in context.factory_sites:
+        if site.site_id.casefold() == wanted:
+            return site
+    raise _ToolError(
+        f"no factory {site_id!r}",
+        factories=[_site_entry(site, context) for site in context.factory_sites],
+    )
+
+
+def _site_entry(site: FactorySite, context: OrchestratorContext) -> dict[str, Any]:
+    summary = _site_summary(site, context)
+    return {
+        "site_id": site.site_id,
+        "buildings": summary["buildings"],
+        "main_recipes": summary["main_recipes"],
+        "distance_from_base_m": round(summary["distance_from_base_m"]),
+    }
+
+
+def _site_graph(site: FactorySite) -> ProductionGraph:
+    """One factory's buildings as a graph, by the save parser's rules: a node per recipe, its
+    machines its buildings' clock speeds summed, its boost theirs averaged by clock speed."""
+    machines: dict[str, float] = defaultdict(float)
+    boosted: dict[str, float] = defaultdict(float)
+    building_of: dict[str, str] = {}
+    for placement in site.placements:
+        if placement.recipe_id is None or placement.is_paused:
+            continue
+        machines[placement.recipe_id] += placement.clock_speed
+        boosted[placement.recipe_id] += placement.clock_speed * placement.production_boost
+        building_of.setdefault(placement.recipe_id, placement.building_id)
+    return ProductionGraph(
+        nodes=tuple(
+            ProductionNode(
+                node_id=f"save_{recipe_id}",
+                recipe_id=recipe_id,
+                building_id=building_of[recipe_id],
+                machine_count=count,
+                is_existing=True,
+                existing_machine_count=count,
+                production_boost=boosted[recipe_id] / count if count > 0 else 1.0,
+            )
+            for recipe_id, count in machines.items()
+        ),
+        flows=(),
+    )
+
+
+def _chain_graph(
+    graph: ProductionGraph, item_id: str, recipes: tuple[Recipe, ...]
+) -> ProductionGraph:
+    """The part of `graph` that makes `item_id`: the stages making it, the stages making their
+    inputs, and so on down to what comes from outside the factory."""
+    recipe_of = {recipe.recipe_id: recipe for recipe in recipes}
+    makers: dict[str, list[ProductionNode]] = defaultdict(list)
+    for node in graph.nodes:
+        for product in recipe_of[node.recipe_id].outputs if node.recipe_id in recipe_of else ():
+            makers[product.item_id].append(node)
+    kept: dict[str, ProductionNode] = {}
+    wanted, seen = [item_id], set()
+    while wanted:
+        current = wanted.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for node in makers.get(current, ()):
+            if node.node_id not in kept:
+                kept[node.node_id] = node
+                wanted.extend(i.item_id for i in recipe_of[node.recipe_id].inputs)
+    return ProductionGraph(nodes=tuple(kept.values()), flows=())
 
 
 def _handle_compare_recipes(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
@@ -1078,6 +1276,7 @@ def _handle_diagnose_factory(args: dict[str, Any], context: OrchestratorContext)
         available_power_mw=power_capacity_mw,
     )
     return {
+        **_wiring_report(context),
         "power_draw_mw": power_draw_mw,
         "power_capacity_mw": power_capacity_mw,
         "anomalies": [
@@ -1091,6 +1290,219 @@ def _handle_diagnose_factory(args: dict[str, Any], context: OrchestratorContext)
             for anomaly in anomalies
         ],
     }
+
+
+def _node_links(
+    graph: ProductionGraph, members: Iterable[PlacementRecord], context: OrchestratorContext
+) -> set[tuple[str, str]] | None:
+    """Which of `graph`'s nodes the save's belts and pipes join: a link from one of `members` to
+    another joins the nodes of the recipes they run. `None` without link data -- the drawing then
+    shares its flows out by the recipes alone."""
+    if not context.existing_links:
+        return None
+    node_ids = {node.node_id for node in graph.nodes}
+    node_of = {
+        placement.object_id: f"save_{placement.recipe_id}"
+        for placement in members
+        if placement.object_id and placement.recipe_id and not placement.is_paused
+    }
+    return {
+        (node_of[link.source_id], node_of[link.target_id])
+        for link in context.existing_links
+        if node_of.get(link.source_id) in node_ids and node_of.get(link.target_id) in node_ids
+    }
+
+
+_MAX_WIRING_GROUPS = 5
+"""The most groups of each kind of wiring problem a diagnosis lists, the worst and biggest first --
+a big save can have hundreds of problems, and the rest are only counted."""
+_SEVERITY_RANK = {AnomalySeverity.HIGH: 0, AnomalySeverity.MEDIUM: 1, AnomalySeverity.LOW: 2}
+
+
+def _wiring_report(context: OrchestratorContext) -> dict[str, Any]:
+    """What the save's belts and pipes leave undone -- machines nothing feeds, products with
+    nowhere to go, belts over their tier -- each located by building, factory and position.
+    Empty when the save's links aren't known."""
+    links = context.existing_links
+    if not links or not context.recipes:
+        return {}
+    placed = {p.object_id: p for p in context.existing_placements if p.object_id}
+    roles = _building_roles(placed, context)
+    recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
+    machines = [
+        (object_id, recipes[p.recipe_id])
+        for object_id, p in placed.items()
+        if p.recipe_id in recipes and not p.is_paused
+    ]
+    problems = detect_wiring_problems(
+        machines,
+        links,
+        supplies=roles.supplies,
+        accepts=roles.accepts,
+        fluid_item_ids={item.item_id for item in context.items if item.is_fluid},
+    )
+    open_ends = {link.target_id for link in links if roles.accepts.get(link.target_id) is None}
+    flows = allocate_supply(
+        roles.supply_rates,
+        roles.demand_rates,
+        {(link.source_id, link.target_id) for link in links},
+        open_ends=open_ends,
+    )
+    loads = belt_loads({(link.source_id, link.target_id): link.via for link in links}, flows)
+    tiers = {tier.building_id: tier.capacity_per_minute for tier in context.transport_tiers}
+    belt_ids = {belt: placed[belt].building_id for belt in loads if belt in placed}
+    capacities = {
+        belt: tiers[tier]
+        for belt, building_id in belt_ids.items()
+        if (tier := building_id.replace("ConveyorLift", "ConveyorBelt")) in tiers
+    }
+    found = [*problems, *detect_belt_overloads(loads, capacities, belt_ids=belt_ids)]
+    site_of = {
+        placement.object_id: site.site_id
+        for site in context.factory_sites
+        for placement in site.placements
+        if placement.object_id
+    }
+
+    # One entry per kind of trouble in a factory: its machines, or the segments of one belt line,
+    # all of which the same few words describe.
+    groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    members: dict[tuple[Any, ...], set[str]] = defaultdict(set)
+    for anomaly in found:
+        entry = _located(anomaly, placed, site_of, context)
+        placement = placed[anomaly.node_id or ""]
+        if anomaly.kind is AnomalyKind.CONGESTION:  # a belt or lift, named by its tier
+            belt = anomaly.node_id or ""
+            load = round(loads[belt])
+            tier = placement.building_id.replace("ConveyorLift", "ConveyorBelt")
+            key = (anomaly.kind, entry.get("factory"), tier, load)
+            entry.update(
+                building_id=tier, carries_per_minute=load, rated_per_minute=capacities[belt]
+            )
+            count_as = "belt_segments"
+        else:
+            key = (anomaly.kind, entry.get("factory"), placement.recipe_id)
+            entry.update(recipe_id=placement.recipe_id, items=[])
+            count_as = "machines"
+        group = groups.setdefault(key, {**entry, count_as: 0})
+        members[key].add(anomaly.node_id or "")
+        group[count_as] = len(members[key])
+        if "items" in group and anomaly.item_id not in group["items"]:
+            group["items"].append(anomaly.item_id)
+        group.pop("item_id", None)
+        group.pop("description", None)
+
+    ordered = sorted(
+        groups.values(),
+        key=lambda g: (
+            _SEVERITY_RANK[AnomalySeverity(g["severity"])],
+            -g.get("machines", g.get("belt_segments", 0)),
+        ),
+    )
+    shown: Counter[str] = Counter()
+    listed = []
+    for group in ordered:
+        if shown[group["kind"]] < _MAX_WIRING_GROUPS:
+            shown[group["kind"]] += 1
+            listed.append(group)
+    return {
+        "wiring_problems_found": dict(Counter(anomaly.kind.value for anomaly in found)),
+        "wiring_problems": listed,
+    }
+
+
+@dataclass
+class _Roles:
+    """Per building, by object id: which items it may put out and take in (`None`: any), and at
+    what rates it makes and uses them while running."""
+
+    supplies: dict[str, set[str] | None] = field(default_factory=dict)
+    accepts: dict[str, set[str] | None] = field(default_factory=dict)
+    supply_rates: dict[str, dict[str, float]] = field(default_factory=dict)
+    demand_rates: dict[str, dict[str, float]] = field(default_factory=dict)
+
+
+def _building_roles(placed: Mapping[str, PlacementRecord], context: OrchestratorContext) -> _Roles:
+    """A machine makes and uses its recipe's items, and one with no recipe set takes nothing; an
+    extractor puts out its resource; a generator takes its fuels and the water they need, and
+    puts out their waste. Anything else -- a container, a station, a sink -- is left out: it may
+    carry anything."""
+    recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
+    buildings = {building.building_id: building for building in context.buildings}
+    manufacturers = {building for recipe in context.recipes for building in recipe.building_ids}
+    resource_of = {node.node_id: node.item_id for node in context.resource_nodes}
+    roles = _Roles()
+    for object_id, p in placed.items():
+        recipe, building = recipes.get(p.recipe_id or ""), buildings.get(p.building_id)
+        if recipe is not None:
+            roles.supplies[object_id] = {product.item_id for product in recipe.outputs}
+            roles.accepts[object_id] = {ingredient.item_id for ingredient in recipe.inputs}
+            if not p.is_paused:
+                roles.supply_rates[object_id] = {
+                    product.item_id: product.amount_per_minute * p.clock_speed * p.production_boost
+                    for product in recipe.outputs
+                }
+                roles.demand_rates[object_id] = {
+                    ingredient.item_id: ingredient.amount_per_minute * p.clock_speed
+                    for ingredient in recipe.inputs
+                }
+        elif p.building_id in manufacturers:
+            roles.supplies[object_id], roles.accepts[object_id] = set(), set()
+        elif building is not None and building.extraction_rate_per_minute > 0:
+            resource = building.fixed_resource_id or resource_of.get(p.resource_node_id or "")
+            roles.supplies[object_id] = {resource} if resource else None
+            roles.accepts[object_id] = set()
+            if not p.is_paused:
+                roles.supply_rates[object_id] = extraction_rates(
+                    (p,), context.buildings, context.resource_nodes
+                )
+        elif building is not None and building.fuels:
+            fuels = building.fuels
+            roles.accepts[object_id] = {fuel.fuel_item_id for fuel in fuels} | {
+                fuel.supplemental_item_id for fuel in fuels if fuel.supplemental_item_id
+            }
+            roles.supplies[object_id] = {
+                fuel.byproduct_item_id for fuel in fuels if fuel.byproduct_item_id
+            }
+            burned = generator_fuel_demand((p,), context.buildings, context.items)
+            _add_rates(burned, generator_supplemental_demand((p,), context.buildings))
+            roles.demand_rates[object_id] = burned
+            roles.supply_rates[object_id] = generator_byproducts(
+                (p,), context.buildings, context.items
+            )
+    return roles
+
+
+def _located(
+    anomaly: AnomalyRecord,
+    placed: Mapping[str, PlacementRecord],
+    site_of: Mapping[str, str],
+    context: OrchestratorContext,
+) -> dict[str, Any]:
+    """An anomaly as the model sees it: its building, the factory it's in (or the nearest one),
+    and where it stands in metres -- never the save's object id, which means nothing to a
+    player."""
+    entry: dict[str, Any] = {
+        "kind": anomaly.kind.value,
+        "severity": anomaly.severity.value,
+        "description": anomaly.description,
+        "item_id": anomaly.item_id,
+    }
+    placement = placed.get(anomaly.node_id or "")
+    if placement is None:
+        return entry
+    entry["building_id"] = placement.building_id
+    nearest = min(
+        context.factory_sites,
+        key=lambda site: distance(site.position, placement.position),
+        default=None,
+    )
+    factory = site_of.get(placement.object_id or "") or (nearest.site_id if nearest else None)
+    if factory is not None:
+        entry["factory"] = factory
+    entry["x_m"] = round(placement.position.x / _CM_PER_M)
+    entry["y_m"] = round(placement.position.y / _CM_PER_M)
+    return entry
 
 
 def _handle_answer_question(
@@ -1425,11 +1837,13 @@ def _name_in_class_id(class_id: str) -> str:
 
 
 def display_names(context: OrchestratorContext) -> dict[str, str]:
-    """The in-game name of every recipe, building and item `context` knows, by id."""
+    """The in-game name of every recipe, building, belt and pipe tier and item `context` knows,
+    by id."""
     names = {recipe.recipe_id: recipe.name for recipe in context.recipes}
     names.update({building.building_id: building.name for building in context.buildings})
     names.update({item.item_id: item.name for item in context.items})
     names.update({t.technology_id: t.name for t in context.technologies})
+    names.update({tier.building_id: tier.name for tier in context.transport_tiers})
     return names
 
 

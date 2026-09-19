@@ -3,13 +3,12 @@ Stage 13).
 
 Split in two halves, per architecture.md §3's deterministic/LLM-path split applied to rendering:
 `graph_to_d3_data` is a pure, fully unit-testable transform (contract in, JSON-shaped dict out) —
-including a longest-path `layer` per node, so depth in the graph is known independent of any
-rendering choice, even though the current layout doesn't use it; `render_page` wraps that data in
-a standalone HTML page that loads D3 from a CDN and lets it settle into a plain force-directed
-layout -- charge, link, and collision forces only, nothing pinning a node to a corner or a line --
-so the shape it settles into is whatever its own connectivity naturally suggests. Also
-distinguishes existing vs. new nodes, as required by the Stage 13 contract — and existing nodes an
-expansion extends, labelled with how many of their machines are new.
+including a longest-path `layer` per node, and every node's place in a left-to-right layout with
+few crossing lines (layout.py), worked out here rather than in the browser so it can be tested;
+`render_page` wraps that data in a standalone HTML page that loads D3 from a CDN to draw it, zoom
+and pan it, and let the player drag a node aside. Also distinguishes existing vs. new nodes, as
+required by the Stage 13 contract — and existing nodes an expansion extends, labelled with how
+many of their machines are new.
 """
 
 from __future__ import annotations
@@ -17,10 +16,12 @@ from __future__ import annotations
 import html
 import json
 import re
+from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
 from pioneer.contracts import ProductionGraph
+from pioneer.graph_presentation.layout import layered_layout
 
 _D3_CDN_URL = "https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"
 
@@ -71,6 +72,7 @@ def graph_to_d3_data(
     names: Mapping[str, str] | None = None,
     icons: Mapping[str, str] | None = None,
     raw_resources: Collection[str] | None = None,
+    products: Mapping[str, tuple[str, float]] | None = None,
 ) -> dict[str, Any]:
     """Machine nodes come straight from `graph.nodes`. A flow endpoint that isn't one of them —
     `None` (material entering from outside, or leaving as the final output), or an id no node in
@@ -82,7 +84,13 @@ def graph_to_d3_data(
 
     An input is `raw` when its item is one of `raw_resources` — what miners and extractors take
     out of the ground — and otherwise a part the player already makes, drawn like an existing
-    stage. Without `raw_resources` every input counts as raw, as none can be told apart."""
+    stage. Without `raw_resources` every input counts as raw, as none can be told apart.
+
+    Every node's `lines` are the three shown under it: what it makes, the building and how many
+    (a boundary: where the item comes from or goes), and how much a minute. `products` maps a
+    recipe to its main product and what one machine makes of it a minute; without an entry the
+    first line is the recipe's name and the third what the node's flows carry away. `x`/`y` and
+    each link's `points` place it all left to right with few crossings -- see layout.py."""
 
     def name(class_id: str) -> str:
         return (names or {}).get(class_id) or readable_id(class_id)
@@ -94,10 +102,21 @@ def graph_to_d3_data(
     for node in graph.nodes:
         added = node.machine_count - node.existing_machine_count
         extended = node.is_existing and node.existing_machine_count > 0 and added > 0
-        label = f"{name(node.recipe_id)} ×{node.machine_count:g}"
+        # A save's counts are clock speeds summed: 4.6666667 machines reads as 4.67.
+        count = f"×{_amount(node.machine_count)}" + (
+            f" (+{_amount(added)} new)" if extended else ""
+        )
+        product = (products or {}).get(node.recipe_id)
         nodes[node.node_id] = {
             "id": node.node_id,
-            "label": f"{label} (+{added:g} new)" if extended else label,
+            "label": f"{name(node.recipe_id)} {count}",
+            "lines": [
+                name(product[0]) if product else name(node.recipe_id),
+                f"{name(node.building_id)} {count}",
+                f"{_amount(product[1] * node.machine_count * node.production_boost)}/min"
+                if product
+                else "",
+            ],
             "buildingId": node.building_id,
             "existing": node.is_existing,
             "extended": extended,
@@ -122,6 +141,7 @@ def graph_to_d3_data(
             nodes[source] = {
                 "id": source,
                 "label": f"{name(flow.item_id)} (input)",
+                "lines": [name(flow.item_id), _source_of(flow.item_id, raw_resources), ""],
                 "buildingId": None,
                 "existing": True,
                 "kind": "boundary-in",
@@ -132,6 +152,7 @@ def graph_to_d3_data(
             nodes[target] = {
                 "id": target,
                 "label": f"{name(flow.item_id)} (output)",
+                "lines": [name(flow.item_id), "output", ""],
                 "buildingId": None,
                 "existing": True,
                 "kind": "boundary-out",
@@ -151,7 +172,33 @@ def graph_to_d3_data(
     for node_id, node in nodes.items():
         node["layer"] = layers[node_id]
 
+    carried: dict[str, float] = defaultdict(float)  # what a node's flows take out, or bring in
+    for link in links:
+        carried[link["source"]] += link["ratePerMinute"]
+        if nodes[link["target"]]["kind"] == "boundary-out":
+            carried[link["target"]] += link["ratePerMinute"]
+    for node_id, node in nodes.items():
+        if not node["lines"][2] and carried[node_id] > 0:
+            node["lines"][2] = f"{_amount(carried[node_id])}/min"
+
+    layout = layered_layout(list(nodes), [(link["source"], link["target"]) for link in links])
+    for node_id, node in nodes.items():
+        node["x"], node["y"] = layout.positions[node_id]
+    for link in links:
+        edge = (link["source"], link["target"])
+        link["points"] = [list(point) for point in layout.waypoints.get(edge, [])]
+        link["back"] = edge in layout.back_edges
+
     return {"nodes": list(nodes.values()), "links": links}
+
+
+def _amount(value: float) -> str:
+    """`4.6666667` -> `4.67`, `70.0` -> `70`."""
+    return f"{round(value, 2):g}"
+
+
+def _source_of(item_id: str, raw_resources: Collection[str] | None) -> str:
+    return "raw resource" if raw_resources is None or item_id in raw_resources else "brought in"
 
 
 def render_page(
@@ -161,8 +208,9 @@ def render_page(
     names: Mapping[str, str] | None = None,
     icons: Mapping[str, str] | None = None,
     raw_resources: Collection[str] | None = None,
+    products: Mapping[str, tuple[str, float]] | None = None,
 ) -> str:
-    data_json = json.dumps(graph_to_d3_data(graph, names, icons, raw_resources))
+    data_json = json.dumps(graph_to_d3_data(graph, names, icons, raw_resources, products))
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -206,8 +254,14 @@ svg { width:100%; height:100%; display:block; }
 .node-raw circle { fill:#5b6b7c; stroke:#aab6c2; stroke-dasharray:3 2; }
 .node-output circle { fill:#33c17a; stroke:#8fe0b6; stroke-dasharray:3 2; }
 .node text { fill:#edf1f3; font-size:11px; paint-order: stroke; stroke:#1f2427; stroke-width:3px; }
-.link { stroke:#4a565e; stroke-opacity:0.8; }
-.link-label { fill:#9fabb3; font-size:9px; }
+.node .line-0 { font-weight:600; }
+.node .line-1 { fill:#b9c3c9; }
+.node .line-2 { fill:#d3dade; }
+.link { fill:none; stroke:#56636c; stroke-width:1.6px; stroke-opacity:0.9; }
+.link.back { stroke-dasharray:5 4; }
+.arrow { fill:#56636c; }
+.link-label { fill:#9fabb3; font-size:9.5px; paint-order: stroke; stroke:#1f2427;
+  stroke-width:3px; }
 #legend { position:fixed; top:12px; left:12px; display:flex; gap:16px; color:#d3dade;
   font-size:12px; background:#16191bcc; padding:8px 12px; border-radius:8px; }
 #legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
@@ -226,38 +280,55 @@ svg { width:100%; height:100%; display:block; }
 
 GRAPH_SCRIPT = """
 const svg = d3.select("#graph");
-let width = window.innerWidth, height = window.innerHeight;
 const container = svg.append("g");
-svg.call(d3.zoom().scaleExtent([0.2, 4]).on("zoom", (event) => {
+const zoom = d3.zoom().scaleExtent([0.15, 3]).on("zoom", (event) => {
   container.attr("transform", event.transform);
-}));
+});
+svg.call(zoom);
 
 const NODE_RADIUS = 10;
 const ICON_RADIUS = 17;  // a node with an icon: room for a 24px icon inside its ring
 const ICON_SIZE = 24;
+const LINE_HEIGHT = 13;
 const radius = d => d.icon ? ICON_RADIUS : NODE_RADIUS;
 
-// A plain, natural force-directed layout: charge repels every node from every other, forceLink
-// pulls connected nodes to a comfortable resting distance, forceCollide keeps circles from
-// overlapping, and a gentle centering force just keeps the whole cluster roughly in view. Nothing
-// pins a node to a corner or a diagonal -- the shape that emerges is whatever the graph's own
-// connectivity settles into, rather than one imposed on it.
-data.nodes.forEach(d => {
-  d.x = width / 2 + (Math.random() - 0.5) * 80;
-  d.y = height / 2 + (Math.random() - 0.5) * 80;
+// Positions come with the data: laid out in columns left to right, few lines crossing (see
+// layout.py). Links pass through their waypoints; one flagged `back` closes a loop, so it runs
+// right to left, curving under the two nodes it joins.
+const byId = new Map(data.nodes.map(d => [d.id, d]));
+const seen = new Map();
+data.links.forEach(l => {
+  l.source = byId.get(l.source);
+  l.target = byId.get(l.target);
+  const pair = `${l.source.id}\u0000${l.target.id}`;
+  l.pairIndex = seen.get(pair) || 0;  // several items between the same two nodes: labels stack
+  seen.set(pair, l.pairIndex + 1);
 });
 
-const simulation = d3.forceSimulation(data.nodes)
-  .force("link", d3.forceLink(data.links).id(d => d.id).distance(110).strength(0.5))
-  .force("charge", d3.forceManyBody().strength(-320))
-  .force("collide", d3.forceCollide(d => radius(d) + NODE_RADIUS * 1.5))
-  .force("center", d3.forceCenter(width / 2, height / 2));
+svg.append("defs").append("marker")
+  .attr("id", "arrow").attr("viewBox", "0 0 10 10").attr("refX", 9).attr("refY", 5)
+  .attr("markerWidth", 7).attr("markerHeight", 7).attr("orient", "auto-start-reverse")
+  .append("path").attr("d", "M0,0 L10,5 L0,10 z").attr("class", "arrow");
 
-const link = container.append("g").selectAll("line")
-  .data(data.links).join("line").attr("class", "link").attr("stroke-width", 1.5);
+const bump = d3.line().curve(d3.curveBumpX);
+
+function linkPath(l) {
+  const s = l.source, t = l.target;
+  if (l.back) {
+    const drop = 70 + Math.abs(s.x - t.x) * 0.12;
+    const sy = s.y + radius(s), ty = t.y + radius(t);
+    return `M${s.x},${sy} C${s.x},${sy + drop} ${t.x},${ty + drop} ${t.x},${ty + 2}`;
+  }
+  return bump([[s.x + radius(s), s.y], ...l.points, [t.x - radius(t) - 2, t.y]]);
+}
+
+const link = container.append("g").selectAll("path")
+  .data(data.links).join("path")
+  .attr("class", d => d.back ? "link back" : "link")
+  .attr("marker-end", "url(#arrow)");
 
 const linkLabel = container.append("g").selectAll("text")
-  .data(data.links).join("text").attr("class", "link-label")
+  .data(data.links).join("text").attr("class", "link-label").attr("text-anchor", "middle")
   .text(d => `${d.itemName} ${+d.ratePerMinute.toFixed(2)}/min`);
 
 function nodeKind(d) {
@@ -269,24 +340,12 @@ function nodeKind(d) {
 }
 const nodeClass = d => `node ${nodeKind(d)}${d.icon ? " has-icon" : ""}`;
 
-function dragStart(event, d) {
-  if (!event.active) simulation.alphaTarget(0.3).restart();
-  d.fx = d.x; d.fy = d.y;
-}
-function dragMove(event, d) { d.fx = event.x; d.fy = event.y; }
-function dragEnd(event, d) {
-  if (!event.active) simulation.alphaTarget(0);
-  d.fx = null; d.fy = null;
-}
-
 const node = container.append("g").selectAll("g")
   .data(data.nodes).join("g")
   .attr("class", nodeClass)
-  .call(d3.drag().on("start", dragStart).on("drag", dragMove).on("end", dragEnd));
+  .call(d3.drag().on("drag", (event, d) => { d.x = event.x; d.y = event.y; draw(); }));
 
-// Machine and boundary (raw input / final output) nodes are drawn the same size: the machine
-// count and flow rate already carried in the label distinguish them, so a bigger circle for
-// machines was just visual noise, not information.
+node.append("title").text(d => d.label);
 node.append("circle").attr("r", radius);
 // An extended node's edge: blue dashes over its orange one. pathLength splits the circle into 12
 // equal parts whatever its radius, so the two colours take turns evenly and meet where they start.
@@ -295,31 +354,54 @@ node.filter(d => d.extended).append("circle").attr("class", "dash").attr("r", ra
 node.filter(d => d.icon).append("image").attr("href", d => d.icon)
   .attr("x", -ICON_SIZE / 2).attr("y", -ICON_SIZE / 2)
   .attr("width", ICON_SIZE).attr("height", ICON_SIZE);
-node.append("text").attr("text-anchor", "middle").attr("dy", d => radius(d) + 16)
-  .text(d => d.label);
+// Three lines under each node: what it makes, the building and how many, and how much a minute.
+node.append("text").attr("text-anchor", "middle").attr("y", d => radius(d) + 14)
+  .selectAll("tspan")
+  .data(d => d.lines.filter(line => line).map((line, i) => ({line, i})))
+  .join("tspan")
+  .attr("x", 0).attr("dy", d => d.i ? LINE_HEIGHT : 0).attr("class", d => `line-${d.i}`)
+  .text(d => d.line);
 
-simulation.on("tick", () => {
-  link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
-      .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
-  linkLabel
-    .attr("x", d => (d.source.x + d.target.x) / 2)
-    .attr("y", d => (d.source.y + d.target.y) / 2);
+function draw() {
   node.attr("transform", d => `translate(${d.x},${d.y})`);
-});
-
-// Re-center whenever the element this page is shown in actually changes size -- a resized browser
-// window, but just as often a host page resizing the iframe/panel this graph lives in -- so the
-// cluster keeps settling around the middle of whatever panel it's shown in, rather than drifting
-// off toward wherever the center used to be.
-function resize() {
-  const rect = svg.node().getBoundingClientRect();
-  const newWidth = rect.width || window.innerWidth;
-  const newHeight = rect.height || window.innerHeight;
-  if (newWidth === width && newHeight === height) return;
-  width = newWidth;
-  height = newHeight;
-  simulation.force("center", d3.forceCenter(width / 2, height / 2));
-  simulation.alpha(0.4).restart();
+  link.attr("d", linkPath);
+  const paths = link.nodes();
+  linkLabel.each(function (d, i) {
+    const middle = paths[i].getPointAtLength(paths[i].getTotalLength() / 2);
+    d3.select(this).attr("x", middle.x).attr("y", middle.y - 5 + d.pairIndex * 11);
+  });
 }
-new ResizeObserver(resize).observe(svg.node());
+draw();
+
+// Fit the whole graph into whatever size the page is shown at -- a resized window, or just as
+// often the panel this page sits in -- clear of the legend along the top. The extent comes from
+// the layout itself (nodes, waypoints, room for the labels), not from measuring the drawing, which
+// in a frame still loading can come back short and leave the edges cut off.
+const LABEL_HALF_WIDTH = 80, LABEL_DEPTH = 64, LOOP_DEPTH = 110;
+function extent() {
+  const points = [...data.nodes.map(d => [d.x, d.y]), ...data.links.flatMap(l => l.points)];
+  const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+  const loops = data.links.some(l => l.back) ? LOOP_DEPTH : 0;
+  const x = Math.min(...xs) - LABEL_HALF_WIDTH, y = Math.min(...ys) - ICON_RADIUS - 8;
+  return {
+    x, y,
+    width: Math.max(...xs) + LABEL_HALF_WIDTH - x,
+    height: Math.max(...ys) + Math.max(LABEL_DEPTH, loops) - y,
+  };
+}
+function fit() {
+  if (!data.nodes.length) return;
+  const rect = svg.node().getBoundingClientRect();
+  const width = rect.width || window.innerWidth;
+  const height = rect.height || window.innerHeight;
+  const box = extent();
+  const top = 48;
+  const scale = Math.min(1.2, (width - 24) / box.width, (height - top - 12) / box.height);
+  const x = (width - box.width * scale) / 2 - box.x * scale;
+  const y = top + (height - top - box.height * scale) / 2 - box.y * scale;
+  svg.call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
+}
+fit();
+new ResizeObserver(fit).observe(svg.node());
+window.addEventListener("resize", fit);
 """

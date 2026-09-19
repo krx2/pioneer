@@ -14,8 +14,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pioneer.contracts import PlacementRecord, ProductionGraph
+from pioneer.contracts import PlacementRecord, ProductionGraph, TransportLink
 from pioneer.save_parser.chunks import decompress_all
+from pioneer.save_parser.connections import read_ports, trace_links
 from pioneer.save_parser.entities import EntitySpan, find_entity_spans
 from pioneer.save_parser.header import ParsedHeader, SaveHeader, parse_header
 from pioneer.save_parser.object_table import RawObjectHeader, find_object_table
@@ -69,6 +70,9 @@ class SaveState:
     """Every schematic the player has unlocked — milestones, MAM research, alternates — by the
     class name the Knowledge Base keys technologies with (`Schematic_3-4_C`). `None` if the save's
     schematic manager couldn't be read."""
+    links: tuple[TransportLink, ...] = ()
+    """Which buildings the save's belts and pipes join, by `PlacementRecord.object_id` -- see
+    connections.py."""
 
 
 def load_save_state(path: Path | str) -> SaveState:
@@ -76,11 +80,15 @@ def load_save_state(path: Path | str) -> SaveState:
     table = find_object_table(body)
     spans = find_entity_spans(body, table)
     placements = to_placement_records_with_recipes(table.headers, body, spans)
+    building_of = {
+        h.path_name: h.class_name.rsplit(".", 1)[-1] for h in table.headers if h.is_actor
+    }
     return SaveState(
         header=header,
         placements=placements,
         graph=to_production_graph(placements),
         unlocked_technology_ids=_purchased_schematics(table.headers, spans, body),
+        links=trace_links(read_ports(table.headers, body, spans), building_of),
     )
 
 

@@ -112,6 +112,7 @@ def build_context(
         game_state=game_state,
         existing_graph=state.graph if state else None,
         existing_placements=state.placements if state else (),
+        existing_links=state.links if state else (),
         factory_sites=find_factory_sites(state.placements) if state else (),
         technologies=kb.technologies if kb else (),
         transport_tiers=kb.transport_tiers if kb else (),
@@ -176,6 +177,7 @@ class LiveContext:
                     self._base,
                     existing_graph=self._state.graph if self._state else None,
                     existing_placements=self._state.placements if self._state else (),
+                    existing_links=self._state.links if self._state else (),
                     factory_sites=self._sites,
                     unlocked_technology_ids=(
                         self._state.unlocked_technology_ids if self._state else None

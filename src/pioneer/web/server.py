@@ -100,6 +100,11 @@ def create_app(
         if first.items
         else None  # no knowledge base: which inputs are mined can't be told
     )
+    products = {  # what a graph's stage makes, and how much of it one machine does a minute
+        recipe.recipe_id: (recipe.outputs[0].item_id, recipe.outputs[0].amount_per_minute)
+        for recipe in first.recipes
+        if recipe.outputs
+    }
     with_icons = _icon_ids(icon_dir)
     icons = icon_urls(first, with_icons)
     chat_icons = named_icons(first, icons)
@@ -164,6 +169,7 @@ def create_app(
             names=names,
             icons=icons,
             raw_resources=raw_resources,
+            products=products,
         )
 
     @app.get("/responses/{response_id}/map", response_class=HTMLResponse)

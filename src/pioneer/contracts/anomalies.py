@@ -14,6 +14,11 @@ class AnomalyKind(StrEnum):
     RESOURCE_SURPLUS = "resource_surplus"
     POWER_BLACKOUT = "power_blackout"
     CONGESTION = "congestion"
+    MACHINE_NOT_FED = "machine_not_fed"
+    """A running machine none of whose belts or pipes brings one of its ingredients."""
+    OUTPUT_BLOCKED = "output_blocked"
+    """A running machine whose belts or pipes take one of its products nowhere that accepts it:
+    it fills up and stops."""
 
 
 class AnomalySeverity(StrEnum):
