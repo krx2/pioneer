@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from pioneer.contracts import TransportError
@@ -26,12 +27,14 @@ MIN_CONTEXT_TOKENS = 16384
 2k tokens, before the conversation so far, every tool result and the answer itself."""
 
 
-def post_chat_completion(
+Delta = Callable[[str, str], None]
+"""Told each piece of a streamed reply as it arrives: `("text", ...)` for the answer itself,
+`("thinking", ...)` for a reasoning model's thoughts before it."""
+
+
+def _chat_request(
     base_url: str, api_key: str | None, payload: dict[str, Any]
-) -> dict[str, Any]:
-    """POSTs `payload` (an OpenAI chat/completions request body) to `{base_url}/chat/completions`
-    and returns the parsed JSON response. Raises `contracts.TransportError` if the request couldn't
-    complete at all, or didn't come back as valid JSON."""
+) -> tuple[str, urllib.request.Request]:
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -39,6 +42,16 @@ def post_chat_completion(
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
     )
+    return url, request
+
+
+def post_chat_completion(
+    base_url: str, api_key: str | None, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """POSTs `payload` (an OpenAI chat/completions request body) to `{base_url}/chat/completions`
+    and returns the parsed JSON response. Raises `contracts.TransportError` if the request couldn't
+    complete at all, or didn't come back as valid JSON."""
+    url, request = _chat_request(base_url, api_key, payload)
     try:
         with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
             raw = response.read()
@@ -48,6 +61,30 @@ def post_chat_completion(
         return json.loads(raw)
     except json.JSONDecodeError as error:
         raise TransportError(f"invalid JSON from {url}: {error}") from error
+
+
+def stream_chat_completion(
+    base_url: str, api_key: str | None, payload: dict[str, Any]
+) -> Iterator[dict[str, Any]]:
+    """Like `post_chat_completion` with `"stream": true`: yields each server-sent chunk of the
+    reply, parsed, as it arrives. Raises `contracts.TransportError` if the request couldn't
+    complete, or a chunk isn't valid JSON."""
+    url, request = _chat_request(base_url, api_key, {**payload, "stream": True})
+    try:
+        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+            for raw in response:
+                line = raw.decode("utf-8").strip()
+                if not line.startswith("data:"):
+                    continue  # blank separators, SSE comments
+                data = line.removeprefix("data:").strip()
+                if data == "[DONE]":
+                    return
+                try:
+                    yield json.loads(data)
+                except json.JSONDecodeError as error:
+                    raise TransportError(f"invalid JSON chunk from {url}: {error}") from error
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        raise TransportError(f"could not reach {url}: {error}") from error
 
 
 def served_context_length(base_url: str, model: str) -> int | None:
@@ -117,21 +154,69 @@ def tool_calling_chat_completion(
         base_url, api_key, {"model": model, "messages": messages, "tools": tools}
     )
     message = _first_message(response)
+    return {
+        "content": message.get("content"),
+        "tool_calls": [_parsed_tool_call(call) for call in message.get("tool_calls") or []],
+    }
 
-    tool_calls = []
-    for call in message.get("tool_calls") or []:
-        function = call.get("function", {})
-        arguments_raw = function.get("arguments") or "{}"
-        try:
-            arguments = (
-                json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
+
+def streaming_tool_calling_chat_completion(
+    base_url: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    api_key: str | None,
+    *,
+    on_delta: Delta,
+) -> dict[str, Any]:
+    """`tool_calling_chat_completion`, streamed: `on_delta` hears the answer's text, and a
+    reasoning model's thoughts, as they arrive, and the whole reply is returned in the same shape
+    once it's complete. Tool calls come in pieces too -- a call's id and name first, its arguments
+    a fragment at a time, by `index` -- and are put back together before they're parsed.
+
+    A round that ends in tool calls may have streamed some text first, or have written the call
+    itself as text: what's been heard is only a draft until the reply turns out to be the answer."""
+    content: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
+    for chunk in stream_chat_completion(
+        base_url, api_key, {"model": model, "messages": messages, "tools": tools}
+    ):
+        choices = chunk.get("choices") if isinstance(chunk, dict) else None
+        if not choices:
+            continue  # a usage-only or keep-alive chunk
+        delta = choices[0].get("delta") or {}
+        thinking = delta.get("reasoning_content") or delta.get("reasoning")
+        if thinking:
+            on_delta("thinking", thinking)
+        if delta.get("content"):
+            content.append(delta["content"])
+            on_delta("text", delta["content"])
+        for piece in delta.get("tool_calls") or []:
+            call = calls.setdefault(
+                piece.get("index", len(calls)),
+                {"id": "", "function": {"name": "", "arguments": ""}},
             )
-        except json.JSONDecodeError as error:
-            raise TransportError(
-                f"LLM returned malformed tool-call arguments for {function.get('name')!r}: {error}"
-            ) from error
-        tool_calls.append(
-            {"id": call.get("id", ""), "name": function.get("name", ""), "arguments": arguments}
-        )
+            call["id"] = piece.get("id") or call["id"]
+            function = piece.get("function") or {}
+            call["function"]["name"] += function.get("name") or ""
+            arguments = function.get("arguments")
+            if isinstance(arguments, dict):  # some backends send them already parsed
+                call["function"]["arguments"] = arguments
+            elif arguments:
+                call["function"]["arguments"] += arguments
+    return {
+        "content": "".join(content) or None,
+        "tool_calls": [_parsed_tool_call(calls[index]) for index in sorted(calls)],
+    }
 
-    return {"content": message.get("content"), "tool_calls": tool_calls}
+
+def _parsed_tool_call(call: dict[str, Any]) -> dict[str, Any]:
+    function = call.get("function", {})
+    arguments_raw = function.get("arguments") or "{}"
+    try:
+        arguments = json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
+    except json.JSONDecodeError as error:
+        raise TransportError(
+            f"LLM returned malformed tool-call arguments for {function.get('name')!r}: {error}"
+        ) from error
+    return {"id": call.get("id", ""), "name": function.get("name", ""), "arguments": arguments}

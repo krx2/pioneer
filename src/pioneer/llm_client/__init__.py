@@ -16,6 +16,8 @@ from pioneer.llm_client.transport import (
     context_window_warning,
     post_chat_completion,
     served_context_length,
+    stream_chat_completion,
+    streaming_tool_calling_chat_completion,
     tool_calling_chat_completion,
 )
 
@@ -26,5 +28,7 @@ __all__ = [
     "context_window_warning",
     "post_chat_completion",
     "served_context_length",
+    "stream_chat_completion",
+    "streaming_tool_calling_chat_completion",
     "tool_calling_chat_completion",
 ]

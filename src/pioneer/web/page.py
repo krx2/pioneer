@@ -1,8 +1,15 @@
-"""The chat page: one static document whose script talks to `/api/ask` and the feedback endpoint.
+"""The chat page: one static document whose script talks to `/api/ask/stream`, the conversation
+endpoints and the feedback endpoint.
 
 Answer bubbles arrive already rendered — and escaped — by `chat_presentation`; the player's own
-text is only ever inserted with `textContent`. Graph and map open in frames pointing at their own
-pages, so the D3 and SVG documents stay exactly what Stages 13 and 14 render.
+text, the model's text while it's still being written and the conversations' titles are only ever
+inserted with `textContent`. Graph and map open in frames pointing at their own pages, so the D3
+and SVG documents stay exactly what Stages 13 and 14 render.
+
+While an answer is on its way, its place shows what the assistant is doing — each tool it ran, a
+reasoning model's thoughts, the answer's text as it's written — until the finished, rendered answer
+replaces it all. The sidebar lists the stored conversations; the open one's id is the page's URL
+fragment, so a reload, or a link, opens it again.
 """
 
 from __future__ import annotations
@@ -22,21 +29,30 @@ def render_chat_page(*, status: str) -> str:
 <style>{CHAT_STYLE}{PAGE_STYLE}</style>
 </head>
 <body>
-<header class="bar">
-  <div class="bar-inner">
-    <h1 class="brand">{WORDMARK}</h1>
-    <p class="tagline">{TAGLINE}</p>
-    <span class="status">{html.escape(status)}</span>
-  </div>
-</header>
-<main class="chat" id="chat"></main>
-<form id="ask" class="composer">
-  <div class="composer-box">
-    <textarea id="question" rows="2" required
-      placeholder="e.g. I want to produce 10/min of Reinforced Iron Plate"></textarea>
-    <button type="submit">Ask</button>
-  </div>
-</form>
+<aside class="sidebar" id="sidebar" aria-label="Conversations">
+  <button type="button" class="new-chat" id="new-chat">+ New conversation</button>
+  <h2 class="sidebar-title">History</h2>
+  <nav class="conversations" id="conversations"></nav>
+</aside>
+<div class="scrim" id="scrim"></div>
+<div class="main">
+  <header class="bar">
+    <div class="bar-inner">
+      <button type="button" class="menu" id="menu" aria-label="Conversations">&#9776;</button>
+      <h1 class="brand">{WORDMARK}</h1>
+      <p class="tagline">{TAGLINE}</p>
+      <span class="status">{html.escape(status)}</span>
+    </div>
+  </header>
+  <main class="chat" id="chat"></main>
+  <form id="ask" class="composer">
+    <div class="composer-box">
+      <textarea id="question" rows="2" required
+        placeholder="e.g. I want to produce 10/min of Reinforced Iron Plate"></textarea>
+      <button type="submit">Ask</button>
+    </div>
+  </form>
+</div>
 <script>{PAGE_SCRIPT}</script>
 </body>
 </html>
@@ -44,10 +60,101 @@ def render_chat_page(*, status: str) -> str:
 
 
 # The composer lines its text field up with `.chat`'s column: 760px of content inside 20px of side
-# padding, so every bubble and the field share both edges. The header spans the page instead: the
-# logo in the top left corner, the status in the top right.
+# padding, so every bubble and the field share both edges. The header spans the column right of
+# the sidebar instead: the logo in its top left corner, the status in the top right. On a narrow
+# screen the sidebar slides in over the page from the menu button.
 PAGE_STYLE = """
+:root { --sidebar: 264px; }
 body { padding-bottom: 120px; }
+.main { margin-left: var(--sidebar); }
+.sidebar {
+  position: fixed; top: 0; bottom: 0; left: 0; z-index: 3; width: var(--sidebar);
+  box-sizing: border-box; padding: 14px 10px; display: flex; flex-direction: column; gap: 8px;
+  background: #1b2023; border-right: 1px solid var(--line);
+}
+.new-chat {
+  padding: 10px 12px; text-align: left; color: var(--on-ficsit); background: var(--ficsit);
+  font: 700 14px var(--display); text-transform: uppercase; letter-spacing: 0.06em;
+  border: 0; border-radius: 8px; cursor: pointer;
+}
+.new-chat:hover { background: var(--ficsit-hover); }
+.sidebar-title {
+  margin: 10px 10px 0; color: var(--muted);
+  font: 12px var(--display); text-transform: uppercase; letter-spacing: 0.08em;
+}
+.conversations {
+  flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+}
+.sidebar.busy .conversations, .sidebar.busy .new-chat { opacity: 0.5; pointer-events: none; }
+.conversation { display: flex; align-items: center; border-radius: 8px; }
+.conversation:hover { background: var(--surface); }
+.conversation.active { background: var(--steel); box-shadow: inset 3px 0 var(--ficsit); }
+.conversation a {
+  flex: 1; min-width: 0; padding: 8px 10px; color: var(--text); text-decoration: none;
+  font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.conversation .delete {
+  visibility: hidden; padding: 4px 10px; color: var(--muted); background: none; border: 0;
+  font-size: 16px; cursor: pointer;
+}
+.conversation:hover .delete, .conversation.active .delete, .conversation .delete:focus {
+  visibility: visible;
+}
+.conversation .delete:hover { color: #ff8f80; }
+.sidebar-empty { margin: 0; padding: 8px 10px; color: var(--muted); font-size: 13px; }
+.menu {
+  display: none; padding: 4px 10px; color: var(--text); background: none;
+  border: 1px solid var(--line); border-radius: 8px; font-size: 18px; cursor: pointer;
+}
+.scrim { display: none; position: fixed; inset: 0; z-index: 2; background: rgba(0, 0, 0, 0.5); }
+@media (max-width: 900px) {
+  .main { margin-left: 0; }
+  .sidebar { transform: translateX(-100%); transition: transform 0.2s; }
+  .sidebar-open .sidebar { transform: none; }
+  .sidebar-open .scrim { display: block; }
+  .menu { display: inline-block; }
+  .composer { left: 0 !important; }
+}
+.welcome { margin: 10vh 0 0; text-align: center; color: var(--muted); }
+.welcome h2 {
+  margin: 0 0 6px; color: var(--text); font: 600 24px var(--display); letter-spacing: 0.02em;
+}
+.welcome p { margin: 0; }
+.suggestions {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 18px;
+}
+.suggestions button {
+  padding: 8px 14px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 999px; font: inherit; font-size: 14px;
+  cursor: pointer;
+}
+.suggestions button:hover { border-color: var(--ficsit); }
+.progress { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
+.spinner {
+  flex: none; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--ficsit);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.steps {
+  margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px;
+  color: var(--muted); font-size: 13px;
+}
+.steps:empty { display: none; }
+.steps li::before { content: "\\2713  "; color: #8fcf86; }
+.thinking {
+  padding-left: 10px; border-left: 2px solid var(--line); color: var(--muted); font-size: 13px;
+}
+.thinking summary { cursor: pointer; }
+.thinking-text { margin-top: 6px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+.draft p { white-space: pre-wrap; }
+.draft p::after {
+  content: "\\258D"; margin-left: 1px; color: var(--ficsit); animation: blink 1s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .draft p::after { animation: none; }
+}
 .bar {
   position: sticky; top: 0; z-index: 1;
   background: linear-gradient(#232a2e, #1b2023);
@@ -92,7 +199,7 @@ body { padding-bottom: 120px; }
 .badge.info { background: var(--surface); color: var(--muted); }
 .error { color: #ff8f80; }
 .composer {
-  position: fixed; left: 0; right: 0; bottom: 0; padding: 20px 20px 16px;
+  position: fixed; left: var(--sidebar); right: 0; bottom: 0; padding: 20px 20px 16px;
   background: linear-gradient(transparent, var(--bg) 20px);
 }
 .composer-box {
@@ -209,28 +316,46 @@ const chat = document.getElementById("chat");
 const form = document.getElementById("ask");
 const input = document.getElementById("question");
 const submit = form.querySelector("button");
-const history = [];  // this tab's conversation, one {question, answer} per turn
+const sidebar = document.getElementById("sidebar");
+const list = document.getElementById("conversations");
 const KEPT_TURNS = 8;
 const MAX_ANSWER_CHARS = 8000;  // what the server takes of an earlier answer
+const SUGGESTIONS = [
+  "I want to produce 10/min of Reinforced Iron Plate",
+  "Where should I build my next iron factory?",
+  "What's wrong with my factory?",
+];
+let turns = [];  // the open conversation, one {question, answer} per turn
+let conversationId = null;  // its id on the server; null until its first answer
 let busy = false;  // one question at a time: each answer is asked with the turns before it
-
-function append(node) {
-  chat.appendChild(node);
-  window.scrollTo(0, document.body.scrollHeight);
-  return node;
-}
-
-function setBusy(on) {
-  busy = on;
-  submit.disabled = on;
-  for (const button of document.querySelectorAll(".again")) button.disabled = on;
-}
 
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function nearBottom() {
+  return window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+}
+
+function scrollToEnd() {
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+function append(node) {
+  chat.querySelector(".welcome")?.remove();
+  chat.appendChild(node);
+  scrollToEnd();
+  return node;
+}
+
+function setBusy(on) {
+  busy = on;
+  submit.disabled = on;
+  sidebar.classList.toggle("busy", on);
+  for (const button of document.querySelectorAll(".again")) button.disabled = on;
 }
 
 function addQuestion(text) {
@@ -246,6 +371,122 @@ function panel(url, title) {
   return frame;
 }
 
+function showWelcome() {
+  const welcome = element("div", "welcome");
+  welcome.appendChild(element("h2", "", "What are we building?"));
+  welcome.appendChild(element("p", "", "Plan a production line, extend your factory, find where "
+    + "to build next, or ask how the game works."));
+  const suggestions = element("div", "suggestions");
+  for (const text of SUGGESTIONS) {
+    const button = element("button", "", text);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      input.value = text;
+      form.requestSubmit();
+    });
+    suggestions.appendChild(button);
+  }
+  welcome.appendChild(suggestions);
+  chat.replaceChildren(welcome);
+}
+
+// --- Conversations -------------------------------------------------------------------------
+
+function setLocation(id) {
+  window.history.replaceState(null, "", id ? `#${id}` : window.location.pathname);
+}
+
+function closeSidebar() {
+  document.body.classList.remove("sidebar-open");
+}
+
+function startConversation() {
+  if (busy) return;
+  conversationId = null;
+  turns = [];
+  showWelcome();
+  setLocation(null);
+  markActive();
+  closeSidebar();
+  input.focus();
+}
+
+async function openConversation(id) {
+  if (busy) return;
+  const response = await fetch(`/api/conversations/${encodeURIComponent(id)}`);
+  if (!response.ok) {
+    startConversation();
+    refreshConversations();
+    return;
+  }
+  const conversation = await response.json();
+  conversationId = conversation.id;
+  turns = [];
+  chat.replaceChildren();
+  conversation.turns.forEach((stored, turn) => {
+    addQuestion(stored.question);
+    const box = element("div", "answer");
+    fillAnswer(box, stored.answer, turn);
+    chat.appendChild(box);
+    remember(turn, stored.question, stored.answer);
+  });
+  if (!conversation.turns.length) showWelcome();
+  scrollToEnd();
+  setLocation(conversationId);
+  markActive();
+  closeSidebar();
+}
+
+function markActive() {
+  for (const row of list.querySelectorAll(".conversation")) {
+    row.classList.toggle("active", row.dataset.id === conversationId);
+  }
+}
+
+async function deleteConversation(id, title) {
+  if (busy || !window.confirm(`Delete "${title}"?`)) return;
+  const response = await fetch(`/api/conversations/${encodeURIComponent(id)}`, {method: "DELETE"});
+  if (response.ok && id === conversationId) startConversation();
+  refreshConversations();
+}
+
+function conversationRow(conversation) {
+  const row = element("div", "conversation");
+  row.dataset.id = conversation.id;
+  const link = element("a", "", conversation.title);
+  link.href = `#${conversation.id}`;
+  link.title = conversation.title;
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (conversation.id !== conversationId) openConversation(conversation.id);
+    else closeSidebar();
+  });
+  const remove = element("button", "delete", "×");
+  remove.type = "button";
+  remove.title = "Delete conversation";
+  remove.setAttribute("aria-label", `Delete conversation: ${conversation.title}`);
+  remove.addEventListener("click", () => deleteConversation(conversation.id, conversation.title));
+  row.append(link, remove);
+  return row;
+}
+
+async function refreshConversations() {
+  let conversations = [];
+  try {
+    const response = await fetch("/api/conversations");
+    if (response.ok) conversations = await response.json();
+  } catch (error) {
+    return;  // keep the list as it was
+  }
+  list.replaceChildren(...conversations.map(conversationRow));
+  if (!conversations.length) {
+    list.appendChild(element("p", "sidebar-empty", "Your conversations will show up here."));
+  }
+  markActive();
+}
+
+// --- Answers -------------------------------------------------------------------------------
+
 // An answer's bubble, panels and feedback row share one box, so answering again replaces them all.
 function fillAnswer(box, answer, turn) {
   const holder = document.createElement("div");
@@ -256,40 +497,143 @@ function fillAnswer(box, answer, turn) {
   box.appendChild(meta(answer, box, turn));
 }
 
-async function ask(question, earlier) {
-  const response = await fetch("/api/ask", {
+// What goes in an answer's place while it's on its way: the steps done so far, the model's
+// reasoning if it shows any, the answer's text as it's written, and what it's doing right now.
+function liveView(box) {
+  const steps = element("ul", "steps");
+  const thinking = element("details", "thinking");
+  thinking.appendChild(element("summary", "", "Reasoning"));
+  const thoughts = element("div", "thinking-text");
+  thinking.appendChild(thoughts);
+  thinking.hidden = true;
+  const draft = element("div", "message message-assistant draft");
+  const draftText = element("p");
+  draft.appendChild(draftText);
+  draft.hidden = true;
+  const progress = element("div", "progress");
+  progress.setAttribute("role", "status");
+  const label = element("span", "", "Sending the question…");
+  progress.append(element("span", "spinner"), label);
+  box.replaceChildren(steps, thinking, draft, progress);
+
+  let text = "";
+  let running = null;  // the tool being run, until the next step starts
+
+  function setLabel(line) {
+    label.textContent = `${line}…`;
+  }
+  function stepDone() {
+    if (running) steps.appendChild(element("li", "", running));
+    running = null;
+  }
+  // A tool call the model wrote out as text is no answer: don't show it as one.
+  function looksLikeToolCall() {
+    return /^\\s*(\\{|\\[|<tool_call>|```json)/.test(text);
+  }
+
+  return {
+    handle(event) {
+      const follow = nearBottom();
+      switch (event.type) {
+        case "status":
+          stepDone();
+          setLabel(event.text);
+          break;
+        case "tool":
+          stepDone();
+          running = event.text;
+          setLabel(event.text);
+          break;
+        case "thinking":
+          thinking.hidden = false;
+          thoughts.textContent += event.text;
+          thoughts.scrollTop = thoughts.scrollHeight;
+          break;
+        case "text":
+          text += event.text;
+          draft.hidden = looksLikeToolCall();
+          if (!draft.hidden) {
+            draftText.textContent = text;
+            setLabel("Writing the answer");
+          }
+          break;
+        case "discard":
+          text = "";
+          draft.hidden = true;
+          draftText.textContent = "";
+          break;
+      }
+      if (follow) scrollToEnd();
+    },
+  };
+}
+
+// Asks over the streaming endpoint: one JSON event per line, the answer itself last.
+async function ask(question, earlier, turn, live) {
+  const response = await fetch("/api/ask/stream", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({question, history: earlier.slice(-KEPT_TURNS)}),
+    body: JSON.stringify({
+      question,
+      history: earlier.slice(-KEPT_TURNS),
+      conversation_id: conversationId,
+      turn,
+    }),
   });
-  const body = await response.json();
   if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
     throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${response.status}`);
   }
-  if (body.status) document.querySelector(".status").textContent = body.status;
-  return body;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const {value, done} = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, {stream: true});
+    let end;
+    while ((end = buffer.indexOf("\\n")) >= 0) {
+      const line = buffer.slice(0, end).trim();
+      buffer = buffer.slice(end + 1);
+      if (!line) continue;
+      const event = JSON.parse(line);
+      if (event.type === "error") throw new Error(event.detail);
+      if (event.type === "answer") return answered(event);
+      live.handle(event);
+    }
+  }
+  throw new Error("the connection closed before the answer came");
+}
+
+function answered(answer) {
+  if (answer.status) document.querySelector(".status").textContent = answer.status;
+  if (answer.conversation_id && answer.conversation_id !== conversationId) {
+    conversationId = answer.conversation_id;
+    setLocation(conversationId);
+  }
+  refreshConversations();  // a new conversation, or one that's now the most recent
+  return answer;
 }
 
 function remember(turn, question, answer) {
-  history[turn] = {question, answer: (answer.chat || "").slice(0, MAX_ANSWER_CHARS)};
+  turns[turn] = {question, answer: (answer.chat || "").slice(0, MAX_ANSWER_CHARS)};
 }
 
 // Asks a turn's question again with the conversation as it stood then, and puts the new answer
-// in the old one's place -- on the page and in what later questions are sent.
+// in the old one's place -- on the page, in what later questions are sent, and on the server.
 async function answerAgain(box, turn) {
   if (busy) return;
   setBusy(true);
-  box.classList.add("stale");
-  box.querySelector(":scope > .error")?.remove();
+  const before = [...box.childNodes].filter((node) => !node.classList.contains("error"));
   try {
-    const {question} = history[turn];
-    const answer = await ask(question, history.slice(0, turn));
+    const {question} = turns[turn];
+    const answer = await ask(question, turns.slice(0, turn), turn, liveView(box));
     remember(turn, question, answer);
     fillAnswer(box, answer, turn);
   } catch (error) {
+    box.replaceChildren(...before);
     box.appendChild(element("p", "error", `Pioneer could not answer again: ${error.message}`));
   } finally {
-    box.classList.remove("stale");
     setBusy(false);
   }
 }
@@ -401,15 +745,14 @@ form.addEventListener("submit", async (event) => {
   addQuestion(question);
   input.value = "";
   setBusy(true);
+  const box = append(element("div", "answer"));
   try {
-    const turn = history.length;
-    const answer = await ask(question, history);
+    const turn = turns.length;
+    const answer = await ask(question, turns, turn, liveView(box));
     remember(turn, question, answer);
-    const box = element("div", "answer");
     fillAnswer(box, answer, turn);
-    append(box);
   } catch (error) {
-    append(element("p", "error", `Pioneer could not answer: ${error.message}`));
+    box.replaceChildren(element("p", "error", `Pioneer could not answer: ${error.message}`));
   } finally {
     setBusy(false);
     input.focus();
@@ -422,4 +765,19 @@ input.addEventListener("keydown", (event) => {
     form.requestSubmit();
   }
 });
+
+document.getElementById("new-chat").addEventListener("click", startConversation);
+document.getElementById("menu").addEventListener("click", () => {
+  document.body.classList.toggle("sidebar-open");
+});
+document.getElementById("scrim").addEventListener("click", closeSidebar);
+window.addEventListener("hashchange", () => {
+  const id = window.location.hash.slice(1);
+  if (id && id !== conversationId) openConversation(id);
+});
+
+const opened = window.location.hash.slice(1);
+if (opened) openConversation(opened);
+else showWelcome();
+refreshConversations();
 """

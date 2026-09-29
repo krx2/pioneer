@@ -10,6 +10,16 @@ served after the fact; feedback goes to the feedback store, merged field by fiel
 sends each button press on its own. Feedback is taken for any answer this server gave or the
 response log holds — also once its pages have been dropped from memory, or after a restart.
 
+`/api/ask/stream` answers the same question as `/api/ask`, but as it goes: one JSON line per
+event — what the Orchestrator is doing, the model's text as it's written (see
+`orchestrator.ProgressSink`) — and last the answer itself, exactly what `/api/ask` returns, or an
+error. The question is answered on a thread of its own, so an answer still lands in its
+conversation when the page that asked has gone.
+
+With a `ConversationStore`, every answer is also kept in its conversation — the one the request
+names, or a new one — for the page's sidebar to list and reopen, together with its graph and map
+pages, which are then served from there once the answer has left memory.
+
 The icons in `icon_dir` (see `pioneer.icons`) are served under `/icons/`, and every page is told
 which ids have one: an item or building its own, a recipe the item it makes. Without the folder,
 or for an id with no icon in it, the pages draw what they drew before icons existed.
@@ -17,22 +27,29 @@ or for an id with no icon in it, the pages draw what they drew before icons exis
 
 from __future__ import annotations
 
+import json
+import queue
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from pioneer.chat_presentation import render_message
-from pioneer.contracts import Feedback, ResponseArtifact
+from pioneer.contracts import Feedback, ProductionGraph, ResponseArtifact
 from pioneer.graph_presentation import render_page as render_graph_page
 from pioneer.map_presentation import render_page as render_map_page
-from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable, display_names
+from pioneer.orchestrator import (
+    OrchestratorContext,
+    OrchestratorUnavailable,
+    ProgressSink,
+    display_names,
+)
 from pioneer.verification_feedback import (
     FeedbackStore,
     JudgeVerdict,
@@ -40,13 +57,27 @@ from pioneer.verification_feedback import (
     ResponseLog,
     ResponseScore,
 )
+from pioneer.web.conversations import ConversationStore, PageKind
 from pioneer.web.page import render_chat_page
 
 ContextSource = Callable[[], tuple[OrchestratorContext, str]]
 """The context as of now, plus a one-line status saying what it was built from."""
 History = Sequence[tuple[str, str]]
 """The conversation before a question, oldest first, as (question, answer) pairs."""
-Answer = Callable[[str, OrchestratorContext, History], ResponseArtifact | OrchestratorUnavailable]
+
+
+class Answer(Protocol):
+    """Answers `question` in `context` after `history`; with `on_event`, says how it's going."""
+
+    def __call__(
+        self,
+        question: str,
+        context: OrchestratorContext,
+        history: History,
+        on_event: ProgressSink | None = None,
+    ) -> ResponseArtifact | OrchestratorUnavailable: ...
+
+
 Verify = Callable[[ResponseArtifact, OrchestratorContext], ResponseScore]
 
 _KEPT_RESPONSES = 200
@@ -62,7 +93,12 @@ class Turn(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     history: list[Turn] = Field(default_factory=list, max_length=_KEPT_TURNS)
-    """The page's conversation so far. The server keeps none: each tab is its own conversation."""
+    """The page's conversation so far, as the model is to see it."""
+    conversation_id: str | None = Field(default=None, max_length=64)
+    """Which stored conversation the answer goes into; none starts a new one."""
+    turn: int | None = Field(default=None, ge=0)
+    """Which of its turns the answer is: an earlier one when it's answered again. None: a new one
+    at its end."""
 
 
 class FeedbackRequest(BaseModel):
@@ -87,6 +123,7 @@ def create_app(
     feedback_store: FeedbackStore | None = None,
     response_log: ResponseLog | None = None,
     icon_dir: Path | None = None,
+    conversations: ConversationStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Pioneer")
     feedback = feedback_store if feedback_store is not None else FeedbackStore()
@@ -125,17 +162,54 @@ def create_app(
     def api_status() -> dict[str, str]:
         return {"status": context()[1]}
 
-    @app.post("/api/ask")
-    def ask(request: AskRequest) -> dict[str, Any]:
+    def render_graph(graph: ProductionGraph) -> str:
+        return render_graph_page(
+            graph,
+            title="Production graph",
+            names=names,
+            icons=icons,
+            raw_resources=raw_resources,
+            products=products,
+        )
+
+    def question_of(request: AskRequest) -> str:
         question = request.question.strip()
         if not question:
             raise HTTPException(status_code=422, detail="the question is empty")
+        return question
+
+    def respond(
+        request: AskRequest, question: str, on_event: ProgressSink | None = None
+    ) -> dict[str, Any]:
+        """Answers, verifies, remembers and stores one question: the body both endpoints send."""
         current, status = context()
         history = [(turn.question, turn.answer) for turn in request.history]
-        result = answer(question, current, history)
+        if on_event is None:
+            result = answer(question, current, history)
+        else:
+            result = answer(question, current, history, on_event=on_event)
         if isinstance(result, OrchestratorUnavailable):
             raise HTTPException(status_code=503, detail=result.reason)
+        if verify is not None and on_event is not None:
+            on_event({"type": "status", "text": "Checking the answer"})
         score = verify(result, current) if verify is not None else None
+
+        base = f"/responses/{result.response_id}"
+        body: dict[str, Any] = {
+            "response_id": result.response_id,
+            "chat": result.chat,
+            "chat_html": render_message(result.chat, icons=chat_icons),
+            "graph_url": f"{base}/graph" if result.graph is not None else None,
+            "map_url": f"{base}/map" if _has_map(result) else None,
+            "verification": _verification_summary(score),
+        }
+        # Drawn now, while this answer's context is at hand, for its conversation to keep.
+        pages: dict[PageKind, str] = {}
+        if conversations is not None:
+            if result.graph is not None:
+                pages["graph"] = render_graph(result.graph)
+            if _has_map(result):
+                pages["map"] = _render_map(result, current, names, icons)
 
         with lock:
             answered[result.response_id] = AnsweredQuestion(
@@ -146,35 +220,90 @@ def create_app(
                 answered.popitem(last=False)
             if response_log is not None:
                 response_log.append(result, score)
+            conversation_id = None
+            if conversations is not None:
+                for kind, page in pages.items():
+                    conversations.save_page(result.response_id, kind, page)
+                turn = request.turn if request.turn is not None else len(request.history)
+                conversation_id = conversations.save_turn(
+                    request.conversation_id, turn, question, body
+                )
+        return {**body, "status": status, "conversation_id": conversation_id}
 
-        base = f"/responses/{result.response_id}"
-        return {
-            "response_id": result.response_id,
-            "chat": result.chat,
-            "chat_html": render_message(result.chat, icons=chat_icons),
-            "graph_url": f"{base}/graph" if result.graph is not None else None,
-            "map_url": f"{base}/map" if _has_map(result) else None,
-            "verification": _verification_summary(score),
-            "status": status,
-        }
+    @app.post("/api/ask")
+    def ask(request: AskRequest) -> dict[str, Any]:
+        return respond(request, question_of(request))
+
+    @app.post("/api/ask/stream")
+    def ask_stream(request: AskRequest) -> StreamingResponse:
+        question = question_of(request)
+        events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+
+        def work() -> None:
+            try:
+                events.put({"type": "answer", **respond(request, question, events.put)})
+            except HTTPException as error:
+                events.put({"type": "error", "detail": error.detail})
+            except Exception as error:  # the page is waiting on this stream: say so, don't hang
+                events.put({"type": "error", "detail": f"{type(error).__name__}: {error}"})
+            finally:
+                events.put(None)
+
+        def lines() -> Iterator[str]:
+            while (event := events.get()) is not None:
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+
+        threading.Thread(target=work, daemon=True).start()
+        return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+    @app.get("/api/conversations")
+    def list_conversations() -> list[dict[str, Any]]:
+        if conversations is None:
+            return []
+        with lock:
+            return conversations.list()
+
+    @app.get("/api/conversations/{conversation_id}")
+    def get_conversation(conversation_id: str) -> dict[str, Any]:
+        with lock:
+            found = conversations.get(conversation_id) if conversations is not None else None
+        if found is None:
+            raise HTTPException(status_code=404, detail="unknown conversation")
+        return found
+
+    @app.delete("/api/conversations/{conversation_id}")
+    def delete_conversation(conversation_id: str) -> dict[str, bool]:
+        with lock:
+            deleted = conversations is not None and conversations.delete(conversation_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="unknown conversation")
+        return {"deleted": True}
+
+    def page_of(response_id: str, kind: PageKind) -> AnsweredQuestion | str:
+        """The answer still in memory, else its page as its conversation kept it."""
+        with lock:
+            found = answered.get(response_id)
+            stored = (
+                conversations.page(response_id, kind)
+                if found is None and conversations is not None
+                else None
+            )
+        return stored if stored is not None else found or find(response_id)
 
     @app.get("/responses/{response_id}/graph", response_class=HTMLResponse)
     def graph_page(response_id: str) -> str:
-        graph = find(response_id).artifact.graph
-        if graph is None:
+        found = page_of(response_id, "graph")
+        if isinstance(found, str):
+            return found
+        if found.artifact.graph is None:
             raise HTTPException(status_code=404, detail="this answer has no production graph")
-        return render_graph_page(
-            graph,
-            title="Production graph",
-            names=names,
-            icons=icons,
-            raw_resources=raw_resources,
-            products=products,
-        )
+        return render_graph(found.artifact.graph)
 
     @app.get("/responses/{response_id}/map", response_class=HTMLResponse)
     def map_page(response_id: str) -> str:
-        found = find(response_id)
+        found = page_of(response_id, "map")
+        if isinstance(found, str):
+            return found
         if not _has_map(found.artifact):
             raise HTTPException(status_code=404, detail="this answer has no map")
         return _render_map(found.artifact, found.context, names, icons)

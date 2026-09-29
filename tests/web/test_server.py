@@ -31,6 +31,7 @@ from pioneer.verification_feedback import (
     ResponseScore,
 )
 from pioneer.web import create_app
+from pioneer.web.conversations import ConversationStore
 
 _GRAPH = ProductionGraph(
     nodes=(
@@ -75,7 +76,7 @@ def _artifact(**channels) -> ResponseArtifact:
 def _client(result, *, context=None, **options) -> tuple[TestClient, list[str]]:
     asked: list[str] = []
 
-    def answer(question: str, current: OrchestratorContext, history):
+    def answer(question: str, current: OrchestratorContext, history, on_event=None):
         asked.append(question)
         return result
 
@@ -405,3 +406,151 @@ def test_without_an_icon_folder_no_icons_are_offered() -> None:
     assert "<img" not in body["chat_html"]
     assert "/icons/" not in client.get(body["graph_url"]).text
     assert client.get("/icons/Desc_OreIron_C.png").status_code == 404
+
+
+def _events(response) -> list[dict]:
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    return [json.loads(line) for line in response.text.splitlines()]
+
+
+def test_a_streamed_answer_says_how_it_goes_and_ends_with_the_answer() -> None:
+    def answer(question, current, history, on_event=None):
+        on_event({"type": "status", "text": "Thinking"})
+        on_event({"type": "tool", "name": "plan_production", "text": "Planning"})
+        on_event({"type": "text", "text": "Build two"})
+        return _artifact(graph=_GRAPH)
+
+    loaded = (OrchestratorContext(), "291 recipes")
+    client = TestClient(create_app(context=lambda: loaded, answer=answer, verify=lambda a, c: None))
+
+    events = _events(client.post("/api/ask/stream", json={"question": "what now?"}))
+
+    assert [event["type"] for event in events] == ["status", "tool", "text", "status", "answer"]
+    assert events[3] == {"type": "status", "text": "Checking the answer"}
+    final = events[-1]
+    assert final["response_id"] == "r1"
+    assert "&lt;Smelters&gt;" in final["chat_html"]
+    assert final["graph_url"] == "/responses/r1/graph"
+    assert final["conversation_id"] is None  # no conversation store: nothing kept
+    assert client.get(final["graph_url"]).status_code == 200
+
+
+def test_a_streamed_failure_ends_the_stream_with_its_reason() -> None:
+    def failing(question, current, history, on_event=None):
+        raise RuntimeError("boom")
+
+    loaded = (OrchestratorContext(), "")
+    unavailable = _client(OrchestratorUnavailable(reason="could not reach LLM endpoint"))[0]
+    broken = TestClient(create_app(context=lambda: loaded, answer=failing))
+
+    assert _events(unavailable.post("/api/ask/stream", json={"question": "q"})) == [
+        {"type": "error", "detail": "could not reach LLM endpoint"}
+    ]
+    assert _events(broken.post("/api/ask/stream", json={"question": "q"})) == [
+        {"type": "error", "detail": "RuntimeError: boom"}
+    ]
+    assert broken.post("/api/ask/stream", json={"question": " "}).status_code == 422
+
+
+_R1 = "11111111-1111-4111-8111-111111111111"
+_R2 = "22222222-2222-4222-8222-222222222222"
+
+
+def _conversation_client(tmp_path, results) -> TestClient:
+    """A client answering with `results` in turn, keeping conversations under `tmp_path`."""
+    answers = iter(results)
+    loaded = (OrchestratorContext(resource_nodes=(_IRON_NODE,)), "status")
+    app = create_app(
+        context=lambda: loaded,
+        answer=lambda question, current, history, on_event=None: next(answers),
+        conversations=ConversationStore(tmp_path),
+    )
+    return TestClient(app)
+
+
+def test_answers_are_kept_in_their_conversation(tmp_path) -> None:
+    client = _conversation_client(
+        tmp_path,
+        [
+            ResponseArtifact(response_id=_R1, chat="First.", question="q1"),
+            ResponseArtifact(response_id=_R2, chat="Second.", question="q2"),
+            ResponseArtifact(response_id="r3", chat="Again.", question="q1"),
+        ],
+    )
+
+    first = client.post("/api/ask", json={"question": "  how do I make plates  "}).json()
+    conversation_id = first["conversation_id"]
+    turn = {"question": "how do I make plates", "answer": "First."}
+    client.post(
+        "/api/ask/stream",
+        json={"question": "and rods?", "history": [turn], "conversation_id": conversation_id},
+    )
+
+    listed = client.get("/api/conversations").json()
+    assert [(c["id"], c["title"]) for c in listed] == [(conversation_id, "how do I make plates")]
+    stored = client.get(f"/api/conversations/{conversation_id}").json()
+    assert [t["question"] for t in stored["turns"]] == ["how do I make plates", "and rods?"]
+    assert stored["turns"][1]["answer"]["chat"] == "Second."
+    assert "status" not in stored["turns"][0]["answer"]
+
+    # Answering the first turn again puts the new answer in its place.
+    client.post(
+        "/api/ask",
+        json={"question": "how do I make plates", "conversation_id": conversation_id, "turn": 0},
+    )
+    stored = client.get(f"/api/conversations/{conversation_id}").json()
+    assert [t["answer"]["chat"] for t in stored["turns"]] == ["Again.", "Second."]
+
+
+def test_a_new_question_without_a_conversation_starts_one(tmp_path) -> None:
+    client = _conversation_client(
+        tmp_path,
+        [
+            ResponseArtifact(response_id=_R1, chat="a", question="q"),
+            ResponseArtifact(response_id=_R2, chat="b", question="q"),
+        ],
+    )
+
+    one = client.post("/api/ask", json={"question": "first"}).json()["conversation_id"]
+    two = client.post("/api/ask", json={"question": "second"}).json()["conversation_id"]
+
+    assert one != two
+    assert [c["id"] for c in client.get("/api/conversations").json()] == [two, one]
+
+
+def test_a_conversations_panels_outlive_a_restart(tmp_path) -> None:
+    artifact = ResponseArtifact(
+        response_id=_R1, chat="Here.", question="q", graph=_GRAPH, map_locations=(_SITE,)
+    )
+    before = _conversation_client(tmp_path, [artifact])
+    body = before.post("/api/ask", json={"question": "where?"}).json()
+
+    after = _conversation_client(tmp_path, [])  # a new server: nothing in memory
+
+    graph, map_page = after.get(body["graph_url"]), after.get(body["map_url"])
+    assert graph.status_code == map_page.status_code == 200
+    assert graph.text == before.get(body["graph_url"]).text
+    assert "node_smelter" in graph.text
+    assert after.get(f"/responses/{_R2}/graph").status_code == 404
+
+
+def test_a_deleted_conversation_is_gone_with_its_panels(tmp_path) -> None:
+    client = _conversation_client(
+        tmp_path, [ResponseArtifact(response_id=_R1, chat="a", question="q", graph=_GRAPH)]
+    )
+    conversation_id = client.post("/api/ask", json={"question": "q"}).json()["conversation_id"]
+
+    assert client.delete(f"/api/conversations/{conversation_id}").json() == {"deleted": True}
+
+    assert client.get("/api/conversations").json() == []
+    assert client.get(f"/api/conversations/{conversation_id}").status_code == 404
+    assert client.delete(f"/api/conversations/{conversation_id}").status_code == 404
+    assert not list((tmp_path / "pages").glob("*"))
+
+
+def test_without_a_conversation_store_there_is_no_history() -> None:
+    client, _ = _client(_artifact())
+
+    assert client.get("/api/conversations").json() == []
+    assert client.get(f"/api/conversations/{_R1}").status_code == 404
+    assert _ask(client).json()["conversation_id"] is None

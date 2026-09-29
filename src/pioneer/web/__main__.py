@@ -3,7 +3,8 @@
 Loads the same data the CLI does, kept current while it runs (`app.LiveContext`: a newer save or
 a stale server answer is picked up on the next question), answers through the same `app.ask`,
 verifies every answer with `orchestrator.verify_response` — with LLM-as-a-judge verdicts when
-`PIONEER_LLM_JUDGE` is on — and keeps player feedback and a response log under `data/`.
+`PIONEER_LLM_JUDGE` is on — and keeps player feedback, a response log and the conversations under
+`data/`.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pioneer.llm_client import context_window_warning
 from pioneer.llm_client.judges import chat_judge, terrain_judge
 from pioneer.orchestrator import OrchestratorContext, verify_response
 from pioneer.verification_feedback import JsonlFeedbackStore, ResponseLog
+from pioneer.web.conversations import ConversationStore
 from pioneer.web.server import create_app
 
 
@@ -60,11 +62,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     app = create_app(
         context=current,
-        answer=lambda question, context, history: ask(question, context, history),
+        answer=ask,
         verify=lambda artifact, context: verify_response(artifact, context, **judges),
         feedback_store=JsonlFeedbackStore(DATA_DIR / "feedback.jsonl"),
         response_log=ResponseLog(DATA_DIR / "responses.jsonl"),
         icon_dir=ICON_DIR,
+        conversations=ConversationStore(DATA_DIR / "conversations"),
     )
     uvicorn.run(app, host=args.host, port=args.port)
     return 0

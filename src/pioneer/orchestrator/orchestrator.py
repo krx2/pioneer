@@ -35,6 +35,11 @@ which was checked against that turn's own tools when it was given. Only the newe
 `_HISTORY_BUDGET_CHARS` are passed on (see `recent_history`): a local model's context window is
 small, and what overflows it is cut from the front — the system prompt and the tools.
 
+**Progress.** Given an `on_event` sink, `handle_query` says what it's doing while it works (see
+`base.ProgressSink`): that it's thinking, which tool it's running on what, and when text a
+streaming transport already passed on turned out to be a round of tool calls rather than the
+answer. The page shows those as the answer's live status.
+
 **Items by name.** Tools accept an item's in-game name ("Reinforced Iron Plate") as well as its id
 (`Desc_IronPlateReinforced_C`): a local model can't be expected to know the export's class names.
 Plurals and a name only one item fits are taken too ("Screw", "reinforced plates"); a name that
@@ -71,13 +76,16 @@ from pioneer.contracts import (
 from pioneer.orchestrator.base import (
     OrchestratorContext,
     OrchestratorUnavailable,
+    ProgressSink,
     ToolCallingLLM,
     _ArtifactAccumulator,
 )
 from pioneer.orchestrator.items import display_names
+from pioneer.orchestrator.progress import describe_tool_call
 from pioneer.orchestrator.tool_calls import (
     _assistant_message,
     _execute_tool,
+    _resolve_tool_name,
     _tool_calls_written_as_text,
 )
 from pioneer.orchestrator.tools import _build_tools
@@ -143,7 +151,9 @@ def handle_query(
     response_id: str,
     max_tool_rounds: int = _MAX_TOOL_ROUNDS,
     history: Sequence[tuple[str, str]] = (),
+    on_event: ProgressSink | None = None,
 ) -> ResponseArtifact | OrchestratorUnavailable:
+    emit = on_event or _ignore
     history = recent_history(history)  # what the model sees is also what the answer is held to
     accumulator = _ArtifactAccumulator(
         grounding=[question, *(text for turn in history for text in turn)]
@@ -163,7 +173,8 @@ def handle_query(
         messages.append({"role": "assistant", "content": earlier_answer})
     messages.append({"role": "user", "content": question})
 
-    for _ in range(max_tool_rounds):
+    for round_number in range(max_tool_rounds):
+        emit({"type": "status", "text": "Thinking" if round_number == 0 else "Reading the results"})
         try:
             message = tool_calling_llm(llm_base_url, llm_model, messages, tool_schemas, llm_api_key)
         except TransportError as error:
@@ -184,8 +195,20 @@ def handle_query(
                 grounding=tuple(accumulator.grounding),
             )
 
+        emit({"type": "discard"})
         messages.append(_assistant_message(message, tool_calls))
         for call in tool_calls:
+            name = _resolve_tool_name(call["name"], tools_by_name) or str(call["name"])
+            arguments = call.get("arguments")
+            emit(
+                {
+                    "type": "tool",
+                    "name": name,
+                    "text": describe_tool_call(
+                        name, arguments if isinstance(arguments, dict) else {}, names
+                    ),
+                }
+            )
             result_message = _execute_tool(call, tools_by_name, names)
             messages.append(result_message)
             accumulator.grounding.append(result_message["content"])
@@ -193,6 +216,10 @@ def handle_query(
     return OrchestratorUnavailable(
         reason=f"exceeded {max_tool_rounds} tool-call rounds without a final answer"
     )
+
+
+def _ignore(event: dict[str, Any]) -> None:
+    pass
 
 
 def recent_history(

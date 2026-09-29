@@ -13,13 +13,19 @@ Layout, each module importing only the ones above it:
 - `summaries`: compact summaries of a production graph for the model.
 - `factory_tools`, `planning_tools`: the tool handlers.
 - `tools`: the tool schemas offered to the model, bound to their handlers.
+- `progress`: what a tool call is doing, in words, for the page's live status.
 - `tool_calls`: running the model's tool calls, including ones written as text.
 - `orchestrator`: the routing loop, the system prompt and the conversation history.
 - `verification`: scoring a finished answer.
 """
 
 from pioneer.contracts import TransportError
-from pioneer.orchestrator.base import OrchestratorContext, OrchestratorUnavailable, ToolCallingLLM
+from pioneer.orchestrator.base import (
+    OrchestratorContext,
+    OrchestratorUnavailable,
+    ProgressSink,
+    ToolCallingLLM,
+)
 from pioneer.orchestrator.items import display_names
 from pioneer.orchestrator.orchestrator import handle_query
 from pioneer.orchestrator.verification import verify_response
@@ -27,6 +33,7 @@ from pioneer.orchestrator.verification import verify_response
 __all__ = [
     "OrchestratorContext",
     "OrchestratorUnavailable",
+    "ProgressSink",
     "ToolCallingLLM",
     "TransportError",
     "display_names",

@@ -1934,3 +1934,42 @@ def test_a_listing_of_the_factories_gives_each_ones_net_rates(monkeypatch) -> No
     first = seen["factories"][0]
     assert first["net_out_per_minute"] == {"Desc_IronIngot_C": 45, "Desc_IronPlate_C": 10}
     assert first["net_in_per_minute"] == {"Desc_OreIron_C": 60}
+
+
+def test_progress_is_told_as_the_answer_is_worked_out() -> None:
+    llm = _scripted_tool_calling_llm(
+        [
+            {
+                "content": '{"name": "plan_production"}',
+                "tool_calls": [
+                    _tool_call(
+                        "call_1",
+                        "plan_productoin",  # a near-miss is described as the tool it runs
+                        {"target_item_id": "Desc_IronPlate_C", "target_rate_per_minute": 20},
+                    ),
+                    _tool_call("call_2", "factory_power", {}),
+                ],
+            },
+            {"content": "done", "tool_calls": []},
+        ]
+    )
+    events: list[dict[str, Any]] = []
+
+    handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "20/min of plates",
+        OrchestratorContext(recipes=_RECIPES, items=_ITEMS),
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="resp",
+        on_event=events.append,
+    )
+
+    assert events == [
+        {"type": "status", "text": "Thinking"},
+        {"type": "discard"},
+        {"type": "tool", "name": "plan_production", "text": "Planning 20/min of Iron Plate"},
+        {"type": "tool", "name": "factory_power", "text": "Checking your factory's power"},
+        {"type": "status", "text": "Reading the results"},
+    ]

@@ -34,14 +34,24 @@ import uuid
 import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 from pioneer.config import settings
 from pioneer.contracts import FactorySite, GameState, ResourceNode, ResponseArtifact
 from pioneer.knowledge_base import KnowledgeBase, load_from_file
-from pioneer.llm_client import chat_completion, tool_calling_chat_completion
+from pioneer.llm_client import (
+    chat_completion,
+    streaming_tool_calling_chat_completion,
+    tool_calling_chat_completion,
+)
 from pioneer.location_advisor import find_factory_sites
-from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable, handle_query
+from pioneer.orchestrator import (
+    OrchestratorContext,
+    OrchestratorUnavailable,
+    ProgressSink,
+    handle_query,
+)
 from pioneer.qa_engine import build_corpus
 from pioneer.resource_db import load_from_file as load_resource_database
 from pioneer.save_parser import SaveState, find_latest_save, load_save_state
@@ -249,9 +259,11 @@ def ask(
     question: str,
     context: OrchestratorContext | None = None,
     history: Sequence[tuple[str, str]] = (),
+    on_event: ProgressSink | None = None,
 ) -> ResponseArtifact | OrchestratorUnavailable:
     """One answer from the configured model; `history` is the conversation so far, as
-    (question, answer) pairs."""
+    (question, answer) pairs. With `on_event`, the answer is streamed: the sink hears what the
+    Orchestrator is doing and the model's text as it's written (see `orchestrator.ProgressSink`)."""
     if not settings.llm_base_url or not settings.llm_model:
         raise RuntimeError(
             "PIONEER_LLM_BASE_URL / PIONEER_LLM_MODEL are not set -- copy .env.example to .env "
@@ -259,8 +271,16 @@ def ask(
         )
     if context is None:
         context, _ = load_context()
+    transport = (
+        partial(
+            streaming_tool_calling_chat_completion,
+            on_delta=lambda kind, text: on_event({"type": kind, "text": text}),
+        )
+        if on_event is not None
+        else tool_calling_chat_completion
+    )
     return handle_query(
-        tool_calling_chat_completion,
+        transport,
         chat_completion,
         question,
         context,
@@ -269,6 +289,7 @@ def ask(
         llm_api_key=settings.llm_api_key,
         response_id=str(uuid.uuid4()),
         history=history,
+        on_event=on_event,
     )
 
 

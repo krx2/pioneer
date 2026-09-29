@@ -55,6 +55,13 @@ class ToolCallingLLM(Protocol):
     ) -> dict[str, Any]: ...
 
 
+ProgressSink = Callable[[dict[str, Any]], None]
+"""Told what the Orchestrator is doing while an answer is on its way, one event at a time, each a
+JSON-ready dict with a `type`: `status` (a line saying what it's on), `tool` (a tool about to run,
+its `name` and what it's doing in words), `discard` (the text streamed so far was not the answer:
+the round ended in tool calls). The streaming transport adds `text` and `thinking`."""
+
+
 @dataclass(frozen=True)
 class OrchestratorContext:
     """Everything the Orchestrator needs beyond the player's question -- plain data, no I/O, the

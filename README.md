@@ -58,7 +58,10 @@ python -m pioneer.app "I want to produce 10/min of Iron Plate"   # one question,
 
 The web UI shows each answer's chat, its production graph and its map, the verification badges for
 that answer (are its numbers from the tools, does the plan balance, does it fit the spare power)
-and the feedback buttons. Feedback and a log of every answer go to `data/`, which is gitignored.
+and the feedback buttons. While an answer is on its way, the page shows what the assistant is doing
+(which tool it runs on what) and the answer's text as the model writes it. The sidebar lists past
+conversations, graphs and maps included; "New conversation" starts from a clean context.
+Feedback, a log of every answer and the conversations go to `data/`, which is gitignored.
 
 ## Item icons
 
