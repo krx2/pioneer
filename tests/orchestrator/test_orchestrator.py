@@ -28,12 +28,8 @@ from pioneer.contracts import (
     TransportLink,
     TransportTier,
 )
-from pioneer.orchestrator.orchestrator import (
-    OrchestratorContext,
-    OrchestratorUnavailable,
-    handle_query,
-    recent_history,
-)
+from pioneer.orchestrator.base import OrchestratorContext, OrchestratorUnavailable
+from pioneer.orchestrator.orchestrator import handle_query, recent_history
 from pioneer.qa_engine import Passage
 
 _BASE_URL = "http://localhost:11434/v1"
@@ -359,7 +355,7 @@ def test_diagnose_factory_problems_detects_a_real_deficit() -> None:
 
 
 def test_unreachable_llm_returns_orchestrator_unavailable() -> None:
-    from pioneer.orchestrator.orchestrator import TransportError
+    from pioneer.contracts import TransportError
 
     def failing_llm(base_url, model, messages, tools, api_key):
         raise TransportError("connection refused")
@@ -1769,7 +1765,7 @@ def test_the_chain_behind_one_item_is_drawn_across_every_factory() -> None:
 
 
 def test_a_factory_too_big_to_draw_is_offered_as_a_list_of_its_sites(monkeypatch) -> None:
-    monkeypatch.setattr("pioneer.orchestrator.orchestrator._MAX_DRAWN_STAGES", 1)
+    monkeypatch.setattr("pioneer.orchestrator.factory_tools._MAX_DRAWN_STAGES", 1)
 
     result, seen = _run_single_tool(_built_factory(), "show_existing_factory", {})
 
@@ -1861,3 +1857,80 @@ def test_the_diagnosis_finds_what_the_belts_leave_undone() -> None:
     assert groups["congestion"]["carries_per_minute"] == 90
     assert groups["congestion"]["rated_per_minute"] == 60
     assert "p5" not in json.dumps(seen)  # a save's object ids mean nothing to a player
+
+
+def test_factory_item_balance_reports_produced_used_and_net() -> None:
+    graph = ProductionGraph(
+        nodes=(
+            ProductionNode(
+                node_id="n1",
+                recipe_id="Recipe_IronPlate_C",
+                building_id="Build_ConstructorMk1_C",
+                machine_count=2,
+            ),
+            ProductionNode(
+                node_id="n2",
+                recipe_id="Recipe_IngotIron_C",
+                building_id="Build_SmelterMk1_C",
+                machine_count=1,
+            ),
+        ),
+        flows=(),
+    )
+    context = OrchestratorContext(
+        recipes=_RECIPES + (_IRON_INGOT,), items=_ITEMS, existing_graph=graph
+    )
+
+    _, everything = _run_single_tool(context, "factory_item_balance", {})
+    _, plates = _run_single_tool(context, "factory_item_balance", {"item": "Iron Plate"})
+
+    rates = everything["per_minute"]
+    assert rates["Desc_IronIngot_C"] == {"produced": 30, "used": 60, "net": -30}
+    assert rates["Desc_IronPlate_C"] == {"produced": 40, "used": 0, "net": 40}
+    assert [row["net"] for row in rates.values()] == [-30, -30, 40]  # deficits first
+    assert plates["per_minute"] == {"Desc_IronPlate_C": rates["Desc_IronPlate_C"]}
+    assert everything["names"]["Desc_IronPlate_C"] == "Iron Plate"
+
+
+def test_factory_item_balance_without_a_save_says_so() -> None:
+    _, result = _run_single_tool(OrchestratorContext(recipes=_RECIPES), "factory_item_balance", {})
+
+    assert "no save loaded" in result["error"]
+
+
+def test_factory_power_breaks_draw_and_capacity_down_by_building() -> None:
+    context = OrchestratorContext(
+        recipes=(_REFINERY_FUEL,),
+        buildings=_POWER_BUILDINGS,
+        items=_FUEL_ITEMS,
+        existing_graph=ProductionGraph(nodes=(), flows=()),
+        existing_placements=(
+            _placed("Build_OilRefinery_C", recipe_id="Recipe_LiquidFuel_C"),
+            _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_LiquidFuel_C"),
+            _placed("Build_GeneratorFuel_C", fuel_item_id="Desc_LiquidFuel_C"),
+        ),
+    )
+
+    _, seen = _run_single_tool(context, "factory_power", {})
+
+    assert (seen["draw_mw"], seen["capacity_mw"], seen["spare_mw"]) == (30, 500, 470)
+    assert seen["draw_by_building"] == {"Build_OilRefinery_C": {"count": 1, "mw": 30}}
+    assert seen["generators"] == {"Build_GeneratorFuel_C": {"count": 2, "mw": 500}}
+    assert seen["fuel_burned_per_minute"] == {"Desc_LiquidFuel_C": 40}
+    assert "anomalies" not in seen
+
+
+def test_factory_power_without_a_save_says_so() -> None:
+    _, seen = _run_single_tool(OrchestratorContext(), "factory_power", {})
+
+    assert "no save loaded" in seen["error"]
+
+
+def test_a_listing_of_the_factories_gives_each_ones_net_rates(monkeypatch) -> None:
+    monkeypatch.setattr("pioneer.orchestrator.factory_tools._MAX_DRAWN_STAGES", 1)
+
+    _, seen = _run_single_tool(_built_factory(), "show_existing_factory", {})
+
+    first = seen["factories"][0]
+    assert first["net_out_per_minute"] == {"Desc_IronIngot_C": 45, "Desc_IronPlate_C": 10}
+    assert first["net_in_per_minute"] == {"Desc_OreIron_C": 60}

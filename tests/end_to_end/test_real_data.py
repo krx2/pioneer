@@ -359,8 +359,9 @@ def test_a_game_question_is_answered_from_the_real_corpus(context) -> None:
 
 @needs_node_data
 def test_an_expansion_on_a_real_save_names_where_to_build(kb) -> None:
-    """stal_mielec's screws, rods and ingots mostly come from one factory: that's where 400 more
-    screws a minute get built, and the ore for them comes from a free deposit."""
+    """stal_mielec's screws and rods come from one belted-together factory and most of its ingots
+    from another: each stage is extended where it already runs, and the ore for them comes from a
+    free deposit."""
     state = load_save_state(_SAVE)
     context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
 
@@ -369,16 +370,22 @@ def test_an_expansion_on_a_real_save_names_where_to_build(kb) -> None:
         ("expand_existing_factory", {"target_item_id": "Screws", "target_rate_per_minute": 400}),
     )
 
-    assert {change["at_site"] for change in result["changes"]} == {"site_1"}
-    assert result["sites"]["site_1"]["buildings"] > 50
+    at = {change["recipe_id"]: change["at_site"] for change in result["changes"]}
+    assert at == {
+        "Recipe_Screw_C": "site_2",
+        "Recipe_IronRod_C": "site_2",
+        "Recipe_IngotIron_C": "site_1",
+    }
+    assert all(site["buildings"] > 50 for site in result["sites"].values())
     assert artifact.factory_sites is not None
-    assert [site.site_id for site in artifact.factory_sites] == ["site_1"]
+    assert sorted(site.site_id for site in artifact.factory_sites) == ["site_1", "site_2"]
     assert set(result["suggested_sites"]) == {"Desc_OreIron_C"}
     mined = {p.resource_node_id for p in state.placements if p.resource_node_id}
     assert result["suggested_sites"]["Desc_OreIron_C"]["resource_node_id"] not in mined
 
 
 def test_real_saves_group_into_factory_sites(kb) -> None:
-    for save_name, expected in (("alfa", 4), ("tak", 6), ("stal_mielec", 22)):
+    """A factory is what the save's belts and pipes join: alfa's early base is all one."""
+    for save_name, expected in (("alfa", 1), ("tak", 4), ("stal_mielec", 18)):
         context = build_context(kb, load_save_state(_SAVES / f"{save_name}.sav"))
         assert len(context.factory_sites) == expected, save_name

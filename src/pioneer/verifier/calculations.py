@@ -324,13 +324,25 @@ def placed_power_consumption_mw(
     Placements `buildings` has no entry for are skipped rather than raising, unlike in
     `power_balance`: most placed buildings — belts, foundations, storage, poles — draw nothing and
     appear in no building list."""
-    return sum(
-        building.power_consumption_mw
-        * placement.clock_speed**_OVERCLOCK_POWER_EXPONENT
-        * placement.production_boost**_PRODUCTION_BOOST_POWER_EXPONENT
-        for placement, building in _placed_buildings(placements, buildings)
-        if building.power_consumption_mw > 0
-    )
+    return sum(mw for _, mw in placed_power_consumption_by_building(placements, buildings).values())
+
+
+def placed_power_consumption_by_building(
+    placements: Sequence[PlacementRecord], buildings: tuple[Building, ...]
+) -> dict[str, tuple[int, float]]:
+    """`placed_power_consumption_mw` per building id: (how many are running, their draw in MW)."""
+    by_building: dict[str, tuple[int, float]] = {}
+    for placement, building in _placed_buildings(placements, buildings):
+        if building.power_consumption_mw <= 0:
+            continue
+        draw = (
+            building.power_consumption_mw
+            * placement.clock_speed**_OVERCLOCK_POWER_EXPONENT
+            * placement.production_boost**_PRODUCTION_BOOST_POWER_EXPONENT
+        )
+        count, total = by_building.get(building.building_id, (0, 0.0))
+        by_building[building.building_id] = (count + 1, total + draw)
+    return by_building
 
 
 def placed_generation_capacity_mw(
@@ -338,11 +350,22 @@ def placed_generation_capacity_mw(
 ) -> float:
     """Rated output of every placed generator at its clock speed — what the grid could supply with
     every generator fueled, not a guarantee that it is."""
-    return sum(
-        -building.power_consumption_mw * placement.clock_speed
-        for placement, building in _placed_buildings(placements, buildings)
-        if building.power_consumption_mw < 0
-    )
+    return sum(mw for _, mw in placed_generation_by_building(placements, buildings).values())
+
+
+def placed_generation_by_building(
+    placements: Sequence[PlacementRecord], buildings: tuple[Building, ...]
+) -> dict[str, tuple[int, float]]:
+    """`placed_generation_capacity_mw` per generator building id: (how many are running, their
+    rated output in MW)."""
+    by_building: dict[str, tuple[int, float]] = {}
+    for placement, building in _placed_buildings(placements, buildings):
+        if building.power_consumption_mw >= 0:
+            continue
+        output = -building.power_consumption_mw * placement.clock_speed
+        count, total = by_building.get(building.building_id, (0, 0.0))
+        by_building[building.building_id] = (count + 1, total + output)
+    return by_building
 
 
 def generator_fuel_demand(

@@ -113,7 +113,7 @@ def build_context(
         existing_graph=state.graph if state else None,
         existing_placements=state.placements if state else (),
         existing_links=state.links if state else (),
-        factory_sites=find_factory_sites(state.placements) if state else (),
+        factory_sites=find_factory_sites(state.placements, state.links) if state else (),
         technologies=kb.technologies if kb else (),
         transport_tiers=kb.transport_tiers if kb else (),
         unlocked_technology_ids=state.unlocked_technology_ids if state else None,
@@ -212,7 +212,7 @@ class LiveContext:
             print(f"warning: could not parse {path.name}: {error}", file=sys.stderr)
             return True
         self._state = state
-        self._sites = find_factory_sites(state.placements)
+        self._sites = find_factory_sites(state.placements, state.links)
         machines = sum(node.machine_count for node in state.graph.nodes)
         self._state_note = self._save_note = (
             f"save {path.name}: {len(state.placements)} buildings, "

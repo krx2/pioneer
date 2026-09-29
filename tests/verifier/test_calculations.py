@@ -36,7 +36,9 @@ from pioneer.verifier.calculations import (
     implied_flows,
     machine_count,
     minimal_machine_graph,
+    placed_generation_by_building,
     placed_generation_capacity_mw,
+    placed_power_consumption_by_building,
     placed_power_consumption_mw,
     power_balance,
     power_plants,
@@ -730,3 +732,21 @@ def test_a_belt_carries_every_flow_routed_along_it() -> None:
     routes = {("a", "c"): ("belt_1", "belt_3"), ("b", "c"): ("belt_2", "belt_3")}
 
     assert belt_loads(routes, flows) == {"belt_1": 30, "belt_2": 20, "belt_3": 50}
+
+
+def test_placed_power_by_building_adds_up_to_the_totals() -> None:
+    placements = (
+        _placed("Build_SmelterMk1_C"),
+        _placed("Build_SmelterMk1_C"),
+        _placed("Build_MinerMk1_C"),
+        _placed("Build_GeneratorCoal_C"),
+        _placed("Build_GeneratorFuel_C", clock_speed=0.5),
+    )
+
+    draw = placed_power_consumption_by_building(placements, _PLACED_BUILDINGS)
+    generation = placed_generation_by_building(placements, _PLACED_BUILDINGS)
+
+    assert draw == {"Build_SmelterMk1_C": (2, 8.0), "Build_MinerMk1_C": (1, 5.0)}
+    assert generation == {"Build_GeneratorCoal_C": (1, 75.0), "Build_GeneratorFuel_C": (1, 125.0)}
+    assert placed_power_consumption_mw(placements, _PLACED_BUILDINGS) == pytest.approx(13.0)
+    assert placed_generation_capacity_mw(placements, _PLACED_BUILDINGS) == pytest.approx(200.0)

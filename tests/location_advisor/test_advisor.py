@@ -2,7 +2,7 @@
 
 import pytest
 
-from pioneer.contracts import Coordinates, PlacementRecord, Purity, ResourceNode
+from pioneer.contracts import Coordinates, PlacementRecord, Purity, ResourceNode, TransportLink
 from pioneer.location_advisor.advisor import find_factory_sites, rank_locations
 
 _ORIGIN = Coordinates(x=0.0, y=0.0, z=0.0)
@@ -182,3 +182,42 @@ def test_factory_sites_leave_out_paused_and_non_production_buildings() -> None:
 
     assert site.placements == (placements[0],)
     assert find_factory_sites(()) == ()
+
+
+def _built(object_id: str, x: float, building_id: str = "Build_ConstructorMk1_C", **fields):
+    return PlacementRecord(
+        building_id=building_id, position=Coordinates(x=x, y=0.0), object_id=object_id, **fields
+    )
+
+
+def _belt(source_id: str, target_id: str) -> TransportLink:
+    return TransportLink(source_id=source_id, target_id=target_id, carrier="belt")
+
+
+def test_with_links_a_site_is_what_the_belts_join_however_far_apart() -> None:
+    """A miner 1 km out belted to a smelter, belted to a constructor: one factory, the miner in
+    it. A constructor standing right next to them that no belt reaches is a factory of its own."""
+    miner = _built("miner", 100_000, "Build_MinerMk1_C")
+    smelter = _built("smelter", 0, "Build_SmelterMk1_C", recipe_id="Recipe_IngotIron_C")
+    plates = _built("plates", 1000, recipe_id="Recipe_IronPlate_C")
+    alone = _built("alone", 2000, recipe_id="Recipe_IronRod_C")
+    links = (_belt("miner", "smelter"), _belt("smelter", "plates"))
+
+    joined, unlinked = find_factory_sites((miner, smelter, plates, alone), links)
+
+    assert set(joined.placements) == {miner, smelter, plates}
+    assert unlinked.placements == (alone,)
+
+
+def test_with_links_a_group_running_no_recipe_is_no_factory() -> None:
+    """A miner filling a container isn't a factory; a paused machine isn't part of one, though
+    what's belted through it still is."""
+    miner = _built("miner", 0, "Build_MinerMk1_C")
+    box = _built("box", 100, "Build_StorageContainerMk1_C")
+    paused = _built("paused", 5000, recipe_id="Recipe_IronPlate_C", is_paused=True)
+    rods = _built("rods", 6000, recipe_id="Recipe_IronRod_C")
+    links = (_belt("miner", "box"), _belt("paused", "rods"))
+
+    (site,) = find_factory_sites((miner, box, paused, rods), links)
+
+    assert site.placements == (rods,)

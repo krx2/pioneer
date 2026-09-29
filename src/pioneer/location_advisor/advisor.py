@@ -1,11 +1,18 @@
 """Ranks unclaimed resource deposits of a given type as candidate build sites, best first, and
 finds where the player's existing factories stand.
 
-**Factory sites.** `find_factory_sites` groups running production buildings (those with a recipe)
-that stand within `link_distance` of each other — through any chain of them — into sites. 50 m
-separates the factories of real saves well: closer, and one factory floor splits in two; much
-farther, and neighbouring factories merge. Belts, foundations and power poles aren't considered;
-they'd join everything to everything.
+**Factory sites.** With the save's belts and pipes known (`TransportLink`s), a site is every
+running building they join, through any chain of links: a whole tree of machines together with
+the extractors that feed it, the generators it fuels and the containers and stations along the
+way. Only a group running at least one recipe is a site; a miner filling a lone container isn't a
+factory. A machine no link reaches still belongs somewhere, so those are grouped by distance, as
+below, into sites of their own.
+
+Without links, running production buildings (those with a recipe) that stand within
+`link_distance` of each other — through any chain of them — form a site. 50 m separates the
+factories of real saves well: closer, and one factory floor splits in two; much farther, and
+neighbouring factories merge. Belts, foundations and power poles aren't considered; they'd join
+everything to everything.
 
 **Unclaimed cross-reference.** A deposit is claimed when an extractor in the save names it as what
 it extracts from (`PlacementRecord.resource_node_id` — exact, the save's own
@@ -40,6 +47,7 @@ from pioneer.contracts import (
     Purity,
     RankedLocation,
     ResourceNode,
+    TransportLink,
 )
 
 DistanceFn = Callable[[Coordinates, Coordinates], float]
@@ -94,13 +102,66 @@ def rank_locations(
 
 def find_factory_sites(
     placements: Sequence[PlacementRecord],
+    links: Sequence[TransportLink] = (),
     *,
     link_distance: float = 5000.0,
     distance_fn: DistanceFn = _euclidean_distance,
 ) -> tuple[FactorySite, ...]:
-    """The player's factories, most buildings first, ids `site_1`, `site_2`, ... in that order.
-    Paused buildings and those running no recipe are left out (see module docstring)."""
-    machines = [p for p in placements if p.recipe_id is not None and not p.is_paused]
+    """The player's factories, most machines first, ids `site_1`, `site_2`, ... in that order:
+    what `links` joins, and machines no link reaches grouped by distance (see module docstring).
+    Paused buildings are left out."""
+    running = {p.object_id: p for p in placements if p.object_id and not p.is_paused}
+    parent: dict[str, str] = {}
+
+    def root(object_id: str) -> str:
+        parent.setdefault(object_id, object_id)
+        while parent[object_id] != object_id:
+            parent[object_id] = parent[parent[object_id]]
+            object_id = parent[object_id]
+        return object_id
+
+    for link in links:
+        parent[root(link.source_id)] = root(link.target_id)
+    joined: dict[str, list[PlacementRecord]] = defaultdict(list)
+    for object_id in parent:
+        if object_id in running:
+            joined[root(object_id)].append(running[object_id])
+
+    groups = [group for group in joined.values() if any(p.recipe_id for p in group)]
+    unlinked = [
+        p
+        for p in placements
+        if p.recipe_id is not None and not p.is_paused and p.object_id not in parent
+    ]
+    groups += _groups_by_distance(unlinked, link_distance, distance_fn)
+    ordered = sorted(
+        groups,
+        key=lambda group: (
+            -sum(1 for p in group if p.recipe_id is not None),
+            -len(group),
+            group[0].position.x,
+            group[0].position.y,
+        ),
+    )
+    return tuple(
+        FactorySite(
+            site_id=f"site_{number}",
+            position=Coordinates(
+                x=sum(p.position.x for p in group) / len(group),
+                y=sum(p.position.y for p in group) / len(group),
+                z=sum(p.position.z for p in group) / len(group),
+            ),
+            placements=tuple(group),
+        )
+        for number, group in enumerate(ordered, start=1)
+    )
+
+
+def _groups_by_distance(
+    machines: Sequence[PlacementRecord], link_distance: float, distance_fn: DistanceFn
+) -> list[list[PlacementRecord]]:
+    """`machines` grouped so that any within `link_distance` of each other — through any chain of
+    them — share a group."""
     parent = list(range(len(machines)))
 
     def root(index: int) -> int:
@@ -127,22 +188,7 @@ def find_factory_sites(
     groups: dict[int, list[PlacementRecord]] = defaultdict(list)
     for index, machine in enumerate(machines):
         groups[root(index)].append(machine)
-    ordered = sorted(
-        groups.values(),
-        key=lambda group: (-len(group), group[0].position.x, group[0].position.y),
-    )
-    return tuple(
-        FactorySite(
-            site_id=f"site_{number}",
-            position=Coordinates(
-                x=sum(p.position.x for p in group) / len(group),
-                y=sum(p.position.y for p in group) / len(group),
-                z=sum(p.position.z for p in group) / len(group),
-            ),
-            placements=tuple(group),
-        )
-        for number, group in enumerate(ordered, start=1)
-    )
+    return list(groups.values())
 
 
 class _PositionGrid:

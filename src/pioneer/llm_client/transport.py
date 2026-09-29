@@ -109,7 +109,7 @@ def tool_calling_chat_completion(
     tools: list[dict[str, Any]],
     api_key: str | None,
 ) -> dict[str, Any]:
-    """Conforms to `pioneer.orchestrator.orchestrator.ToolCallingLLM`. Returns
+    """Conforms to `pioneer.orchestrator.base.ToolCallingLLM`. Returns
     `{"content": str | None, "tool_calls": [{"id", "name", "arguments": dict}, ...]}`, with each
     tool call's JSON-string `arguments` already parsed so the orchestrator never touches the wire
     format directly."""

@@ -12,13 +12,10 @@ cost a model call each — and so the routing loop stays about routing.
 from __future__ import annotations
 
 from pioneer.contracts import ResponseArtifact
-from pioneer.orchestrator.orchestrator import (
-    OrchestratorContext,
-    context_note,
-    raw_resource_ids,
-    reference_point,
-    spare_power_mw,
-)
+from pioneer.orchestrator.base import OrchestratorContext
+from pioneer.orchestrator.existing_factory import reference_point, spare_power_mw
+from pioneer.orchestrator.items import raw_resource_ids
+from pioneer.orchestrator.orchestrator import context_note
 from pioneer.verification_feedback import ChatJudge, ResponseScore, TerrainJudge, score_response
 
 
