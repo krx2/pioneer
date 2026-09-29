@@ -8,7 +8,9 @@ and SVG documents stay exactly what Stages 13 and 14 render.
 
 While an answer is on its way, its place shows what the assistant is doing — each tool it ran, a
 reasoning model's thoughts, the answer's text as it's written — until the finished, rendered answer
-replaces it all. The sidebar lists the stored conversations; the open one's id is the page's URL
+takes its place, with that thought process folded above it to be opened again.
+
+The sidebar, under the header, lists the stored conversations; the open one's id is the page's URL
 fragment, so a reload, or a link, opens it again.
 """
 
@@ -29,6 +31,14 @@ def render_chat_page(*, status: str) -> str:
 <style>{CHAT_STYLE}{PAGE_STYLE}</style>
 </head>
 <body>
+<header class="bar" id="bar">
+  <div class="bar-inner">
+    <button type="button" class="menu" id="menu" aria-label="Conversations">&#9776;</button>
+    <h1 class="brand">{WORDMARK}</h1>
+    <p class="tagline">{TAGLINE}</p>
+    <span class="status">{html.escape(status)}</span>
+  </div>
+</header>
 <aside class="sidebar" id="sidebar" aria-label="Conversations">
   <button type="button" class="new-chat" id="new-chat">+ New conversation</button>
   <h2 class="sidebar-title">History</h2>
@@ -36,14 +46,6 @@ def render_chat_page(*, status: str) -> str:
 </aside>
 <div class="scrim" id="scrim"></div>
 <div class="main">
-  <header class="bar">
-    <div class="bar-inner">
-      <button type="button" class="menu" id="menu" aria-label="Conversations">&#9776;</button>
-      <h1 class="brand">{WORDMARK}</h1>
-      <p class="tagline">{TAGLINE}</p>
-      <span class="status">{html.escape(status)}</span>
-    </div>
-  </header>
   <main class="chat" id="chat"></main>
   <form id="ask" class="composer">
     <div class="composer-box">
@@ -60,15 +62,16 @@ def render_chat_page(*, status: str) -> str:
 
 
 # The composer lines its text field up with `.chat`'s column: 760px of content inside 20px of side
-# padding, so every bubble and the field share both edges. The header spans the column right of
-# the sidebar instead: the logo in its top left corner, the status in the top right. On a narrow
-# screen the sidebar slides in over the page from the menu button.
+# padding, so every bubble and the field share both edges. The header spans the page instead: the
+# logo in the top left corner, the status in the top right, and the sidebar starts under it —
+# `--bar-height` is kept at the header's height by the script, since its tagline may wrap. On a
+# narrow screen the sidebar slides in under the header from the menu button.
 PAGE_STYLE = """
-:root { --sidebar: 264px; }
+:root { --sidebar: 264px; --bar-height: 70px; }
 body { padding-bottom: 120px; }
 .main { margin-left: var(--sidebar); }
 .sidebar {
-  position: fixed; top: 0; bottom: 0; left: 0; z-index: 3; width: var(--sidebar);
+  position: fixed; top: var(--bar-height); bottom: 0; left: 0; z-index: 3; width: var(--sidebar);
   box-sizing: border-box; padding: 14px 10px; display: flex; flex-direction: column; gap: 8px;
   background: #1b2023; border-right: 1px solid var(--line);
 }
@@ -106,7 +109,10 @@ body { padding-bottom: 120px; }
   display: none; padding: 4px 10px; color: var(--text); background: none;
   border: 1px solid var(--line); border-radius: 8px; font-size: 18px; cursor: pointer;
 }
-.scrim { display: none; position: fixed; inset: 0; z-index: 2; background: rgba(0, 0, 0, 0.5); }
+.scrim {
+  display: none; position: fixed; top: var(--bar-height); right: 0; bottom: 0; left: 0;
+  z-index: 2; background: rgba(0, 0, 0, 0.5);
+}
 @media (max-width: 900px) {
   .main { margin-left: 0; }
   .sidebar { transform: translateX(-100%); transition: transform 0.2s; }
@@ -142,11 +148,16 @@ body { padding-bottom: 120px; }
 }
 .steps:empty { display: none; }
 .steps li::before { content: "\\2713  "; color: #8fcf86; }
-.thinking {
+.process {
   padding-left: 10px; border-left: 2px solid var(--line); color: var(--muted); font-size: 13px;
 }
-.thinking summary { cursor: pointer; }
-.thinking-text { margin-top: 6px; max-height: 200px; overflow-y: auto; white-space: pre-wrap; }
+.process summary { cursor: pointer; width: fit-content; }
+.process summary:hover { color: var(--text); }
+.process[open] summary { margin-bottom: 6px; }
+.thinking-text {
+  margin-top: 8px; padding: 8px 10px; max-height: 240px; overflow-y: auto; white-space: pre-wrap;
+  background: var(--surface); border-radius: 8px; font-style: italic;
+}
 .draft p { white-space: pre-wrap; }
 .draft p::after {
   content: "\\258D"; margin-left: 1px; color: var(--ficsit); animation: blink 1s steps(2) infinite;
@@ -156,7 +167,7 @@ body { padding-bottom: 120px; }
   .spinner, .draft p::after { animation: none; }
 }
 .bar {
-  position: sticky; top: 0; z-index: 1;
+  position: sticky; top: 0; z-index: 4;
   background: linear-gradient(#232a2e, #1b2023);
 }
 .bar::after {
@@ -492,20 +503,57 @@ function fillAnswer(box, answer, turn) {
   const holder = document.createElement("div");
   holder.innerHTML = answer.chat_html;  // rendered and escaped server-side by chat_presentation
   box.replaceChildren(holder.firstElementChild);
+  if (answer.process) {
+    const process = processBlock();
+    for (const step of answer.process.steps || []) process.addStep(step);
+    process.addThought(answer.process.thinking || "");
+    process.settle();
+    box.prepend(process.root);
+  }
   if (answer.graph_url) box.appendChild(panel(answer.graph_url, "Production graph"));
   if (answer.map_url) box.appendChild(panel(answer.map_url, "Factory map"));
   box.appendChild(meta(answer, box, turn));
 }
 
-// What goes in an answer's place while it's on its way: the steps done so far, the model's
-// reasoning if it shows any, the answer's text as it's written, and what it's doing right now.
-function liveView(box) {
+// How an answer was worked out: each tool it ran, ticked, and the model's reasoning, if it shows
+// any. Open while the answer is on its way; folded above it once it's there.
+function processBlock() {
+  const root = element("details", "process");
+  root.open = true;
+  root.hidden = true;
+  const summary = element("summary", "", "Thought process");
   const steps = element("ul", "steps");
-  const thinking = element("details", "thinking");
-  thinking.appendChild(element("summary", "", "Reasoning"));
   const thoughts = element("div", "thinking-text");
-  thinking.appendChild(thoughts);
-  thinking.hidden = true;
+  thoughts.hidden = true;
+  root.append(summary, steps, thoughts);
+  return {
+    root,
+    addStep(text) {
+      steps.appendChild(element("li", "", text));
+      root.hidden = false;
+    },
+    addThought(text) {
+      if (!text) return;
+      thoughts.textContent += text;
+      thoughts.hidden = false;
+      root.hidden = false;
+      thoughts.scrollTop = thoughts.scrollHeight;
+    },
+    settle() {
+      const count = steps.children.length;
+      const parts = ["Thought process"];
+      if (count) parts.push(`${count} step${count === 1 ? "" : "s"}`);
+      if (!thoughts.hidden) parts.push("reasoning");
+      summary.textContent = parts.join(" \\u00B7 ");
+      root.open = false;
+    },
+  };
+}
+
+// What goes in an answer's place while it's on its way: the thought process so far, the answer's
+// text as it's written, and what it's doing right now.
+function liveView(box) {
+  const process = processBlock();
   const draft = element("div", "message message-assistant draft");
   const draftText = element("p");
   draft.appendChild(draftText);
@@ -514,7 +562,7 @@ function liveView(box) {
   progress.setAttribute("role", "status");
   const label = element("span", "", "Sending the question…");
   progress.append(element("span", "spinner"), label);
-  box.replaceChildren(steps, thinking, draft, progress);
+  box.replaceChildren(process.root, draft, progress);
 
   let text = "";
   let running = null;  // the tool being run, until the next step starts
@@ -523,7 +571,7 @@ function liveView(box) {
     label.textContent = `${line}…`;
   }
   function stepDone() {
-    if (running) steps.appendChild(element("li", "", running));
+    if (running) process.addStep(running);
     running = null;
   }
   // A tool call the model wrote out as text is no answer: don't show it as one.
@@ -545,9 +593,7 @@ function liveView(box) {
           setLabel(event.text);
           break;
         case "thinking":
-          thinking.hidden = false;
-          thoughts.textContent += event.text;
-          thoughts.scrollTop = thoughts.scrollHeight;
+          process.addThought(event.text);
           break;
         case "text":
           text += event.text;
@@ -771,6 +817,11 @@ document.getElementById("menu").addEventListener("click", () => {
   document.body.classList.toggle("sidebar-open");
 });
 document.getElementById("scrim").addEventListener("click", closeSidebar);
+// The sidebar starts where the header ends, however tall its wrapped tagline makes it.
+const bar = document.getElementById("bar");
+new ResizeObserver(() => {
+  document.documentElement.style.setProperty("--bar-height", `${bar.offsetHeight}px`);
+}).observe(bar);
 window.addEventListener("hashchange", () => {
   const id = window.location.hash.slice(1);
   if (id && id !== conversationId) openConversation(id);

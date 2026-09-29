@@ -416,7 +416,9 @@ def _events(response) -> list[dict]:
 def test_a_streamed_answer_says_how_it_goes_and_ends_with_the_answer() -> None:
     def answer(question, current, history, on_event=None):
         on_event({"type": "status", "text": "Thinking"})
+        on_event({"type": "thinking", "text": "Plates need "})
         on_event({"type": "tool", "name": "plan_production", "text": "Planning"})
+        on_event({"type": "thinking", "text": "ingots."})
         on_event({"type": "text", "text": "Build two"})
         return _artifact(graph=_GRAPH)
 
@@ -425,9 +427,12 @@ def test_a_streamed_answer_says_how_it_goes_and_ends_with_the_answer() -> None:
 
     events = _events(client.post("/api/ask/stream", json={"question": "what now?"}))
 
-    assert [event["type"] for event in events] == ["status", "tool", "text", "status", "answer"]
-    assert events[3] == {"type": "status", "text": "Checking the answer"}
+    types = [event["type"] for event in events]
+    assert types == ["status", "thinking", "tool", "thinking", "text", "status", "answer"]
+    assert events[5] == {"type": "status", "text": "Checking the answer"}
     final = events[-1]
+    # How it was worked out stays with the answer, to be looked at afterwards.
+    assert final["process"] == {"steps": ["Planning"], "thinking": "Plates need ingots."}
     assert final["response_id"] == "r1"
     assert "&lt;Smelters&gt;" in final["chat_html"]
     assert final["graph_url"] == "/responses/r1/graph"

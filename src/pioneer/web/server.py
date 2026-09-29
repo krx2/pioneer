@@ -13,7 +13,9 @@ response log holds — also once its pages have been dropped from memory, or aft
 `/api/ask/stream` answers the same question as `/api/ask`, but as it goes: one JSON line per
 event — what the Orchestrator is doing, the model's text as it's written (see
 `orchestrator.ProgressSink`) — and last the answer itself, exactly what `/api/ask` returns, or an
-error. The question is answered on a thread of its own, so an answer still lands in its
+error. The answer then also carries its `process` — the tools run, in words, and the model's
+reasoning — so the page can keep showing how it was worked out. The question is answered on a
+thread of its own, so an answer still lands in its
 conversation when the page that asked has gone.
 
 With a `ConversationStore`, every answer is also kept in its conversation — the one the request
@@ -184,10 +186,22 @@ def create_app(
         """Answers, verifies, remembers and stores one question: the body both endpoints send."""
         current, status = context()
         history = [(turn.question, turn.answer) for turn in request.history]
+        steps: list[str] = []
+        thoughts: list[str] = []
+
+        def record(event: dict[str, Any]) -> None:
+            """Passes each event on, keeping the tools run and the model's reasoning."""
+            if event.get("type") == "tool":
+                steps.append(str(event.get("text", "")))
+            elif event.get("type") == "thinking":
+                thoughts.append(str(event.get("text", "")))
+            if on_event is not None:
+                on_event(event)
+
         if on_event is None:
             result = answer(question, current, history)
         else:
-            result = answer(question, current, history, on_event=on_event)
+            result = answer(question, current, history, on_event=record)
         if isinstance(result, OrchestratorUnavailable):
             raise HTTPException(status_code=503, detail=result.reason)
         if verify is not None and on_event is not None:
@@ -202,6 +216,10 @@ def create_app(
             "graph_url": f"{base}/graph" if result.graph is not None else None,
             "map_url": f"{base}/map" if _has_map(result) else None,
             "verification": _verification_summary(score),
+            # How it was worked out, for the page to show folded above the answer.
+            "process": (
+                {"steps": steps, "thinking": "".join(thoughts)} if steps or thoughts else None
+            ),
         }
         # Drawn now, while this answer's context is at hand, for its conversation to keep.
         pages: dict[PageKind, str] = {}
