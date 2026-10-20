@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from pioneer.contracts import GeneratorFuel, Item
-from pioneer.knowledge_base.loader import load_from_dict
+from pioneer.knowledge_base.loader import load_from_dict, research_tree
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "mini_docs.json"
 
@@ -247,3 +247,18 @@ def test_described_classes_become_descriptions_with_flattened_whitespace(kb) -> 
     assert constructor.text == "Crafts 1 part into another part. Can be automated."
     assert constructor.category == "FGBuildableManufacturer"
     assert "Desc_Plastic_C" not in descriptions  # the fixture gives it no description
+
+
+@pytest.mark.parametrize(
+    ("full_name", "tree"),
+    [
+        ("BlueprintGeneratedClass /Game/FactoryGame/Schematics/Research/Quartz_RS/R.R_C", "Quartz"),
+        ("/Game/FactoryGame/Schematics/Research/PowerSlugs_RS/R.R_C", "Power Slugs"),
+        ("/Game/FactoryGame/Schematics/Research/AlienOrganisms_RS/R.R_C", "Alien Organisms"),
+        ("/Game/FactoryGame/Schematics/Research/AlienTech_RS/R.R_C", "Alien Technology"),
+        ("/Game/FactoryGame/Schematics/Research/XMas_RS/R.R_C", "FICSMAS"),
+        ("/Game/FactoryGame/Schematics/Progression/Schematic_1-1.Schematic_1-1_C", None),
+    ],
+)
+def test_a_research_tree_is_told_from_the_folder_it_is_kept_in(full_name, tree) -> None:
+    assert research_tree(full_name) == tree

@@ -28,6 +28,7 @@ from pioneer.contracts import (
     TransportLink,
     TransportTier,
 )
+from pioneer.orchestrator import site_balance
 from pioneer.orchestrator.base import OrchestratorContext, OrchestratorUnavailable
 from pioneer.orchestrator.orchestrator import handle_query, recent_history
 from pioneer.qa_engine import Passage
@@ -1973,3 +1974,156 @@ def test_progress_is_told_as_the_answer_is_worked_out() -> None:
         {"type": "tool", "name": "factory_power", "text": "Checking your factory's power"},
         {"type": "status", "text": "Reading the results"},
     ]
+
+
+# --- The player's pick of recipes --------------------------------------------------------------
+
+
+def _picked(*recipe_ids: str, **fields: Any) -> OrchestratorContext:
+    """The gated context, Start and Plates unlocked, with the player's own pick of recipes."""
+    return _gated(
+        {"Schematic_Start_C", "Schematic_1-1_C"}, enabled_recipe_ids=frozenset(recipe_ids), **fields
+    )
+
+
+def test_a_turned_off_recipe_is_not_planned_and_a_turned_on_locked_one_is() -> None:
+    context = _picked("Recipe_IronPlate_C", "Recipe_Alternate_PureIronIngot_C")
+
+    result, tool_result = _run_single_tool(
+        context, "plan_production", {"target_item_id": "Iron Plate", "target_rate_per_minute": 20}
+    )
+
+    assert {node.recipe_id for node in result.graph.nodes} == {
+        "Recipe_IronPlate_C",
+        "Recipe_Alternate_PureIronIngot_C",
+    }
+    assert [entry["recipe_id"] for entry in tool_result["needs_unlocking"]] == [
+        "Recipe_Alternate_PureIronIngot_C"
+    ]
+    assert result.missing_recipes == ()
+
+
+def test_a_plan_the_picked_recipes_cannot_make_says_which_recipes_it_would_take() -> None:
+    result, tool_result = _run_single_tool(
+        _picked("Recipe_IronPlate_C"),
+        "plan_production",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 20},
+    )
+
+    assert result.graph is None  # no plan without them: nothing to draw
+    assert tool_result["missing_recipes"] == [
+        {
+            "item_id": "Desc_IronIngot_C",
+            "any_of": [
+                {"recipe_id": "Recipe_IngotIron_C", "unlocked": True},
+                {
+                    "recipe_id": "Recipe_Alternate_PureIronIngot_C",
+                    "unlocked": False,
+                    "unlock_with": "Schematic_Alternate_PureIronIngot_C",
+                    "tier": 0,
+                    "kind": "alternate",
+                },
+            ],
+        }
+    ]
+    assert "no plan" in tool_result["error"]
+    assert result.missing_recipes == ("Recipe_IngotIron_C", "Recipe_Alternate_PureIronIngot_C")
+
+
+def test_no_missing_recipes_when_no_recipe_at_all_would_help() -> None:
+    leaves = Item(item_id="Desc_Leaves_C", name="Leaves")
+    context = replace(_picked("Recipe_IronPlate_C"), items=(*_WATER_ITEMS, leaves))
+
+    result, tool_result = _run_single_tool(
+        context, "plan_production", {"target_item_id": "Leaves", "target_rate_per_minute": 1}
+    )
+
+    assert "no recipe produces" in tool_result["error"]
+    assert "missing_recipes" not in tool_result
+    assert result.missing_recipes == ()
+
+
+def test_the_model_cannot_ask_for_a_recipe_the_player_turned_off() -> None:
+    _, tool_result = _run_single_tool(
+        _picked("Recipe_IronPlate_C", "Recipe_IngotIron_C"),
+        "plan_production",
+        {
+            "target_item_id": "Iron Plate",
+            "target_rate_per_minute": 20,
+            "recipe_choices": {"Iron Ingot": "Recipe_Alternate_PureIronIngot_C"},
+        },
+    )
+
+    assert "turned off in the player's recipe list" in tool_result["error"]
+    assert tool_result["turned_off"] == "Recipe_Alternate_PureIronIngot_C"
+
+
+def test_listed_and_compared_recipes_say_whether_the_player_turned_them_on() -> None:
+    context = _picked(
+        "Recipe_IronPlate_C", "Recipe_IngotIron_C", buildings=(*_IRON_BUILDINGS, _REFINERY)
+    )
+
+    _, listed = _run_single_tool(context, "list_recipes_for_item", {"item": "Iron Ingot"})
+    _, compared = _run_single_tool(
+        context, "compare_recipes", {"item": "Iron Ingot", "target_rate_per_minute": 60}
+    )
+
+    assert {r["recipe_id"]: r["enabled"] for r in listed["recipes"]} == {
+        "Recipe_IngotIron_C": True,
+        "Recipe_Alternate_PureIronIngot_C": False,
+    }
+    options = {o["recipe_id"]: o for o in compared["options"]}
+    assert options["Recipe_Alternate_PureIronIngot_C"]["enabled"] is False
+    assert options["Recipe_Alternate_PureIronIngot_C"]["machines"] == 1  # compared as if on
+    assert options["Recipe_IngotIron_C"]["enabled"] is True
+
+
+def test_the_model_is_told_what_the_player_picked() -> None:
+    llm = _scripted_tool_calling_llm([{"content": "ok", "tool_calls": []}])
+
+    handle_query(
+        llm,
+        _fake_qa_chat_completion(""),
+        "hi",
+        _picked("Recipe_IronPlate_C", "Recipe_Alternate_PureIronIngot_C"),
+        llm_base_url=_BASE_URL,
+        llm_model=_MODEL,
+        response_id="r",
+    )
+
+    system = llm.calls[0]["messages"][0]["content"]  # type: ignore[attr-defined]
+    assert (
+        "Recipe choice: the player picked 2 of 3 recipes for plans -- turning off 1 they have "
+        "unlocked and turning on 1 they haven't yet." in system
+    )
+    assert "missing_recipes" in system
+
+
+def test_a_sites_balance_says_what_it_needs_and_what_it_has_to_spare() -> None:
+    """A smelter and a constructor: 30 ore a minute in, 20 plates out, the ingots used up."""
+    site = FactorySite(
+        site_id="site_1",
+        position=Coordinates(x=0, y=0),
+        placements=(
+            PlacementRecord(
+                building_id="Build_SmelterMk1_C",
+                position=Coordinates(x=0, y=0),
+                recipe_id="Recipe_IngotIron_C",
+            ),
+            PlacementRecord(
+                building_id="Build_ConstructorMk1_C",
+                position=Coordinates(x=100, y=0),
+                recipe_id="Recipe_IronPlate_C",
+            ),
+        ),
+    )
+    context = OrchestratorContext(
+        recipes=(*_RECIPES, _IRON_INGOT), items=_ITEMS, buildings=_IRON_BUILDINGS
+    )
+
+    net = site_balance(site, context)
+
+    assert {item: rate for item, rate in net.items() if abs(rate) > 1e-9} == {
+        "Desc_OreIron_C": -30,
+        "Desc_IronPlate_C": 20,
+    }

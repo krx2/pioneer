@@ -95,6 +95,10 @@ class OrchestratorContext:
     unlocked_technology_ids: frozenset[str] | None = None
     """Every technology the player has unlocked, from the save. `None`: unknown, so every recipe is
     treated as available."""
+    enabled_recipe_ids: frozenset[str] | None = None
+    """The recipes the player picked for plans to use -- unlocked or not -- by id; the rest are
+    off limits. `None`: they picked none, so plans use the unlocked ones (see
+    `planning_tools._plan`)."""
 
 
 @dataclass
@@ -107,6 +111,7 @@ class _ArtifactAccumulator:
     map_reference: Coordinates | None = None
     factory_sites: tuple[FactorySite, ...] | None = None
     grounding: list[str] = field(default_factory=list)
+    missing_recipes: list[str] = field(default_factory=list)
 
 
 class _ToolError(Exception):

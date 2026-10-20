@@ -16,19 +16,22 @@ fragment, so a reload, or a link, opens it again.
 
 from __future__ import annotations
 
-import html
+from typing import Any
 
 from pioneer.chat_presentation.renderer import STYLE as CHAT_STYLE
+from pioneer.web.panels import PANELS_SCRIPT, PANELS_STYLE, POPOVER, render_sources
 
 
-def render_chat_page(*, status: str) -> str:
+def render_chat_page(*, status: str, sources: dict[str, Any] | None = None) -> str:
+    """`status` is the one-line summary of what the assistant works from; `sources` says the same
+    source by source (see `app.Sources`), for the header's buttons."""
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pioneer</title>
-<style>{CHAT_STYLE}{PAGE_STYLE}</style>
+<style>{CHAT_STYLE}{PAGE_STYLE}{PANELS_STYLE}</style>
 </head>
 <body>
 <header class="bar" id="bar">
@@ -36,9 +39,10 @@ def render_chat_page(*, status: str) -> str:
     <button type="button" class="menu" id="menu" aria-label="Conversations">&#9776;</button>
     <h1 class="brand">{WORDMARK}</h1>
     <p class="tagline">{TAGLINE}</p>
-    <span class="status">{html.escape(status)}</span>
+    {render_sources(status, sources)}
   </div>
 </header>
+{POPOVER}
 <aside class="sidebar" id="sidebar" aria-label="Conversations">
   <button type="button" class="new-chat" id="new-chat">+ New conversation</button>
   <h2 class="sidebar-title">History</h2>
@@ -55,7 +59,7 @@ def render_chat_page(*, status: str) -> str:
     </div>
   </form>
 </div>
-<script>{PAGE_SCRIPT}</script>
+<script>{PAGE_SCRIPT}{PANELS_SCRIPT}</script>
 </body>
 </html>
 """
@@ -63,7 +67,8 @@ def render_chat_page(*, status: str) -> str:
 
 # The composer lines its text field up with `.chat`'s column: 760px of content inside 20px of side
 # padding, so every bubble and the field share both edges. The header spans the page instead: the
-# logo in the top left corner, the status in the top right, and the sidebar starts under it —
+# logo in the top left corner, the data sources in the top right (see `panels`), and the sidebar
+# starts under it —
 # `--bar-height` is kept at the header's height by the script, since its tagline may wrap. On a
 # narrow screen the sidebar slides in under the header from the menu button.
 PAGE_STYLE = """
@@ -186,10 +191,6 @@ body { padding-bottom: 120px; }
 }
 .tagline b { color: var(--ficsit); }
 @media (max-width: 720px) { .tagline { display: none; } }
-.status {
-  margin-left: auto; text-align: right; color: var(--muted);
-  font: 13px/1.3 var(--display); text-transform: uppercase; letter-spacing: 0.06em;
-}
 .panel {
   width: 100%; height: 460px; align-self: stretch; box-sizing: border-box;
   border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
@@ -201,6 +202,7 @@ body { padding-bottom: 120px; }
 }
 .meta button:hover, .meta select:hover { border-color: var(--ficsit); }
 .meta .chosen { background: var(--ficsit); color: var(--on-ficsit); border-color: var(--ficsit); }
+.meta .open-recipes { color: var(--ficsit); border-color: var(--ficsit); font-weight: 600; }
 .meta .again { padding: 2px 8px; font-size: 15px; line-height: 1.2; }
 .meta button:disabled { opacity: 0.45; cursor: progress; }
 .answer { display: flex; flex-direction: column; gap: 14px; }
@@ -367,6 +369,7 @@ function setBusy(on) {
   submit.disabled = on;
   sidebar.classList.toggle("busy", on);
   for (const button of document.querySelectorAll(".again")) button.disabled = on;
+  setPanelsBusy(on);
 }
 
 function addQuestion(text) {
@@ -652,7 +655,7 @@ async function ask(question, earlier, turn, live) {
 }
 
 function answered(answer) {
-  if (answer.status) document.querySelector(".status").textContent = answer.status;
+  refreshStatus();
   if (answer.conversation_id && answer.conversation_id !== conversationId) {
     conversationId = answer.conversation_id;
     setLocation(conversationId);
@@ -751,6 +754,16 @@ function addChecks(meta, checks) {
 
 function meta(answer, box, turn) {
   const meta = element("div", "meta");
+  if (answer.missing_recipes && answer.missing_recipes.length) {
+    const recipes = element("button", "open-recipes", "Open recipes");
+    recipes.type = "button";
+    recipes.title = "The recipes this plan needs turned on";
+    recipes.addEventListener("click", (event) => {
+      event.stopPropagation();  // a click outside the panel would close it again
+      openPanel("recipes", {only: answer.missing_recipes});
+    });
+    meta.append(recipes);
+  }
   addChecks(meta, answer.verification || {});
 
   const id = answer.response_id;

@@ -4,15 +4,19 @@ or file I/O involved."""
 from pioneer.contracts import Building, Item, ItemAmount, Recipe, Technology
 from pioneer.knowledge_base.queries import (
     KnowledgeBase,
+    TierProgress,
     building_for,
+    current_tier,
     easiest_unlock,
     find_items,
     item_by_id,
+    milestone_progress,
     prerequisites_for_technology,
     raw_resource_ids,
     recipe_by_id,
     recipe_is_unlocked,
     recipes_for_output,
+    research_trees,
     resolve_item,
     technology_for_recipe,
     unlock_order,
@@ -222,3 +226,50 @@ def test_unlock_order_skips_what_is_unlocked_and_what_is_unknown() -> None:
 
     assert [t.technology_id for t in order] == ["m2", "drive"]
     assert unlock_order(["m1"], _TECHNOLOGIES, unlocked={"m1"}) == ()
+
+
+def test_milestone_progress_counts_the_hubs_milestones_per_tier() -> None:
+    technologies = (
+        Technology("Schematic_Tutorial1_C", "HUB Upgrade 1", 0, kind="tutorial"),
+        Technology("Schematic_1-1_C", "Base Building", 1, kind="milestone"),
+        Technology("Schematic_1-2_C", "Logistics", 1, kind="milestone"),
+        Technology("Schematic_3-1_C", "Coal Power", 3, kind="milestone"),
+        Technology("Research_Quartz_1_1_C", "Quartz Crystals", 3, kind="mam"),
+        Technology("Schematic_Alternate_Screw_C", "Alternate: Cast Screw", 4, kind="alternate"),
+    )
+    unlocked = {"Schematic_Tutorial1_C", "Schematic_1-2_C", "Research_Quartz_1_1_C"}
+
+    progress = milestone_progress(technologies, unlocked)
+
+    assert progress == (TierProgress(0, 1, 1), TierProgress(1, 1, 2), TierProgress(3, 0, 1))
+    assert current_tier(progress) == 1
+    assert current_tier(milestone_progress(technologies, ())) is None
+
+
+def test_research_trees_order_each_tree_by_its_steps() -> None:
+    def research(technology_id: str, tree: str | None, *prerequisites: str) -> Technology:
+        return Technology(technology_id, technology_id, 3, prerequisites, kind="mam", tree=tree)
+
+    technologies = (
+        research("Research_Quartz_2_C", "Quartz"),
+        research("Research_Quartz_1_2_C", "Quartz"),
+        research("Research_Quartz_PriorityMerger_C", "Quartz"),
+        research("Research_Quartz_1_1_C", "Quartz"),
+        research("Research_Caterium_9_C", "Caterium"),
+        research("Research_Caterium_1_C", "Caterium", "Research_Caterium_9_C"),
+        research("Research_Odd_C", None),
+        Technology("Schematic_1-1_C", "Milestone", 1, kind="milestone"),
+    )
+
+    trees = {
+        name: [t.technology_id for t in members] for name, members in research_trees(technologies)
+    }
+
+    assert list(trees) == ["Caterium", "Other", "Quartz"]
+    assert trees["Quartz"] == [
+        "Research_Quartz_1_1_C",
+        "Research_Quartz_1_2_C",
+        "Research_Quartz_2_C",
+        "Research_Quartz_PriorityMerger_C",
+    ]
+    assert trees["Caterium"] == ["Research_Caterium_9_C", "Research_Caterium_1_C"]  # prerequisite

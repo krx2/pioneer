@@ -10,7 +10,7 @@ import pytest
 # Imported at collection time on purpose: `pioneer.config` loads a local `.env` into the process
 # environment on first import, and that has to happen *before* `clean_env` clears the variables,
 # or it would put them straight back mid-test.
-from pioneer.config import Settings, default_save_directory
+from pioneer.config import Settings, default_save_directory, default_save_root
 
 MODULE_NAMES = [
     "pioneer.contracts",
@@ -43,6 +43,7 @@ _SETTINGS_ENV_VARS = (
     "PIONEER_SERVER_API_TOKEN",
     "PIONEER_SERVER_EXE",
     "PIONEER_SAVE_DIR",
+    "PIONEER_SAVE_ROOT",
     "PIONEER_LLM_JUDGE",
 )
 
@@ -72,6 +73,7 @@ def test_settings_default_to_unset(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.dedicated_server_api_token is None
     assert settings.dedicated_server_exe is None
     assert settings.save_directory == default_save_directory()
+    assert settings.save_root == default_save_root()
     assert settings.llm_judge is False
 
 
@@ -79,6 +81,7 @@ def test_settings_read_values_from_env(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("PIONEER_LLM_MODEL", "local-model")
     clean_env.setenv("PIONEER_SERVER_PORT", "7777")
     clean_env.setenv("PIONEER_SAVE_DIR", "D:/saves")
+    clean_env.setenv("PIONEER_SAVE_ROOT", "D:/SaveGames")
     clean_env.setenv("PIONEER_LLM_JUDGE", "1")
 
     settings = Settings.from_env()
@@ -86,6 +89,7 @@ def test_settings_read_values_from_env(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.llm_model == "local-model"
     assert settings.dedicated_server_port == 7777
     assert settings.save_directory == "D:/saves"
+    assert settings.save_root == "D:/SaveGames"
     assert settings.llm_judge is True
 
 

@@ -41,6 +41,10 @@ docs/implementation.md Stage 2 discussion) and encoded as deliberate choices bel
   game encodes milestone order via `mTechTier` and MAM unlocks via in-game item scanning,
   neither of which is prerequisite data we can parse out of this file. `Technology.prerequisites`
   is therefore genuinely empty for milestones/MAM, not a parsing gap.
+- **MAM trees aren't named either**, but the game files each research schematic in a folder of
+  its tree's: `FullName` reads `.../Schematics/Research/Quartz_RS/Research_Quartz_1_2...`, so
+  `Technology.tree` is that folder without its `_RS`, its words spaced out ("PowerSlugs" -> "Power
+  Slugs") — and the two the game's UI calls otherwise by their in-game names (`_TREE_NAMES`).
 - **Fluid amounts are stored scaled by 1000.** The export writes liquid and gas quantities in
   litres while the game's own UI (and every other tool) talks in m³ — `Recipe_LiquidFuel_C` lists
   its crude oil ingredient as `60000`, meaning 60 m³/min. Solids are unscaled. Which items are
@@ -61,6 +65,7 @@ docs/implementation.md Stage 2 discussion) and encoded as deliberate choices bel
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -430,6 +435,19 @@ def _extraction(entry: dict[str, Any]) -> tuple[float, str | None]:
     return per_cycle / cycle_seconds * 60.0, allowed[0] if len(allowed) == 1 else None
 
 
+_RESEARCH_FOLDER = re.compile(r"/Schematics/Research/([^/]+?)(?:_RS)?/")
+_TREE_NAMES = {"AlienTech": "Alien Technology", "XMas": "FICSMAS"}
+
+
+def research_tree(full_name: str) -> str | None:
+    """The MAM tree of the research schematic at `full_name` (its `FullName`), from its folder."""
+    match = _RESEARCH_FOLDER.search(full_name)
+    if match is None:
+        return None
+    folder = match.group(1)
+    return _TREE_NAMES.get(folder) or re.sub(r"(?<=[a-z])(?=[A-Z])", " ", folder)
+
+
 def _parse_prerequisites(raw_dependencies: list[dict[str, Any]] | None) -> tuple[str, ...]:
     prerequisites: list[str] = []
     for dependency in raw_dependencies or []:
@@ -449,17 +467,19 @@ def _load_technologies(
         if entry.get("mType") in _IRRELEVANT_SCHEMATIC_TYPES:
             continue
         technology_id = entry["ClassName"]
+        kind = str(entry.get("mType") or "").removeprefix("EST_").lower()
         technologies.append(
             Technology(
                 technology_id=technology_id,
                 name=entry.get("mDisplayName") or technology_id,
                 tier=int(float(entry.get("mTechTier") or 0)),
                 prerequisites=_parse_prerequisites(entry.get("mSchematicDependencies")),
-                kind=str(entry.get("mType") or "").removeprefix("EST_").lower(),
+                kind=kind,
                 cost=tuple(
                     ItemCount(item_id=item_id, amount=amount)
                     for item_id, amount in parse_item_amounts(entry.get("mCost") or "")
                 ),
+                tree=research_tree(str(entry.get("FullName") or "")) if kind == "mam" else None,
             )
         )
         for unlock in entry.get("mUnlocks") or []:

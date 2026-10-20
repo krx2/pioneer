@@ -1,6 +1,10 @@
 """Tool handlers for planning and game knowledge: items and recipes, new production
 chains and expansions, recipe comparisons, power, unlocks, build locations and free-form
-game questions."""
+game questions.
+
+Every plan is made from the recipes the player may use (see `_plan`): the ones they ticked, or by
+default the ones they've unlocked. A plan the ticked recipes can't make comes back as an error with
+`missing_recipes` -- which recipes it would take -- rather than as a plan."""
 
 from __future__ import annotations
 
@@ -35,7 +39,12 @@ from pioneer.orchestrator.existing_factory import (
 )
 from pioneer.orchestrator.items import _item_summary, _resolve_item_id, raw_resource_ids
 from pioneer.orchestrator.summaries import _graph_summary, _per_item, _stage_power
-from pioneer.production_planner.planner import plan_production, recipes_for_output
+from pioneer.production_planner import (
+    MissingRecipe,
+    find_missing_recipes,
+    plan_production,
+    recipes_for_output,
+)
 from pioneer.qa_engine import ChatCompletion, LLMUnavailable, NoRelevantPassages, QAAnswer
 from pioneer.qa_engine import answer_question as qa_answer_question
 from pioneer.verifier import (
@@ -68,6 +77,7 @@ def _handle_list_recipes(args: dict[str, Any], context: OrchestratorContext) -> 
                 "name": recipe.name,
                 "alternate": recipe.is_alternate,
                 "unlocked": recipe_is_unlocked(recipe, context.unlocked_technology_ids),
+                "enabled": _is_usable(recipe, context),
                 "unlocked_by": list(recipe.unlockable_by),
                 "building_id": recipe.building_ids[0] if recipe.building_ids else None,
                 "inputs_per_machine_per_minute": {
@@ -89,6 +99,8 @@ def _handle_plan_production(
     target_rate = _target_rate(args)
     try:
         graph = _plan(context, target_item_id, target_rate, _recipe_choices(args, context))
+    except _PlanningBlocked as blocked:
+        return blocked.result(context, accumulator)
     except (ValueError, KeyError) as error:
         return {"error": str(error)}
 
@@ -129,6 +141,8 @@ def _handle_expand_existing_factory(
             _recipe_choices(args, context),
             available_supply=surplus,
         )
+    except _PlanningBlocked as blocked:
+        return blocked.result(context, accumulator)
     except (ValueError, KeyError) as error:
         return {"error": str(error)}
 
@@ -203,7 +217,9 @@ def _handle_expand_existing_factory(
     return _with_spare_power(result, context)
 
 
-def _handle_compare_recipes(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+def _handle_compare_recipes(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+) -> dict[str, Any]:
     item_id = _resolve_item_id(args["item"], context)
     rate = _target_rate(
         {"target_rate_per_minute": args.get("target_rate_per_minute", _DEFAULT_COMPARISON_RATE)}
@@ -215,8 +231,17 @@ def _handle_compare_recipes(args: dict[str, Any], context: OrchestratorContext) 
 
     options: list[dict[str, Any]] = []
     for recipe in primary:
-        try:
-            graph = _plan(context, item_id, rate, {item_id: recipe.recipe_id})
+        enabled = _is_usable(recipe, context)
+        try:  # a recipe the player turned off is compared as if it were on, and said to be off
+            graph = _plan(
+                context, item_id, rate, {item_id: recipe.recipe_id}, also_allowed=(recipe,)
+            )
+        except _PlanningBlocked as blocked:
+            options.append(
+                {"recipe_id": recipe.recipe_id, "enabled": enabled}
+                | blocked.result(context, accumulator)
+            )
+            continue
         except ValueError as error:
             options.append({"recipe_id": recipe.recipe_id, "error": str(error)})
             continue
@@ -225,6 +250,7 @@ def _handle_compare_recipes(args: dict[str, Any], context: OrchestratorContext) 
             "recipe_id": recipe.recipe_id,
             "alternate": recipe.is_alternate,
             "unlocked": recipe_is_unlocked(recipe, context.unlocked_technology_ids),
+            "enabled": enabled,
             "stages": len(graph.nodes),
             "machines": sum(node.machine_count for node in graph.nodes),
             "inputs_per_minute": {i: -rate for i, rate in net.items() if rate < -_RATE_EPSILON},
@@ -254,7 +280,9 @@ def _handle_compare_recipes(args: dict[str, Any], context: OrchestratorContext) 
     return result
 
 
-def _handle_plan_power(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+def _handle_plan_power(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+) -> dict[str, Any]:
     if not context.buildings or not context.items:
         raise _ToolError("no knowledge base loaded -- power can't be planned")
     target_mw = float(args["target_mw"])
@@ -298,28 +326,42 @@ def _handle_plan_power(args: dict[str, Any], context: OrchestratorContext) -> di
 
     result: dict[str, Any] = {"target_mw": target_mw, "options": options}
     if fuel_id is not None:
-        result["fuel_supply"] = _fuel_supply(fuel_id, plants[0].fuel_per_minute, context)
+        result["fuel_supply"] = _fuel_supply(
+            fuel_id, plants[0].fuel_per_minute, context, accumulator
+        )
     return _with_spare_power(result, context)
 
 
-def _fuel_supply(fuel_id: str, per_minute: float, context: OrchestratorContext) -> dict[str, Any]:
+def _fuel_supply(
+    fuel_id: str,
+    per_minute: float,
+    context: OrchestratorContext,
+    accumulator: _ArtifactAccumulator,
+) -> dict[str, Any]:
     """How the named fuel gets made: mined, or the production chain for it."""
     if fuel_id in raw_resource_ids(context) or not recipes_for_output(fuel_id, context.recipes):
         return {"mined": True, "per_minute": per_minute}
     try:
         graph = _plan(context, fuel_id, per_minute, None)
+    except _PlanningBlocked as blocked:
+        return blocked.result(context, accumulator)
     except ValueError as error:
         return {"error": str(error)}
     return {"per_minute": per_minute, **_graph_summary(graph, context)}
 
 
-def _handle_plan_unlocks(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+def _handle_plan_unlocks(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+) -> dict[str, Any]:
     if not context.technologies:
         raise _ToolError("no technology data loaded -- unlocks can't be planned")
     item_id = _resolve_item_id(args["item"], context)
     if item_id in raw_resource_ids(context):
         raise _ToolError(f"{item_id} is a raw resource: it's mined, not unlocked")
-    graph = _plan(context, item_id, 1.0, None)
+    try:
+        graph = _plan(context, item_id, 1.0, None)
+    except _PlanningBlocked as blocked:
+        return blocked.result(context, accumulator)
     recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
     unlocked = context.unlocked_technology_ids
     wanted = []
@@ -451,6 +493,48 @@ def _suggest_sites(
     return {"suggested_sites": suggestions} if suggestions else {}
 
 
+class _PlanningBlocked(Exception):
+    """The recipes the player ticked can't make an item every recipe could: `missing` says which
+    of the others it would take."""
+
+    def __init__(self, target_item_id: str, missing: tuple[MissingRecipe, ...]) -> None:
+        super().__init__(f"the recipes the player turned on can't make {target_item_id}")
+        self.target_item_id = target_item_id
+        self.missing = missing
+
+    def result(
+        self, context: OrchestratorContext, accumulator: _ArtifactAccumulator
+    ) -> dict[str, Any]:
+        """The tool result saying so -- and the recipes noted on the answer, for the page."""
+        recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
+        for entry in self.missing:
+            accumulator.missing_recipes.extend(entry.any_of)
+        return {
+            "error": f"no plan: the recipes the player turned on can't make "
+            f"{self.target_item_id}, and the ones they turned off could",
+            "missing_recipes": [
+                {
+                    "item_id": entry.item_id,
+                    "any_of": [_recipe_option(recipes[r], context) for r in entry.any_of],
+                }
+                for entry in self.missing
+            ],
+        }
+
+
+def _recipe_option(recipe: Recipe, context: OrchestratorContext) -> dict[str, Any]:
+    """One recipe the player could turn on: whether they have it, and what unlocks it if not."""
+    unlocked = recipe_is_unlocked(recipe, context.unlocked_technology_ids)
+    option: dict[str, Any] = {"recipe_id": recipe.recipe_id, "unlocked": unlocked}
+    if unlocked is False:
+        technology = easiest_unlock(recipe.unlockable_by, context.technologies)
+        if technology is not None:
+            option.update(
+                unlock_with=technology.technology_id, tier=technology.tier, kind=technology.kind
+            )
+    return option
+
+
 def _plan(
     context: OrchestratorContext,
     target_item_id: str,
@@ -458,38 +542,86 @@ def _plan(
     recipe_choices: dict[str, str] | None,
     *,
     available_supply: Mapping[str, float] | None = None,
+    also_allowed: tuple[Recipe, ...] = (),
 ) -> ProductionGraph:
-    """A plan from the recipes the player has unlocked, when those can make the item; otherwise
-    from every recipe (see `_needs_unlocking`). Raises what `plan_production` raises."""
+    """A plan from the recipes the player may use (`_usable_recipes`, plus `also_allowed`).
+
+    With the player's own pick of recipes that's all there is: when it can't make the item but
+    every recipe could, `_PlanningBlocked` says which recipes it would take. By default -- the
+    recipes the player has unlocked -- a plan those can't make is made from every recipe instead,
+    and `_needs_unlocking` says what's missing. Raises what `plan_production` raises."""
     raw_item_ids = raw_resource_ids(context)
-    unlocked = _unlocked_recipes(context)
-    if len(unlocked) < len(context.recipes):
+    usable = _usable_recipes(context)
+    usable += tuple(recipe for recipe in also_allowed if recipe not in usable)
+
+    def plan(recipes: tuple[Recipe, ...]) -> ProductionGraph:
+        return plan_production(
+            target_item_id,
+            target_rate,
+            recipes,
+            recipe_choices,
+            raw_item_ids=raw_item_ids,
+            available_supply=available_supply,
+            game_recipes=context.recipes,
+        )
+
+    if context.enabled_recipe_ids is not None:
+        _refuse_turned_off(recipe_choices, usable, context)
         try:
-            return plan_production(
+            return plan(usable)
+        except ValueError:
+            missing = find_missing_recipes(
                 target_item_id,
                 target_rate,
-                unlocked,
+                usable,
+                context.recipes,
                 recipe_choices,
                 raw_item_ids=raw_item_ids,
                 available_supply=available_supply,
             )
+            if missing:
+                raise _PlanningBlocked(target_item_id, missing) from None
+            raise
+    if len(usable) < len(context.recipes):
+        try:
+            return plan(usable)
         except ValueError:
             pass  # not with what's unlocked: plan with everything, and say what's missing
-    return plan_production(
-        target_item_id,
-        target_rate,
-        context.recipes,
-        recipe_choices,
-        raw_item_ids=raw_item_ids,
-        available_supply=available_supply,
-    )
+    return plan(context.recipes)
 
 
-def _unlocked_recipes(context: OrchestratorContext) -> tuple[Recipe, ...]:
+def _usable_recipes(context: OrchestratorContext) -> tuple[Recipe, ...]:
+    """The recipes plans may use: the player's pick, else every one they've unlocked -- every one
+    there is while what's unlocked is unknown."""
+    if context.enabled_recipe_ids is not None:
+        return tuple(r for r in context.recipes if r.recipe_id in context.enabled_recipe_ids)
     unlocked = context.unlocked_technology_ids
     if unlocked is None:
         return context.recipes
     return tuple(r for r in context.recipes if recipe_is_unlocked(r, unlocked))
+
+
+def _is_usable(recipe: Recipe, context: OrchestratorContext) -> bool:
+    if context.enabled_recipe_ids is not None:
+        return recipe.recipe_id in context.enabled_recipe_ids
+    return recipe_is_unlocked(recipe, context.unlocked_technology_ids) is not False
+
+
+def _refuse_turned_off(
+    recipe_choices: dict[str, str] | None,
+    usable: tuple[Recipe, ...],
+    context: OrchestratorContext,
+) -> None:
+    """A recipe the model asks for by name that the player turned off is refused, not planned."""
+    allowed = {recipe.recipe_id for recipe in usable}
+    known = {recipe.recipe_id for recipe in context.recipes}
+    for recipe_id in (recipe_choices or {}).values():
+        if recipe_id in known and recipe_id not in allowed:
+            raise _ToolError(
+                f"{recipe_id} is turned off in the player's recipe list -- plan without it, or "
+                "tell the player to turn it on in the Recipes panel",
+                turned_off=recipe_id,
+            )
 
 
 def _needs_unlocking(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:

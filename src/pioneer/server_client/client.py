@@ -60,6 +60,8 @@ def query_server_state(
     except TransportError as error:
         return ServerUnavailable(reason=f"could not reach dedicated server: {error}")
 
+    if status_code in (401, 403):
+        return ServerUnavailable(reason=f"the server refused the API token (HTTP {status_code})")
     if status_code != 200:
         return ServerUnavailable(reason=f"dedicated server returned HTTP {status_code}")
     if response is None:

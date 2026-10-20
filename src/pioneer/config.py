@@ -30,16 +30,21 @@ class Settings:
     dedicated_server_host: str | None
     dedicated_server_port: int | None
     dedicated_server_api_token: str | None
-    """Bearer token for the Dedicated Server HTTPS API (see server_client's module docstring).
-    Obtained out-of-band via the server's login functions — not something this project logs into
-    on its own yet."""
+    """Bearer token for the Dedicated Server HTTPS API (see server_client's module docstring): an
+    application token from the server console's `server.GenerateAPIToken`. The web UI's Server
+    panel can get one with the admin password instead, and keeps it in `data/settings.json`."""
     dedicated_server_exe: str | None
     """Where the dedicated server's `FactoryServer.exe` lives — the folder or the file itself.
     Only `pioneer.startup` uses it, to start the server along with everything else."""
     save_directory: str | None
     """Where to look for `.sav` files; the newest one wins (see `save_parser.find_latest_save`).
     Defaults to the game's own dedicated-server save location, so a normal Windows install needs
-    no configuration at all."""
+    no configuration at all. A save picked in the web UI's Save panel takes its place (see
+    `app.preferences`)."""
+    save_root: str | None = None
+    """The game's `SaveGames` folder, whose saves the web UI's Save panel lists: local Steam and
+    Epic saves and the ones pulled from a dedicated server, each in a folder of its own. Defaults
+    to the parent of the default `save_directory`."""
     llm_judge: bool = False
     """Whether the web UI asks the model for LLM-as-a-judge verdicts on its own answers
     (architecture.md §6) — one extra model call per answer and per suggested build site."""
@@ -55,6 +60,7 @@ class Settings:
             dedicated_server_api_token=os.environ.get("PIONEER_SERVER_API_TOKEN"),
             dedicated_server_exe=os.environ.get("PIONEER_SERVER_EXE") or None,
             save_directory=os.environ.get("PIONEER_SAVE_DIR") or default_save_directory(),
+            save_root=os.environ.get("PIONEER_SAVE_ROOT") or default_save_root(),
             llm_judge=_flag(os.environ.get("PIONEER_LLM_JUDGE")),
         )
 
@@ -85,10 +91,17 @@ def default_save_directory() -> str | None:
     """`%LOCALAPPDATA%/FactoryGame/Saved/SaveGames/server` — where the game itself stores saves
     pulled from a dedicated server (the only play mode this project supports, per architecture.md
     §2). `None` off Windows, or if `LOCALAPPDATA` isn't set; set `PIONEER_SAVE_DIR` then."""
+    root = default_save_root()
+    return str(Path(root) / "server") if root else None
+
+
+def default_save_root() -> str | None:
+    """`%LOCALAPPDATA%/FactoryGame/Saved/SaveGames`, the folder every kind of save lives under.
+    `None` off Windows, or if `LOCALAPPDATA` isn't set; set `PIONEER_SAVE_ROOT` then."""
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
         return None
-    return str(Path(local_app_data) / "FactoryGame" / "Saved" / "SaveGames" / "server")
+    return str(Path(local_app_data) / "FactoryGame" / "Saved" / "SaveGames")
 
 
 settings = Settings.from_env()

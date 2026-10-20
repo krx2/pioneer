@@ -4,9 +4,9 @@
 Split the same way as `graph_presentation`: `build_markers` is a pure, unit-testable transform
 (contracts in, marker specs out); `render_page` lays those markers out as an SVG, panned and
 zoomed by `MAP_SCRIPT` moving the SVG's own `viewBox` -- no D3 needed, since it's just a fixed
-set of markers rather than a force simulation. There's no real map texture yet (per Stage 3, full
-map data can be filled in later) — the SVG background is a placeholder grid standing in for the
-in-game map image.
+set of markers rather than a force simulation. The SVG works in the game's own coordinates, so a
+picture of the game's map (`MapBackground`) goes under the markers as one `<image>` spanning the
+world it shows; without one, a grid stands in for it.
 """
 
 from __future__ import annotations
@@ -44,6 +44,24 @@ _PURITY_COLOR = {
 _EXISTING_COLOR = "#6b7683"
 _RECOMMENDED_COLOR = "#33c17a"
 _FACTORY_COLOR = "#2f6fed"
+
+
+@dataclass(frozen=True)
+class MapBackground:
+    """A picture of the game's map, and the part of the world it shows, in game coordinates."""
+
+    href: str
+    min_x: float
+    min_y: float
+    max_x: float
+    max_y: float
+
+    def svg(self) -> str:
+        width, height = self.max_x - self.min_x, self.max_y - self.min_y
+        return (
+            f'<image class="world" href="{html.escape(self.href)}" x="{self.min_x}" '
+            f'y="{self.min_y}" width="{width}" height="{height}" preserveAspectRatio="none" />'
+        )
 
 
 @dataclass(frozen=True)
@@ -242,17 +260,20 @@ def render_page(
     label_limit: int = 40,
     factory_sites: tuple[FactorySite, ...] = (),
     icons: Mapping[str, str] | None = None,
+    background: MapBackground | None = None,
 ) -> str:
     """Every marker keeps its label as a hover tooltip; past `label_limit` markers only the
     recommended sites and factories are also labelled on the map — a real map's hundreds of nodes
-    would otherwise bury the pins under text."""
+    would otherwise bury the pins under text. With a `background`, the game's map lies under the
+    markers, and zooming out goes as far as all of it."""
     markers = build_markers(
         resource_nodes, placements, ranked_locations, names, factory_sites, icons
     )
     label_everything = len(markers) <= label_limit
     min_x, min_y, w, h = compute_view_box(markers)
     unit = max(w, h) / 45
-    grid = _svg_grid(min_x, min_y, w, h, unit=unit)
+    grid = background.svg() if background else _svg_grid(min_x, min_y, w, h, unit=unit)
+    world_width = background.max_x - background.min_x if background else 0
     markers_svg = "".join(
         _svg_marker(
             m, unit=unit, show_label=label_everything or m.kind in ("recommended", "factory")
@@ -282,6 +303,7 @@ def render_page(
 </div>
 <script>
 const initialView = {{x: {min_x}, y: {min_y}, w: {w}, h: {h}}};
+const worldWidth = {world_width};
 {MAP_SCRIPT}
 </script>
 </body>
@@ -325,7 +347,7 @@ MAP_SCRIPT = """
 const svg = document.getElementById("map");
 let view = {...initialView};
 const minWidth = initialView.w * 0.04;
-const maxWidth = initialView.w * 6;
+const maxWidth = Math.max(initialView.w * 6, worldWidth * 1.2);
 
 function applyView() {
   svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);

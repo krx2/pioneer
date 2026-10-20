@@ -50,6 +50,12 @@ correct itself on the next round.
 unlocked first; only when those can't make the item does it plan with every recipe, and then it
 says which stages need what unlocked. `plan_unlocks` turns that into an unlock order.
 
+**Which recipes the player picked.** Once the player has ticked which recipes plans may use
+(`OrchestratorContext.enabled_recipe_ids`), plans use those and nothing else -- also ones not yet
+unlocked, which `needs_unlocking` then names. When the ticked ones can't make an item every recipe
+could, the tool says which recipes it would take instead of planning (`missing_recipes`), and the
+answer carries their ids for the page to offer turning them on.
+
 **The existing factory, as the Verifier sees it.** Expansion and diagnosis both start from the
 factory's net per-item balance: what its recipes make, its extractors mine and its generators leave
 behind (nuclear waste), minus what its recipes and its generators consume — fuel, and the water
@@ -73,6 +79,7 @@ from pioneer.contracts import (
     ResponseArtifact,
     TransportError,
 )
+from pioneer.knowledge_base import recipe_is_unlocked
 from pioneer.orchestrator.base import (
     OrchestratorContext,
     OrchestratorUnavailable,
@@ -116,6 +123,11 @@ _SYSTEM_PROMPT = (
     "invent numbers that didn't come from a tool. If a tool "
     "reports an error (e.g. no save data loaded), explain that limitation to the player plainly "
     "instead of guessing or making up factory state.\n\n"
+    "If a tool result has `missing_recipes`, the player has turned off recipes the plan needs: "
+    "there is no plan, so don't describe one. Say, for each entry, which item needs a recipe "
+    "turned on and that any one of its `any_of` recipes will do; for one they haven't unlocked "
+    "yet, say what unlocks it (`unlock_with`). Several entries are all needed. The page offers a "
+    "button that opens the player's recipe list on exactly those recipes.\n\n"
     "Answer only what was asked. A simple lookup -- how much the factory produces, an item's "
     "balance, what a recipe needs -- is one tool call: make it, then report its numbers (a "
     "short list or table is fine) with no diagnosis, recommendations or follow-up offers the "
@@ -193,6 +205,7 @@ def handle_query(
                 factory_sites=accumulator.factory_sites,
                 question=question,
                 grounding=tuple(accumulator.grounding),
+                missing_recipes=tuple(dict.fromkeys(accumulator.missing_recipes)),
             )
 
         emit({"type": "discard"})
@@ -256,6 +269,8 @@ def context_note(context: OrchestratorContext) -> str:
         else "Resource node data: not loaded -- build locations can't be ranked.",
         _unlocks_note(context),
     ]
+    if context.enabled_recipe_ids is not None:
+        lines.append(_recipe_choice_note(context))
     state = context.game_state
     lines.append(
         f"Live server: session {state.session_name or 'unnamed'}, game phase {state.phase}, "
@@ -264,6 +279,23 @@ def context_note(context: OrchestratorContext) -> str:
         else "Live server state: unavailable."
     )
     return "Data available in this conversation:\n" + "\n".join(f"- {line}" for line in lines)
+
+
+def _recipe_choice_note(context: OrchestratorContext) -> str:
+    enabled = context.enabled_recipe_ids or frozenset()
+    unlocked = context.unlocked_technology_ids
+    turned_off = turned_on_locked = 0
+    for recipe in context.recipes:
+        is_unlocked = recipe_is_unlocked(recipe, unlocked) is not False
+        if is_unlocked and recipe.recipe_id not in enabled:
+            turned_off += 1
+        elif not is_unlocked and recipe.recipe_id in enabled:
+            turned_on_locked += 1
+    return (
+        f"Recipe choice: the player picked {len(enabled)} of {len(context.recipes)} recipes for "
+        f"plans -- turning off {turned_off} they have unlocked and turning on {turned_on_locked} "
+        "they haven't yet. Plans use only those."
+    )
 
 
 def _unlocks_note(context: OrchestratorContext) -> str:

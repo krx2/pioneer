@@ -45,6 +45,7 @@ _ALLOWED_IMPORTS: dict[str, set[str]] = {
         "graph_presentation",
         "icons",
         "llm_client",
+        "map_image",
         "map_presentation",
         "orchestrator",
         "verification_feedback",

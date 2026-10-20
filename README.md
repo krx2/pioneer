@@ -37,7 +37,8 @@ Ollama silently drops the *front* of the prompt — the rules and the tools — 
 from the conversation alone: no tool calls, no graph or map, made-up recipes. Set the context
 length to 16384 in the Ollama app's settings, or set `OLLAMA_CONTEXT_LENGTH=16384` for Ollama
 and restart it (`startup.py` does that for an Ollama it starts itself). `qwen2.5:14b` then needs
-about 12 GB of VRAM. The page's status line says when the loaded model's window is too small.
+about 12 GB of VRAM. A red chip in the page's header says when the loaded model's window is too
+small.
 
 ## Running it
 
@@ -62,6 +63,44 @@ and the feedback buttons. While an answer is on its way, the page shows what the
 (which tool it runs on what) and the answer's text as the model writes it. The sidebar lists past
 conversations, graphs and maps included; "New conversation" starts from a clean context.
 Feedback, a log of every answer and the conversations go to `data/`, which is gitignored.
+
+## What it works from: the header
+
+The header's five buttons say what the assistant knows right now, each opening a panel under it:
+
+- **Recipes** (`147/291`): which recipes plans may use. By default every recipe the save has
+  unlocked; tick or untick any of them — also ones not unlocked yet, which plans then use and say
+  what unlocks them. An unticked recipe is never planned with: when a plan can't be made without
+  one, the answer says which recipes it would take (any one per item) and offers to open the list
+  on exactly those. The pick is kept per session, as the difference from the default, so a recipe
+  unlocked later in the game comes in ticked.
+- **Tech** (`T8`): the HUB's tiers 0–9 with how many milestones of each are unlocked, then the
+  milestones, every MAM tree and the hard drives' alternates, each ticked when unlocked — hover
+  one for its cost and what it unlocks. Read only: things are unlocked in the game.
+- **Map** (`17 sites`): the game's map with the save's factories, each marked with what it makes.
+  Point at one for what it takes in and puts out a minute, and arrows from the resource nodes
+  that feed it — along its belts and pipes, or, dashed, the nearest when there are none; click to
+  keep it. The side panel picks which nodes to show — by resource, purity, free or taken — and
+  remembers it in the browser. Scroll to zoom, drag to move, double-click to see it all.
+- **Save**: every save under the game's `SaveGames` folder — Steam, Epic and dedicated-server ones
+  — by session, and which one is read: the newest in a folder (following the autosaves), the
+  newest of one session, or one file, pinned. A big save is read in the background; the last one
+  stays in use until it's in.
+- **Server**: the dedicated server's address and how it last answered. Paste an API token
+  (`server.GenerateAPIToken` in the server console), or give the admin password once: Pioneer
+  logs in to have the server make a lasting token, keeps that and forgets the password. The token
+  is never sent back to the page.
+
+A red dot on a button means that source failed — hover it for why. What's picked in the panels is
+kept in `data/settings.json` and wins over `.env`, which is never written; the CLI uses it too.
+
+## The map
+
+The maps — the Map panel and an answer's map alike — lie on the game's own map:
+`docs/map/map.jpg`, the official map from the game's wiki, like the icons the developers' own
+artwork. `pioneer.map_image` says where in the world it lies: x from -324 698.83 to 425 301.83 and
+y from -375 000 to 375 000 cm, east and south — `tests/test_map_image.py` checks that the shipped
+deposits land on its land. Without the file the maps draw a plain grid.
 
 ## Item icons
 
@@ -129,6 +168,8 @@ src/pioneer/
   orchestrator/         the tools the model calls, and the routing loop
   llm_client/           the HTTP transport to the model
   icons.py              imports item and building icons (docs/icons/)
-  web/, app.py, startup.py
+  map_image.py          the game's map picture (docs/map/) and where in the world it lies
+  app/                  the composition root: data loading, the live context the header steers
+  web/, startup.py
 tests/                  mirrors the layout above
 ```

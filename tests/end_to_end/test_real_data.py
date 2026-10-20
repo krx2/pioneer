@@ -9,6 +9,7 @@ circles through 1.0's ore-conversion recipes.
 
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,13 @@ from pioneer.app import (
     load_resource_nodes,
 )
 from pioneer.contracts import ResponseArtifact
-from pioneer.knowledge_base import KnowledgeBase, raw_resource_ids
+from pioneer.knowledge_base import (
+    KnowledgeBase,
+    current_tier,
+    milestone_progress,
+    raw_resource_ids,
+    recipe_is_unlocked,
+)
 from pioneer.orchestrator import OrchestratorContext, handle_query
 from pioneer.production_planner.planner import plan_production
 from pioneer.save_parser import load_save_state
@@ -389,3 +396,51 @@ def test_real_saves_group_into_factory_sites(kb) -> None:
     for save_name, expected in (("alfa", 1), ("tak", 4), ("stal_mielec", 18)):
         context = build_context(kb, load_save_state(_SAVES / f"{save_name}.sav"))
         assert len(context.factory_sites) == expected, save_name
+
+
+def test_with_every_screw_recipe_turned_off_the_plan_names_them(context) -> None:
+    makes_screws = {
+        recipe.recipe_id
+        for recipe in context.recipes
+        if any(output.item_id == "Desc_IronScrew_C" for output in recipe.outputs)
+    }
+    # The save's own recipes, less the screws: none of its unlocked alternates gets around them.
+    unlocked = {
+        recipe.recipe_id
+        for recipe in context.recipes
+        if recipe_is_unlocked(recipe, context.unlocked_technology_ids)
+    }
+    picked = replace(context, enabled_recipe_ids=frozenset(unlocked - makes_screws))
+
+    artifact, [result] = _ask(
+        picked,
+        (
+            "plan_production",
+            {"target_item_id": "Reinforced Iron Plate", "target_rate_per_minute": 5},
+        ),
+    )
+
+    assert artifact.graph is None
+    (entry,) = result["missing_recipes"]
+    assert entry["item_id"] == "Desc_IronScrew_C"
+    assert {option["recipe_id"] for option in entry["any_of"]} == makes_screws
+    assert entry["any_of"][0]["recipe_id"] == "Recipe_Screw_C"  # the standard one first
+    assert set(artifact.missing_recipes) == makes_screws
+
+
+@pytest.mark.parametrize(
+    ("save", "tier", "unlocked"),
+    [
+        ("stal_mielec", 6, (6, 3, 5, 4, 5, 5, 5, 0, 0, 0)),
+        ("alfa", 4, (6, 3, 3, 2, 2, 0, 0, 0, 0, 0)),
+    ],
+)
+def test_milestone_progress_from_real_saves(kb, save: str, tier: int, unlocked) -> None:
+    state = load_save_state(_SAVES / f"{save}.sav")
+
+    progress = milestone_progress(kb.technologies, state.unlocked_technology_ids)
+
+    assert current_tier(progress) == tier
+    assert tuple(t.tier for t in progress) == tuple(range(10))
+    assert tuple(t.unlocked for t in progress) == unlocked
+    assert sum(t.total for t in progress) == 48

@@ -6,7 +6,12 @@ and, via Screw, Iron Rod), which is exactly what demand aggregation needs to get
 import pytest
 
 from pioneer.contracts import ItemAmount, MaterialFlow, ProductionNode, Recipe
-from pioneer.production_planner.planner import plan_production, recipes_for_output
+from pioneer.production_planner.planner import (
+    MissingRecipe,
+    find_missing_recipes,
+    plan_production,
+    recipes_for_output,
+)
 
 _IRON_INGOT = Recipe(
     recipe_id="Recipe_IngotIron_C",
@@ -394,3 +399,131 @@ def test_cyclic_recipe_dependency_raises() -> None:
     )
     with pytest.raises(ValueError, match="cyclic"):
         plan_production("item_a", 10, (a, b))
+
+
+# --- Planning from some of the recipes ---------------------------------------------------------
+
+_CAST_SCREW = Recipe(
+    recipe_id="Recipe_Alternate_Screw_C",
+    name="Alternate: Cast Screw",
+    building_ids=("Build_ConstructorMk1_C",),
+    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=12.5),),
+    outputs=(ItemAmount(item_id="Desc_Screw_C", amount_per_minute=50),),
+    is_alternate=True,
+)
+_STEEL_SCREW = Recipe(
+    recipe_id="Recipe_Alternate_Screw_2_C",
+    name="Alternate: Steel Screw",
+    building_ids=("Build_ConstructorMk1_C",),
+    inputs=(ItemAmount(item_id="Desc_SteelBeam_C", amount_per_minute=5),),
+    outputs=(ItemAmount(item_id="Desc_Screw_C", amount_per_minute=260),),
+    is_alternate=True,
+)
+_STEEL_BEAM = Recipe(
+    recipe_id="Recipe_SteelBeam_C",
+    name="Steel Beam",
+    building_ids=("Build_ConstructorMk1_C",),
+    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=60),),
+    outputs=(ItemAmount(item_id="Desc_SteelBeam_C", amount_per_minute=15),),
+)
+_GAME = (*RECIPES, _CAST_SCREW, _STEEL_SCREW, _STEEL_BEAM)
+_RAW = ("Desc_OreIron_C",)
+_RIP = "Desc_IronPlateReinforced_C"
+_ALL_SCREWS = (_SCREW, _CAST_SCREW, _STEEL_SCREW)
+
+
+def _without(*left_out: Recipe, game: tuple[Recipe, ...] = _GAME) -> tuple[Recipe, ...]:
+    return tuple(recipe for recipe in game if recipe not in left_out)
+
+
+def test_an_item_only_a_left_out_recipe_makes_is_no_raw_input() -> None:
+    recipes = _without(*_ALL_SCREWS)
+
+    unaware = plan_production(_RIP, 5, recipes, raw_item_ids=_RAW)
+    with pytest.raises(ValueError, match="no chain of the given recipes makes"):
+        plan_production(_RIP, 5, recipes, raw_item_ids=_RAW, game_recipes=_GAME)
+
+    assert _flow(unaware, "Desc_Screw_C", _RIP).source_node_id is None  # taken from nowhere
+
+
+def test_a_chain_running_into_a_dead_end_gives_way_to_another() -> None:
+    recipes = _without(_IRON_ROD, _STEEL_SCREW)  # the standard Screw needs rods: Cast Screw then
+
+    graph = plan_production(_RIP, 5, recipes, raw_item_ids=_RAW, game_recipes=_GAME)
+
+    assert _node(graph, "Desc_Screw_C").recipe_id == "Recipe_Alternate_Screw_C"
+
+
+def test_spare_supply_of_a_dead_end_is_used_but_not_overdrawn() -> None:
+    def plan(spare: float):
+        return plan_production(
+            _RIP,
+            5,
+            _without(*_ALL_SCREWS),
+            raw_item_ids=_RAW,
+            available_supply={"Desc_Screw_C": spare},
+            game_recipes=_GAME,
+        )
+
+    graph = plan(60)
+    with pytest.raises(ValueError, match="more 'Desc_Screw_C' than there's spare of"):
+        plan(30)
+
+    assert _flow(graph, "Desc_Screw_C", _RIP).amount_per_minute == 60
+
+
+def test_missing_recipes_name_every_recipe_that_alone_would_make_the_item() -> None:
+    with_beams = find_missing_recipes(_RIP, 5, _without(*_ALL_SCREWS), _GAME, raw_item_ids=_RAW)
+    no_beams = find_missing_recipes(
+        _RIP, 5, _without(*_ALL_SCREWS, _STEEL_BEAM), _GAME, raw_item_ids=_RAW
+    )
+
+    assert with_beams == (
+        MissingRecipe(
+            "Desc_Screw_C",
+            ("Recipe_Screw_C", "Recipe_Alternate_Screw_C", "Recipe_Alternate_Screw_2_C"),
+        ),
+    )
+    # Without Steel Beam, Steel Screw doesn't make screws on its own: it's no option.
+    assert no_beams == (
+        MissingRecipe("Desc_Screw_C", ("Recipe_Screw_C", "Recipe_Alternate_Screw_C")),
+    )
+
+
+def test_missing_recipes_needed_together_are_listed_each() -> None:
+    missing = find_missing_recipes(
+        _RIP, 5, _without(_IRON_PLATE, *_ALL_SCREWS), _GAME, raw_item_ids=_RAW
+    )
+
+    assert [(entry.item_id, len(entry.any_of)) for entry in missing] == [
+        ("Desc_IronPlate_C", 1),
+        ("Desc_Screw_C", 3),
+    ]
+
+
+def test_an_item_that_closes_with_the_choice_for_another_is_not_listed() -> None:
+    # Without Screw and Iron Rod, Cast Screw alone mends the chain: no Iron Rod entry.
+    alone = find_missing_recipes(
+        _RIP, 5, _without(_IRON_ROD, *_ALL_SCREWS, _STEEL_BEAM), _GAME, raw_item_ids=_RAW
+    )
+    # In a game without Cast Screw, neither screw recipe does it alone: the best is taken, and
+    # what it needs besides is listed after it.
+    game = _without(_CAST_SCREW)
+    chained = find_missing_recipes(
+        _RIP,
+        5,
+        _without(_SCREW, _STEEL_SCREW, _IRON_ROD, _STEEL_BEAM, game=game),
+        game,
+        raw_item_ids=_RAW,
+    )
+
+    assert alone == (MissingRecipe("Desc_Screw_C", ("Recipe_Alternate_Screw_C",)),)
+    assert chained == (
+        MissingRecipe("Desc_Screw_C", ("Recipe_Screw_C", "Recipe_Alternate_Screw_2_C")),
+        MissingRecipe("Desc_IronRod_C", ("Recipe_IronRod_C",)),
+    )
+
+
+def test_no_missing_recipes_when_the_given_ones_do_or_when_none_would() -> None:
+    assert find_missing_recipes(_RIP, 5, _without(_STEEL_SCREW), _GAME, raw_item_ids=_RAW) == ()
+    assert find_missing_recipes("Desc_Computer_C", 1, RECIPES, _GAME, raw_item_ids=_RAW) is None

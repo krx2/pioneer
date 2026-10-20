@@ -107,6 +107,8 @@ class Technology:
     starting recipes) — the export's `mType` without its `EST_` prefix, lower-cased."""
     cost: tuple[ItemCount, ...] = ()
     """What the player hands in to unlock it."""
+    tree: str | None = None
+    """For MAM research, the MAM tree it's in, e.g. "Quartz" or "Alien Organisms"."""
 
 
 @dataclass(frozen=True)

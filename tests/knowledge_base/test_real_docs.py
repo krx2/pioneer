@@ -18,6 +18,7 @@ from pioneer.knowledge_base.queries import (
     item_by_id,
     raw_resource_ids,
     recipes_for_output,
+    research_trees,
     technology_for_recipe,
 )
 
@@ -284,3 +285,23 @@ def test_belt_and_pipe_capacities_match_the_game(kb) -> None:
         "Pipeline Mk.1": (300, True),
         "Pipeline Mk.2": (600, True),
     }
+
+
+def test_every_mam_research_is_in_a_tree(kb) -> None:
+    trees = research_trees(kb.technologies)
+
+    assert all(t.tree for t in kb.technologies if t.kind == "mam")
+    assert not any(t.tree for t in kb.technologies if t.kind != "mam")
+    assert [name for name, _ in trees] == [
+        "Alien Organisms",
+        "Alien Technology",
+        "Caterium",
+        "FICSMAS",
+        "Mycelia",
+        "Nutrients",
+        "Power Slugs",
+        "Quartz",
+        "Sulfur",
+    ]
+    quartz = dict(trees)["Quartz"]
+    assert [t.name for t in quartz[:3]] == ["Quartz", "Quartz Crystals", "Silica"]

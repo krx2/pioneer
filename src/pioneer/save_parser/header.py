@@ -64,6 +64,19 @@ class ParsedHeader:
 
 
 def parse_header(data: bytes) -> ParsedHeader:
+    header, fields_end = _read_fields(data)
+    body_offset = _find_chunk_stream_start(data, fields_end)
+    return ParsedHeader(header=header, body_offset=body_offset)
+
+
+def parse_header_fields(data: bytes) -> SaveHeader:
+    """Just the header's fields, without looking for the chunk stream behind them — all that
+    listing saves needs, from the first few kilobytes of each file (see `catalog.py`)."""
+    return _read_fields(data)[0]
+
+
+def _read_fields(data: bytes) -> tuple[SaveHeader, int]:
+    """The trusted fields, and the offset right after the last of them."""
     reader = ByteReader(data)
     save_header_version = reader.read_int32()
     save_version = reader.read_int32()
@@ -89,8 +102,7 @@ def parse_header(data: bytes) -> ParsedHeader:
         session_name=session_name,
         play_duration_seconds=play_duration_seconds,
     )
-    body_offset = _find_chunk_stream_start(data, reader.offset)
-    return ParsedHeader(header=header, body_offset=body_offset)
+    return header, reader.offset
 
 
 def _find_chunk_stream_start(data: bytes, search_from: int) -> int:

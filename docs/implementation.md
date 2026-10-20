@@ -443,8 +443,9 @@ many are new.
 **Done when:** a fixture recommendation renders as pins alongside fixture existing placements.
 
 Factory sites an answer points at render as pins too, labelled with what they mostly make. The
-background is still a plain grid: a real map image needs an asset whose source and licence are
-decided first.
+background is the game's own map — the official one from the game's wiki, committed at
+`docs/map/map.jpg` like the icons — placed by the world's bounds (`pioneer.map_image`); without
+the file, a plain grid.
 
 ---
 
@@ -557,9 +558,9 @@ plumbs it together.
 - Still open: belt routing from saves (so a surplus can be told apart from items fed to storage or
   the sink — until then diagnosis flags every end product as overproduced, and congestion in a
   real factory can't be seen), fetching the save from a dedicated server on another machine
-  (`EnumerateSessions` + `DownloadSaveGame` exist, but both need an admin token), pre-1.0 saves, a
-  real map image behind the Map channel, which buildings (belts, generators) are unlocked — only
-  recipes are tracked — and a check of an answer's factory sites alongside its deposits.
+  (`EnumerateSessions` + `DownloadSaveGame` exist, but both need an admin token), pre-1.0 saves,
+  which buildings (belts, generators) are unlocked — only recipes are tracked — and a check of an
+  answer's factory sites alongside its deposits.
 
 **Starting everything:** `pioneer.startup` brings up the model server (Ollama) and the dedicated
 server if nothing is listening on their ports yet, serves the web UI, and stops whatever it

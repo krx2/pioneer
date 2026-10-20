@@ -4,6 +4,7 @@ import json
 
 from fastapi.testclient import TestClient
 
+from pioneer.app import LiveContext
 from pioneer.contracts import (
     Building,
     Coordinates,
@@ -22,6 +23,7 @@ from pioneer.contracts import (
     ResponseArtifact,
 )
 from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable
+from pioneer.save_parser import SaveHeader, SaveState
 from pioneer.verification_feedback import (
     ChatScore,
     GraphScore,
@@ -559,3 +561,84 @@ def test_without_a_conversation_store_there_is_no_history() -> None:
     assert client.get("/api/conversations").json() == []
     assert client.get(f"/api/conversations/{_R1}").status_code == 404
     assert _ask(client).json()["conversation_id"] is None
+
+
+def _live_app(tmp_path, **options) -> TestClient:
+    """The app over a real `LiveContext` with fake loaders: a save named `a.sav` in `tmp_path`."""
+    (tmp_path / "a.sav").write_bytes(b"save")
+    state = SaveState(
+        header=SaveHeader(14, 60, 1, "a", "Persistent_Level", "", "alfa", 10),
+        placements=(
+            PlacementRecord(building_id="Build_SmelterMk1_C", position=Coordinates(x=0, y=0)),
+        ),
+        graph=ProductionGraph(nodes=(), flows=()),
+    )
+    live = LiveContext(
+        None,
+        (_IRON_NODE,),
+        save_directory=str(tmp_path),
+        load_save=lambda path: state,
+        **options,
+    )
+    return TestClient(create_app(live=live, answer=lambda *args, **kwargs: _artifact()))
+
+
+def test_the_status_says_source_by_source_what_the_context_is_built_from(tmp_path) -> None:
+    client = _live_app(tmp_path)
+
+    body = client.get("/api/status").json()
+
+    assert body["status"] == (
+        "no knowledge base | 1 resource nodes | save a.sav: 1 buildings, 0 effective machines "
+        "running 0 recipes | no dedicated server configured"
+    )
+    sources = body["sources"]
+    assert (sources["save"]["file"], sources["save"]["session"]) == ("a.sav", "alfa")
+    assert sources["map"]["resource_nodes"] == 1
+    assert sources["server"]["configured"] is False
+    assert sources["context_window_warning"] is None
+
+
+def test_the_page_draws_the_sources_from_the_status_it_is_handed(tmp_path) -> None:
+    page = _live_app(tmp_path).get("/").text
+
+    for panel in ("recipes", "tech", "map", "save", "server"):
+        assert f'data-panel="{panel}"' in page
+    assert '<script type="application/json" id="initial-status">' in page
+    assert '"file": "a.sav"' in page
+    assert 'id="popover"' in page
+
+
+def test_the_status_the_page_is_handed_cannot_end_its_script() -> None:
+    status = "save </script><script>alert(1)</script>"
+    client = TestClient(create_app(context=lambda: (OrchestratorContext(), status), answer=None))
+
+    page = client.get("/").text
+
+    assert "</script><script>alert(1)" not in page
+    assert "\u003c/script>" in page
+    assert client.get("/api/status").json() == {"status": status, "sources": None}
+
+
+def test_the_page_carries_no_stray_control_characters() -> None:
+    """A CSS or JS escape Python took for one of its own ("\25B8" is octal to it) shows up as a
+    control character: none belongs in the page."""
+    page = _client(_artifact())[0].get("/").text
+
+    assert [c for c in page if ord(c) < 32 and c not in "\n\r\t"] == []
+
+
+def test_the_map_picture_is_served_and_drawn_under_answer_maps(tmp_path) -> None:
+    picture = tmp_path / "map.jpg"
+    picture.write_bytes(b"\xff\xd8 fake jpeg")
+    client, _ = _client(_artifact(map_locations=(_SITE,)), map_image=picture)
+    without, _ = _client(_artifact(map_locations=(_SITE,)))
+
+    page = client.get(_ask(client).json()["map_url"]).text
+    plain = without.get(_ask(without).json()["map_url"]).text
+
+    assert client.get("/map-image/map.jpg").content == b"\xff\xd8 fake jpeg"
+    assert client.get("/map-image/other.jpg").status_code == 404
+    assert without.get("/map-image/map.jpg").status_code == 404
+    assert '<image class="world" href="/map-image/map.jpg"' in page
+    assert 'class="world"' not in plain

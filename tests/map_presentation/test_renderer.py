@@ -11,7 +11,12 @@ from pioneer.contracts import (
     RankedLocation,
     ResourceNode,
 )
-from pioneer.map_presentation.renderer import build_markers, compute_view_box, render_page
+from pioneer.map_presentation.renderer import (
+    MapBackground,
+    build_markers,
+    compute_view_box,
+    render_page,
+)
 
 _NODES = (
     ResourceNode(
@@ -201,3 +206,22 @@ def test_a_marker_with_an_icon_draws_it_and_moves_its_rank_aside() -> None:
 
     assert page.count('<image href="/icons/Desc_OreIron_C.png"') == 4
     assert "<image" not in render_page(_NODES, (), _RANKED)
+
+
+def test_a_map_picture_goes_under_the_markers_instead_of_the_grid() -> None:
+    background = MapBackground("/map-image/map.jpg", -1000, -2000, 3000, 2000)
+    node = ResourceNode(
+        node_id="n", item_id="Desc_OreIron_C", purity=Purity.PURE, position=Coordinates(x=0, y=0)
+    )
+
+    with_picture = render_page((node,), background=background)
+    without = render_page((node,))
+
+    assert (
+        '<image class="world" href="/map-image/map.jpg" x="-1000" y="-2000" width="4000" '
+        'height="4000" preserveAspectRatio="none" />'
+    ) in with_picture
+    assert with_picture.index('class="world"') < with_picture.index('class="marker')
+    assert 'class="grid-line"' not in with_picture
+    assert 'class="grid-line"' in without and 'class="world"' not in without
+    assert "const worldWidth = 4000;" in with_picture

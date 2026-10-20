@@ -16,8 +16,19 @@ entity framing lands byte-exactly on the section's declared end, and all 500 / 9
 resolve to real Knowledge Base recipe ids, each attributed to exactly one manufacturing building.
 The graph's `flows` are empty (see production_graph.py) — routing isn't recoverable from what this
 parser reads.
+
+`discover_saves` lists the saves under the game's `SaveGames` folder, reading only their headers
+(see catalog.py).
 """
 
+from pioneer.save_parser.catalog import (
+    SaveFileInfo,
+    SaveSource,
+    discover_saves,
+    read_save_header,
+    save_source,
+    saves_in,
+)
 from pioneer.save_parser.connections import Port, read_ports, trace_links
 from pioneer.save_parser.entities import EntitySpan, find_entity_spans
 from pioneer.save_parser.header import SaveHeader
@@ -53,8 +64,11 @@ __all__ = [
     "Port",
     "PropertyTag",
     "RawObjectHeader",
+    "SaveFileInfo",
     "SaveHeader",
+    "SaveSource",
     "SaveState",
+    "discover_saves",
     "find_and_read_object_table",
     "find_entity_spans",
     "find_latest_save",
@@ -67,6 +81,9 @@ __all__ = [
     "read_object_reference_value",
     "read_ports",
     "read_property_tag",
+    "read_save_header",
+    "save_source",
+    "saves_in",
     "to_placement_records",
     "to_placement_records_with_recipes",
     "to_production_graph",

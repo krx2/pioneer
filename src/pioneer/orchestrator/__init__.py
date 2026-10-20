@@ -26,6 +26,7 @@ from pioneer.orchestrator.base import (
     ProgressSink,
     ToolCallingLLM,
 )
+from pioneer.orchestrator.existing_factory import site_balance
 from pioneer.orchestrator.items import display_names
 from pioneer.orchestrator.orchestrator import handle_query
 from pioneer.orchestrator.verification import verify_response
@@ -38,5 +39,6 @@ __all__ = [
     "TransportError",
     "display_names",
     "handle_query",
+    "site_balance",
     "verify_response",
 ]

@@ -3,7 +3,12 @@
 import pytest
 
 from pioneer.contracts import Coordinates, PlacementRecord, Purity, ResourceNode, TransportLink
-from pioneer.location_advisor.advisor import find_factory_sites, rank_locations
+from pioneer.location_advisor.advisor import (
+    SiteFeed,
+    find_factory_sites,
+    rank_locations,
+    site_feeds,
+)
 
 _ORIGIN = Coordinates(x=0.0, y=0.0, z=0.0)
 
@@ -221,3 +226,45 @@ def test_with_links_a_group_running_no_recipe_is_no_factory() -> None:
     (site,) = find_factory_sites((miner, box, paused, rods), links)
 
     assert site.placements == (rods,)
+
+
+def test_an_extractor_feeds_the_site_its_belts_lead_to_through_a_merger() -> None:
+    """Two miners merged onto one belt into a smelter: both feed its factory, however far out."""
+    far = _built("far", 200_000, "Build_MinerMk1_C", resource_node_id="node_far")
+    near = _built("near", 500, "Build_MinerMk1_C", resource_node_id="node_near")
+    merger = _built("merger", 300, "Build_ConveyorAttachmentMerger_C")
+    smelter = _built("smelter", 0, "Build_SmelterMk1_C", recipe_id="Recipe_IngotIron_C")
+    placements = (far, near, merger, smelter)
+    links = (_belt("far", "merger"), _belt("near", "merger"), _belt("merger", "smelter"))
+    sites = find_factory_sites(placements, links)
+
+    feeds = site_feeds(sites, placements)
+
+    assert feeds == {
+        "site_1": (SiteFeed("node_far", far, False), SiteFeed("node_near", near, False))
+    }
+
+
+def test_without_links_an_extractor_is_put_down_to_the_nearest_site_close_enough() -> None:
+    plates = _machine(0)
+    rods = _machine(100_000, recipe_id="Recipe_IronRod_C")
+    close = _placement(2_000)
+    close = PlacementRecord(close.building_id, close.position, resource_node_id="node_close")
+    by_rods = PlacementRecord("Build_MinerMk1_C", Coordinates(x=90_000, y=0), resource_node_id="n2")
+    lonely = PlacementRecord("Build_MinerMk1_C", Coordinates(x=50_000, y=0), resource_node_id="n3")
+    paused = PlacementRecord(
+        "Build_MinerMk1_C", Coordinates(x=1_000, y=0), resource_node_id="n4", is_paused=True
+    )
+    placements = (plates, rods, close, by_rods, lonely, paused)
+    sites = find_factory_sites(placements)
+
+    feeds = site_feeds(sites, placements)
+
+    by_site = {site.site_id: site for site in sites}
+    assert {
+        site_id: [(f.node_id, f.approximate) for f in found] for site_id, found in feeds.items()
+    } == {
+        next(s for s, site in by_site.items() if plates in site.placements): [("node_close", True)],
+        next(s for s, site in by_site.items() if rods in site.placements): [("n2", True)],
+    }
+    assert site_feeds((), placements) == {}

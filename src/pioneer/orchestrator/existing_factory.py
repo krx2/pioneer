@@ -114,6 +114,12 @@ def _existing_item_balance(context: OrchestratorContext) -> dict[str, float]:
     return _item_balance(context.existing_graph, context.existing_placements, context)
 
 
+def site_balance(site: FactorySite, context: OrchestratorContext) -> dict[str, float]:
+    """One factory's net per-item rate, as `_existing_item_balance` reckons the whole one's: what
+    it needs from outside is negative, what it has to spare positive."""
+    return _item_balance(_site_graph(site), site.placements, context)
+
+
 def _item_balance(
     graph: ProductionGraph, placements: Sequence[PlacementRecord], context: OrchestratorContext
 ) -> dict[str, float]:

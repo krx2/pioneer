@@ -24,7 +24,14 @@ pages, which are then served from there once the answer has left memory.
 
 The icons in `icon_dir` (see `pioneer.icons`) are served under `/icons/`, and every page is told
 which ids have one: an item or building its own, a recipe the item it makes. Without the folder,
-or for an id with no icon in it, the pages draw what they drew before icons existed.
+or for an id with no icon in it, the pages draw what they drew before icons existed. Likewise the
+picture of the game's map, `map_image` (see `pioneer.map_image`): served under `/map-image/`, it
+lies under every map's markers; without it, maps draw their grid.
+
+Given the `app.LiveContext` the context comes from, the app also serves what the page's header
+shows and steers: `/api/status` says, source by source, what the context is built from — the
+recipes, the technologies, the map, the save, the dedicated server — for the header's buttons, and
+the panels under them read and change those sources through `web.sources`' endpoints.
 """
 
 from __future__ import annotations
@@ -42,9 +49,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from pioneer.app import LiveContext
 from pioneer.chat_presentation import render_message
 from pioneer.contracts import Feedback, ProductionGraph, ResponseArtifact
 from pioneer.graph_presentation import render_page as render_graph_page
+from pioneer.map_image import WORLD_BOUNDS
+from pioneer.map_presentation import MapBackground
 from pioneer.map_presentation import render_page as render_map_page
 from pioneer.orchestrator import (
     OrchestratorContext,
@@ -61,6 +71,7 @@ from pioneer.verification_feedback import (
 )
 from pioneer.web.conversations import ConversationStore, PageKind
 from pioneer.web.page import render_chat_page
+from pioneer.web.sources import source_routes
 
 ContextSource = Callable[[], tuple[OrchestratorContext, str]]
 """The context as of now, plus a one-line status saying what it was built from."""
@@ -119,14 +130,22 @@ class AnsweredQuestion:
 
 def create_app(
     *,
-    context: ContextSource,
+    context: ContextSource | None = None,
+    live: LiveContext | None = None,
     answer: Answer,
     verify: Verify | None = None,
     feedback_store: FeedbackStore | None = None,
     response_log: ResponseLog | None = None,
     icon_dir: Path | None = None,
     conversations: ConversationStore | None = None,
+    map_image: Path | None = None,
 ) -> FastAPI:
+    """`live`, when given, is where `context` comes from, and the header's panels show and steer
+    its sources; without it, `context` alone says what the assistant knows."""
+    if context is None:
+        if live is None:
+            raise ValueError("create_app needs a context source or a LiveContext")
+        context = live.current
     app = FastAPI(title="Pioneer")
     feedback = feedback_store if feedback_store is not None else FeedbackStore()
     answered: OrderedDict[str, AnsweredQuestion] = OrderedDict()
@@ -148,6 +167,11 @@ def create_app(
     icons = icon_urls(first, with_icons)
     chat_icons = named_icons(first, icons)
     known_ids = set(response_log.response_ids()) if response_log is not None else set()
+    background = (
+        MapBackground(f"/map-image/{map_image.name}", *WORLD_BOUNDS)
+        if map_image is not None and map_image.is_file()
+        else None
+    )
 
     def find(response_id: str) -> AnsweredQuestion:
         with lock:
@@ -156,13 +180,32 @@ def create_app(
             raise HTTPException(status_code=404, detail="unknown response id")
         return found
 
+    def status() -> dict[str, Any]:
+        """The one-line status, and with a `LiveContext`, what it's made of, source by source."""
+        if live is None:
+            return {"status": context()[1], "sources": None}
+        sources = live.sources()
+        return {"status": sources.summary(), "sources": asdict(sources)}
+
     @app.get("/", response_class=HTMLResponse)
     def chat_page() -> str:
-        return render_chat_page(status=context()[1])
+        now = status()
+        return render_chat_page(status=now["status"], sources=now["sources"])
 
     @app.get("/api/status")
-    def api_status() -> dict[str, str]:
-        return {"status": context()[1]}
+    def api_status() -> dict[str, Any]:
+        return status()
+
+    app.include_router(
+        source_routes(
+            live,
+            status,
+            names=names,
+            icons=icons,
+            map_picture=background.href if background else None,
+            world=WORLD_BOUNDS if background else None,
+        )
+    )
 
     def render_graph(graph: ProductionGraph) -> str:
         return render_graph_page(
@@ -216,6 +259,8 @@ def create_app(
             "graph_url": f"{base}/graph" if result.graph is not None else None,
             "map_url": f"{base}/map" if _has_map(result) else None,
             "verification": _verification_summary(score),
+            # Recipes the player turned off that a plan would need: the page offers them.
+            "missing_recipes": list(result.missing_recipes),
             # How it was worked out, for the page to show folded above the answer.
             "process": (
                 {"steps": steps, "thinking": "".join(thoughts)} if steps or thoughts else None
@@ -227,7 +272,7 @@ def create_app(
             if result.graph is not None:
                 pages["graph"] = render_graph(result.graph)
             if _has_map(result):
-                pages["map"] = _render_map(result, current, names, icons)
+                pages["map"] = _render_map(result, current, names, icons, background)
 
         with lock:
             answered[result.response_id] = AnsweredQuestion(
@@ -324,7 +369,13 @@ def create_app(
             return found
         if not _has_map(found.artifact):
             raise HTTPException(status_code=404, detail="this answer has no map")
-        return _render_map(found.artifact, found.context, names, icons)
+        return _render_map(found.artifact, found.context, names, icons, background)
+
+    @app.get("/map-image/{name}")
+    def map_picture(name: str) -> FileResponse:
+        if background is None or map_image is None or name != map_image.name:
+            raise HTTPException(status_code=404, detail="no such map image")
+        return FileResponse(map_image, headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/icons/{class_id}.png")
     def icon(class_id: str) -> FileResponse:
@@ -387,10 +438,11 @@ def _render_map(
     context: OrchestratorContext,
     names: dict[str, str],
     icons: dict[str, str],
+    background: MapBackground | None = None,
 ) -> str:
     """The recommended sites, every node of the same resource, the player's extractors and the
     factories the answer points at — the rest of a real save's thousands of buildings would bury
-    the pins."""
+    the pins. On the game's map, when there's a picture of it."""
     ranked = artifact.map_locations or ()
     nodes_by_id = {node.node_id: node for node in context.resource_nodes}
     resources = {
@@ -408,6 +460,7 @@ def _render_map(
         names=names,
         icons=icons,
         factory_sites=artifact.factory_sites or (),
+        background=background,
     )
 
 

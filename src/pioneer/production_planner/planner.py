@@ -40,6 +40,14 @@ A candidate whose ingredients lead back to an item already being resolved furthe
 skipped for the next one — so Fuel never gets planned as "unpackage Packaged Fuel, which is made
 from Fuel". Only when every candidate for the target loops is the plan refused.
 
+**Planning from some of the recipes.** The player may plan with fewer recipes than the game has:
+only the ones they've unlocked, or only the ones they ticked. Given every recipe in the game
+(`game_recipes`), an item no recipe in `recipes` makes but one of the game's does is a dead end,
+not a raw input: the plan can't just take it from outside, so a chain needing it is abandoned like
+a looping one, for the next candidate — and with none left, the plan is refused.
+`find_missing_recipes` then says which of the left-out recipes it would take: for each item the
+chain breaks at, every recipe that alone would make it — see its docstring.
+
 Doesn't import the Knowledge Base, the Verifier, or any other module — `recipes` arrives as a
 plain `Recipe` tuple from the caller, and machine-count arithmetic is duplicated locally in
 miniature (same pattern resource_db uses for `distance`) rather than reaching into `verifier`.
@@ -50,8 +58,20 @@ from __future__ import annotations
 import math
 from collections import defaultdict, deque
 from collections.abc import Collection, Iterator, Mapping
+from dataclasses import dataclass
 
 from pioneer.contracts import MaterialFlow, ProductionGraph, ProductionNode, Recipe
+
+_RATE_EPSILON = 1e-9
+
+
+@dataclass(frozen=True)
+class MissingRecipe:
+    """An item a plan can't be made without, and the left-out recipes that would make it — any
+    one of them, best first (the planner's own preference order)."""
+
+    item_id: str
+    any_of: tuple[str, ...]
 
 
 def recipes_for_output(item_id: str, recipes: tuple[Recipe, ...]) -> tuple[Recipe, ...]:
@@ -69,14 +89,18 @@ def plan_production(
     *,
     raw_item_ids: Collection[str] = (),
     available_supply: Mapping[str, float] | None = None,
+    game_recipes: tuple[Recipe, ...] | None = None,
 ) -> ProductionGraph:
     """Builds a `ProductionGraph` producing `target_rate` units/minute of `target_item_id`,
     expanding no further than `raw_item_ids` and planning machines only for demand
     `available_supply` doesn't cover (see module docstring). Raises `ValueError` if
     `target_item_id` is a raw resource or has no recipe in `recipes`, if `recipe_choices` names a
     recipe that doesn't actually produce the item it's keyed to, or if every recipe chain for the
-    target loops back on itself."""
+    target loops back on itself — or, given `game_recipes`, needs an item only a recipe left out
+    of `recipes` makes, more of it than `available_supply` has."""
     raw = frozenset(raw_item_ids)
+    supply = available_supply or {}
+    dead_ends = _dead_ends(recipes, game_recipes, raw) if game_recipes is not None else frozenset()
     if target_item_id in raw:
         raise ValueError(
             f"{target_item_id!r} is a raw resource -- it's extracted, not crafted, so there's "
@@ -88,23 +112,38 @@ def plan_production(
             f"or not in the supplied recipe list)"
         )
 
+    # A dead end the existing factory has spare of can still be taken from it.
+    blocked = frozenset(item for item in dead_ends if supply.get(item, 0.0) <= 0)
     chosen_recipes = _choose_recipes(
-        target_item_id, recipes, recipe_choices, raw, alternates_as_fallback=False
+        target_item_id, recipes, recipe_choices, raw, blocked, alternates_as_fallback=False
     )
     if chosen_recipes is None:
         chosen_recipes = _choose_recipes(
-            target_item_id, recipes, recipe_choices, raw, alternates_as_fallback=True
+            target_item_id, recipes, recipe_choices, raw, blocked, alternates_as_fallback=True
         )
     if chosen_recipes is None:
+        if blocked:
+            raise ValueError(
+                f"no chain of the given recipes makes {target_item_id!r}: every one loops back "
+                f"on itself or needs an item only a left-out recipe makes"
+            )
         raise ValueError(
             f"every recipe chain for {target_item_id!r} loops back on itself -- cyclic recipe "
             f"dependency, cannot compute a planning order"
         )
 
     order = _topological_order(*_requirements(target_item_id, chosen_recipes))
-    demand = _accumulate_demand(
-        target_item_id, target_rate, order, chosen_recipes, available_supply or {}
-    )
+    demand = _accumulate_demand(target_item_id, target_rate, order, chosen_recipes, supply)
+    short = [
+        item
+        for item in order
+        if item in dead_ends and demand.total[item] > supply.get(item, 0.0) + _RATE_EPSILON
+    ]
+    if short:
+        raise ValueError(
+            f"the plan needs more {short[0]!r} than there's spare of, and only a left-out recipe "
+            f"makes it"
+        )
 
     nodes = tuple(
         ProductionNode(
@@ -121,6 +160,133 @@ def plan_production(
         *_split_flow(target_item_id, target_rate, None, demand),
     ]
     return ProductionGraph(nodes=nodes, flows=tuple(flows))
+
+
+def find_missing_recipes(
+    target_item_id: str,
+    target_rate: float,
+    recipes: tuple[Recipe, ...],
+    game_recipes: tuple[Recipe, ...],
+    recipe_choices: dict[str, str] | None = None,
+    *,
+    raw_item_ids: Collection[str] = (),
+    available_supply: Mapping[str, float] | None = None,
+) -> tuple[MissingRecipe, ...] | None:
+    """Which of the recipes left out of `recipes` it would take to plan `target_item_id` — empty
+    when `recipes` already do, `None` when not even `game_recipes` (every recipe) can.
+
+    One entry per item the chain breaks at, listing every left-out recipe that would make it;
+    entries are needed together, the options within one are alternatives. Worked out from the
+    target down: the item nearest the target that nothing in `recipes` makes comes first, its
+    options being the left-out recipes that alone make it from what's available — or, when no
+    single one does, every left-out recipe making it, the next entry then saying what that one
+    needs in turn. The best option is assumed taken before looking for the next break, so an item
+    that only one choice for another needed is never listed: a chain that Cast Screw makes from
+    ingots needs no Iron Rod entry."""
+    raw = frozenset(raw_item_ids)
+
+    def plans(target: str, with_recipes: tuple[Recipe, ...], supply: Mapping[str, float] | None):
+        try:
+            plan_production(
+                target,
+                target_rate,
+                with_recipes,
+                recipe_choices,
+                raw_item_ids=raw,
+                available_supply=supply,
+                game_recipes=game_recipes,
+            )
+        except ValueError:
+            return False
+        return True
+
+    if not plans(target_item_id, game_recipes, available_supply):
+        return None
+    current = tuple(recipes)
+    missing: list[MissingRecipe] = []
+    for _ in range(len(game_recipes) + 1):
+        if plans(target_item_id, current, available_supply):
+            return tuple(missing)
+        item = _first_break(
+            target_item_id,
+            target_rate,
+            current,
+            game_recipes,
+            recipe_choices,
+            raw,
+            available_supply or {},
+        )
+        if item is None:
+            return None
+        in_use = {recipe.recipe_id for recipe in current}
+        makers = sorted(
+            (r for r in recipes_for_output(item, game_recipes) if r.recipe_id not in in_use),
+            key=lambda recipe: _preference(recipe, item, raw),
+        )
+        if not makers:
+            return None
+        closing = [recipe for recipe in makers if plans(item, (*current, recipe), None)]
+        options = closing or makers
+        missing.append(MissingRecipe(item, tuple(recipe.recipe_id for recipe in options)))
+        current = (*current, options[0])
+    return None
+
+
+def _dead_ends(
+    recipes: tuple[Recipe, ...], game_recipes: tuple[Recipe, ...], raw: frozenset[str]
+) -> frozenset[str]:
+    """Items a recipe of the game's makes and none of `recipes` does."""
+    made = {output.item_id for recipe in recipes for output in recipe.outputs}
+    return frozenset(
+        output.item_id
+        for recipe in game_recipes
+        for output in recipe.outputs
+        if output.item_id not in made and output.item_id not in raw
+    )
+
+
+def _first_break(
+    target_item_id: str,
+    target_rate: float,
+    recipes: tuple[Recipe, ...],
+    game_recipes: tuple[Recipe, ...],
+    recipe_choices: dict[str, str] | None,
+    raw: frozenset[str],
+    supply: Mapping[str, float],
+) -> str | None:
+    """The item nearest the target that `recipes` can't make and the plan needs — found by
+    planning as if such items could be had from outside, and looking at which ones were."""
+    try:
+        graph = plan_production(
+            target_item_id,
+            target_rate,
+            recipes,
+            recipe_choices,
+            raw_item_ids=raw,
+            available_supply=supply,
+        )
+    except ValueError:
+        return target_item_id  # no recipe here makes the target, or every chain of them loops
+    dead_ends = _dead_ends(recipes, game_recipes, raw)
+    taken: dict[str, float] = {}
+    for flow in graph.flows:
+        if flow.source_node_id is None and flow.item_id in dead_ends:
+            taken[flow.item_id] = taken.get(flow.item_id, 0.0) + flow.amount_per_minute
+    for node in graph.nodes:  # target first
+        for flow in graph.flows:
+            item = flow.item_id
+            if flow.target_node_id == node.node_id and flow.source_node_id is None:
+                if item in taken and taken[item] > supply.get(item, 0.0) + _RATE_EPSILON:
+                    return item
+    return None
+
+
+def _preference(recipe: Recipe, item_id: str, raw: frozenset[str]) -> tuple[bool, bool, int]:
+    """The order an item's recipes are tried in (see the module docstring) — the sort being
+    stable, the list's own order breaks ties."""
+    byproduct = recipe.outputs[0].item_id != item_id
+    crafted_inputs = sum(1 for i in recipe.inputs if i.item_id not in raw)
+    return recipe.is_alternate, byproduct, crafted_inputs
 
 
 def _node_id(item_id: str) -> str:
@@ -152,10 +318,8 @@ def _ranked_candidates(
             )
         return [match]
 
-    def preference(recipe: Recipe) -> tuple[bool, int]:
-        byproduct = recipe.outputs[0].item_id != item_id
-        crafted_inputs = sum(1 for i in recipe.inputs if i.item_id not in raw_item_ids)
-        return byproduct, crafted_inputs
+    def preference(recipe: Recipe) -> tuple[bool, bool, int]:
+        return _preference(recipe, item_id, raw_item_ids)
 
     standard = sorted((r for r in candidates if not r.is_alternate), key=preference)
     alternates = sorted((r for r in candidates if r.is_alternate), key=preference)
@@ -169,10 +333,12 @@ def _choose_recipes(
     recipes: tuple[Recipe, ...],
     recipe_choices: dict[str, str] | None,
     raw_item_ids: frozenset[str],
+    dead_ends: frozenset[str],
     *,
     alternates_as_fallback: bool,
 ) -> dict[str, Recipe] | None:
-    """One recipe per crafted item reachable from the target, or `None` if every chain loops.
+    """One recipe per crafted item reachable from the target, or `None` if every chain loops or
+    runs into one of `dead_ends`.
 
     Picked depth-first: each item tries its candidates best-first and settles on the first whose
     whole ingredient chain resolves without looping back to an item still being resolved above
@@ -191,8 +357,8 @@ def _choose_recipes(
             raw_item_ids,
             alternates_as_fallback=alternates_as_fallback,
         )
-        if not candidates:
-            return True  # nothing makes it -- a raw input as far as this recipe list goes
+        if not candidates:  # a raw input as far as this recipe list goes -- unless the game
+            return item_id not in dead_ends  # makes it, with a recipe left out of the list
 
         in_progress.add(item_id)
         try:

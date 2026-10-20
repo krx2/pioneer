@@ -44,3 +44,6 @@ class ResponseArtifact:
     game's names for the ids in it), and the text of every knowledge passage it retrieved. The
     answer is checked against this (architecture.md §6), and it's what makes the answer's claims
     attributable (invariant #6)."""
+    missing_recipes: tuple[str, ...] = ()
+    """Recipes the player turned off that a plan in this answer would need — any of them, for the
+    page to offer turning on."""

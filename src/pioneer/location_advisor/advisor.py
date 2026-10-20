@@ -14,6 +14,13 @@ factories of real saves well: closer, and one factory floor splits in two; much 
 neighbouring factories merge. Belts, foundations and power poles aren't considered; they'd join
 everything to everything.
 
+**What feeds a factory.** An extractor feeds the site its belts and pipes lead to: with links
+known, the site whose machines they join it to, through splitters, mergers and containers alike
+— it's one of that site's placements. One that reaches no site that way, or a save without links,
+is put down to the nearest site within `feed_distance`, and marked as a guess: an extractor
+standing next to a factory most likely feeds it, but a train or a drone may as well carry its ore
+across the map.
+
 **Unclaimed cross-reference.** A deposit is claimed when an extractor in the save names it as what
 it extracts from (`PlacementRecord.resource_node_id` — exact, the save's own
 `mExtractableResource`), or when any placement sits within `claim_radius` of it. The proximity test
@@ -39,6 +46,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 
 from pioneer.contracts import (
     Coordinates,
@@ -76,14 +84,14 @@ def rank_locations(
     """Unclaimed `item_id` deposits ranked best-first. `reference` is the point distances are
     measured from; `claim_radius` and `distance_scale` are in the same units as the coordinates
     (centimetres, for real save data)."""
-    claimed_ids = {p.resource_node_id for p in placements if p.resource_node_id is not None}
-    nearby = _PositionGrid((p.position for p in placements), claim_radius)
+    wanted = tuple(node for node in nodes if node.item_id == item_id)
+    claimed = claimed_node_ids(
+        wanted, placements, distance_fn=distance_fn, claim_radius=claim_radius
+    )
 
     ranked: list[RankedLocation] = []
-    for node in nodes:
-        if node.item_id != item_id or node.node_id in claimed_ids:
-            continue
-        if any(distance_fn(node.position, p) <= claim_radius for p in nearby.around(node.position)):
+    for node in wanted:
+        if node.node_id in claimed:
             continue
         distance = distance_fn(node.position, reference)
         ranked.append(
@@ -98,6 +106,24 @@ def rank_locations(
 
     ranked.sort(key=lambda location: location.score, reverse=True)
     return tuple(ranked)
+
+
+def claimed_node_ids(
+    nodes: Sequence[ResourceNode],
+    placements: Sequence[PlacementRecord],
+    *,
+    distance_fn: DistanceFn = _euclidean_distance,
+    claim_radius: float = 1000.0,
+) -> frozenset[str]:
+    """Which of `nodes` are taken: named by an extractor, or built on (see the module docstring)."""
+    named = {p.resource_node_id for p in placements if p.resource_node_id is not None}
+    nearby = _PositionGrid((p.position for p in placements), claim_radius)
+    return frozenset(
+        node.node_id
+        for node in nodes
+        if node.node_id in named
+        or any(distance_fn(node.position, p) <= claim_radius for p in nearby.around(node.position))
+    )
 
 
 def find_factory_sites(
@@ -155,6 +181,47 @@ def find_factory_sites(
         )
         for number, group in enumerate(ordered, start=1)
     )
+
+
+@dataclass(frozen=True)
+class SiteFeed:
+    """A resource node an extractor works for a factory site."""
+
+    node_id: str
+    """The node, as `PlacementRecord.resource_node_id` names it."""
+    extractor: PlacementRecord
+    approximate: bool
+    """Put down to the nearest site rather than followed along belts or pipes."""
+
+
+def site_feeds(
+    sites: Sequence[FactorySite],
+    placements: Sequence[PlacementRecord],
+    *,
+    feed_distance: float = 30000.0,
+    distance_fn: DistanceFn = _euclidean_distance,
+) -> dict[str, tuple[SiteFeed, ...]]:
+    """Which resource nodes feed each site, by site id (see the module docstring): the extractors
+    among a site's own placements -- the links joined them to it -- and, as guesses, every other
+    running extractor within `feed_distance` (300 m, in save centimetres) of a site, nearest one.
+    A site no extractor feeds has no entry."""
+    feeds: dict[str, list[SiteFeed]] = defaultdict(list)
+    placed: set[int] = set()
+    for site in sites:
+        for placement in site.placements:
+            if placement.resource_node_id is not None:
+                feeds[site.site_id].append(SiteFeed(placement.resource_node_id, placement, False))
+                placed.add(id(placement))
+    for placement in placements:
+        if placement.resource_node_id is None or placement.is_paused or id(placement) in placed:
+            continue
+        nearest = min(
+            sites, key=lambda site: distance_fn(placement.position, site.position), default=None
+        )
+        if nearest is None or distance_fn(placement.position, nearest.position) > feed_distance:
+            continue
+        feeds[nearest.site_id].append(SiteFeed(placement.resource_node_id, placement, True))
+    return {site_id: tuple(found) for site_id, found in feeds.items()}
 
 
 def _groups_by_distance(

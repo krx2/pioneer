@@ -171,7 +171,7 @@ def _build_tools(
                 },
                 "required": ["item"],
             },
-            handler=lambda args: _handle_compare_recipes(args, context),
+            handler=lambda args: _handle_compare_recipes(args, context, accumulator),
         ),
         _Tool(
             name="plan_power",
@@ -193,7 +193,7 @@ def _build_tools(
                 },
                 "required": ["target_mw"],
             },
-            handler=lambda args: _handle_plan_power(args, context),
+            handler=lambda args: _handle_plan_power(args, context, accumulator),
         ),
         _Tool(
             name="plan_unlocks",
@@ -207,7 +207,7 @@ def _build_tools(
                 "properties": {"item": {"type": "string", "description": _ITEM_DESCRIPTION}},
                 "required": ["item"],
             },
-            handler=lambda args: _handle_plan_unlocks(args, context),
+            handler=lambda args: _handle_plan_unlocks(args, context, accumulator),
         ),
         _Tool(
             name="rank_build_locations",

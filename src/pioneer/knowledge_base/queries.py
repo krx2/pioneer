@@ -8,6 +8,7 @@ tuples produced by the lookup functions below).
 from __future__ import annotations
 
 import heapq
+import re
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
@@ -123,6 +124,67 @@ def unlock_order(
 
 def _unlock_rank(technology: Technology) -> tuple[int, int, str]:
     return (technology.tier, _KIND_ORDER.get(technology.kind, len(_KIND_ORDER)), technology.name)
+
+
+@dataclass(frozen=True)
+class TierProgress:
+    """How far the player is through one tier of the HUB's milestones — tier 0 being the
+    onboarding's HUB upgrades."""
+
+    tier: int
+    unlocked: int
+    total: int
+
+
+_HUB_KINDS = frozenset({"tutorial", "milestone"})
+
+
+def milestone_progress(
+    technologies: Iterable[Technology], unlocked: Collection[str]
+) -> tuple[TierProgress, ...]:
+    """Per tier, lowest first, how many of its HUB milestones are in `unlocked`."""
+    counts: dict[int, tuple[int, int]] = {}
+    for technology in technologies:
+        if technology.kind in _HUB_KINDS:
+            done, total = counts.get(technology.tier, (0, 0))
+            counts[technology.tier] = (done + (technology.technology_id in unlocked), total + 1)
+    return tuple(TierProgress(tier, done, total) for tier, (done, total) in sorted(counts.items()))
+
+
+def research_trees(
+    technologies: Iterable[Technology],
+) -> tuple[tuple[str, tuple[Technology, ...]], ...]:
+    """MAM research by tree, trees by name, each tree in the order it's researched: after its
+    prerequisites where the data names any, else by the numbers in its class name — the game
+    numbers each tree's steps, `Research_Quartz_1_2_C` coming after `_1_1_` and before `_2_`."""
+    trees: dict[str, list[Technology]] = {}
+    for technology in technologies:
+        if technology.kind == "mam":
+            trees.setdefault(technology.tree or "Other", []).append(technology)
+    return tuple(
+        (name, tuple(sorted(members, key=_research_order(members))))
+        for name, members in sorted(trees.items())
+    )
+
+
+def _research_order(members: list[Technology]):
+    by_id = {technology.technology_id: technology for technology in members}
+
+    def depth(technology: Technology, seen: frozenset[str] = frozenset()) -> int:
+        before = [p for p in technology.prerequisites if p in by_id and p not in seen]
+        seen = seen | {technology.technology_id}
+        return max((depth(by_id[p], seen) + 1 for p in before), default=0)
+
+    def key(technology: Technology) -> tuple[int, tuple[int, ...], str]:
+        numbers = tuple(int(n) for n in re.findall(r"\d+", technology.technology_id))
+        return depth(technology), numbers or (1_000,), technology.name
+
+    return key
+
+
+def current_tier(progress: Iterable[TierProgress]) -> int | None:
+    """The highest tier with any milestone unlocked; `None` before the first is."""
+    return max((tier.tier for tier in progress if tier.unlocked), default=None)
 
 
 def item_by_id(kb: KnowledgeBase, item_id: str) -> Item | None:
