@@ -10,6 +10,7 @@ from pioneer.production_planner.planner import (
     MissingRecipe,
     find_missing_recipes,
     plan_production,
+    plan_targets,
     recipes_for_output,
 )
 
@@ -208,6 +209,40 @@ def test_target_wholly_covered_by_supply_needs_no_machines() -> None:
 
     assert graph.nodes == ()
     assert graph.flows == (MaterialFlow(item_id="Desc_IronPlate_C", amount_per_minute=20),)
+
+
+def test_several_targets_are_planned_as_one_chain() -> None:
+    """5/min Reinforced Iron Plate takes 60 screws a minute, and 10 more are a target of their own:
+    70 screws is two constructors -- planned apart, the two would take three."""
+    graph = plan_targets({"Desc_IronPlateReinforced_C": 5, "Desc_Screw_C": 10}, RECIPES)
+
+    assert {n.recipe_id: n.machine_count for n in graph.nodes} == {
+        "Recipe_IronPlateReinforced_C": 1,
+        "Recipe_IronPlate_C": 2,
+        "Recipe_Screw_C": 2,
+        "Recipe_IronRod_C": 2,
+        "Recipe_IngotIron_C": 3,
+    }
+    assert _flow(graph, "Desc_Screw_C", None) == MaterialFlow(
+        item_id="Desc_Screw_C",
+        amount_per_minute=10,
+        source_node_id="node_Desc_Screw_C",
+        target_node_id=None,
+    )
+    assert _flow(graph, "Desc_IronPlateReinforced_C", None).amount_per_minute == 5
+
+
+def test_one_target_is_planned_by_plan_targets_as_by_plan_production() -> None:
+    assert plan_targets({"Desc_IronPlateReinforced_C": 10}, RECIPES) == plan_production(
+        "Desc_IronPlateReinforced_C", 10, RECIPES
+    )
+
+
+def test_plan_targets_refuses_no_targets_and_any_it_cannot_plan() -> None:
+    with pytest.raises(ValueError, match="no target"):
+        plan_targets({}, RECIPES)
+    with pytest.raises(ValueError, match="Desc_OreIron_C"):
+        plan_targets({"Desc_IronPlate_C": 20, "Desc_OreIron_C": 30}, RECIPES)
 
 
 def test_target_with_no_recipe_raises() -> None:

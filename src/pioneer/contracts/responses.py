@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from pioneer.contracts.geometry import Coordinates
 from pioneer.contracts.locations import FactorySite, RankedLocation
+from pioneer.contracts.plan import Plan
 from pioneer.contracts.production_graph import ProductionGraph
 
 
@@ -47,3 +48,6 @@ class ResponseArtifact:
     missing_recipes: tuple[str, ...] = ()
     """Recipes the player turned off that a plan in this answer would need — any of them, for the
     page to offer turning on."""
+    plan_proposal: Plan | None = None
+    """The plan this answer offers the player to accept as their conversation's plan — the first
+    one, or a revision of the one they have. Its graph is the answer's `graph`."""

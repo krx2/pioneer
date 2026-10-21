@@ -4,7 +4,11 @@ game questions.
 
 Every plan is made from the recipes the player may use (see `_plan`): the ones they ticked, or by
 default the ones they've unlocked. A plan the ticked recipes can't make comes back as an error with
-`missing_recipes` -- which recipes it would take -- rather than as a plan."""
+`missing_recipes` -- which recipes it would take -- rather than as a plan.
+
+A new production chain or expansion is also offered to the player as their conversation's plan
+(see `plans.propose_plan`) -- unless the conversation has one already: then it's a separate plan,
+and the model is told that changing theirs is `revise_plan`'s job."""
 
 from __future__ import annotations
 
@@ -38,11 +42,12 @@ from pioneer.orchestrator.existing_factory import (
     reference_point,
 )
 from pioneer.orchestrator.items import _item_summary, _resolve_item_id, raw_resource_ids
+from pioneer.orchestrator.plans import propose_plan
 from pioneer.orchestrator.summaries import _graph_summary, _per_item, _stage_power
 from pioneer.production_planner import (
     MissingRecipe,
     find_missing_recipes,
-    plan_production,
+    plan_targets,
     recipes_for_output,
 )
 from pioneer.qa_engine import ChatCompletion, LLMUnavailable, NoRelevantPassages, QAAnswer
@@ -57,6 +62,10 @@ from pioneer.verifier import (
 
 _DEFAULT_COMPARISON_RATE = 10.0
 _WATER_ID = "Desc_Water_C"
+_SEPARATE_PLAN = (
+    "this is a separate plan, not a change to the player's plan for this conversation: to change "
+    "theirs -- or add this target to it -- call revise_plan"
+)
 
 
 def _handle_find_item(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
@@ -111,6 +120,10 @@ def _handle_plan_production(
         **_needs_unlocking(graph, context),
     }
     accumulator.graph = graph
+    if context.plan is None:
+        accumulator.plan_proposal = propose_plan(context, {target_item_id: target_rate}, graph)
+    else:
+        summary["note"] = _SEPARATE_PLAN
     raw_inputs = _per_item(f for f in graph.flows if f.source_node_id is None)
     summary.update(_suggest_sites(raw_inputs, context, accumulator))
     return _with_spare_power(summary, context)
@@ -173,8 +186,15 @@ def _handle_expand_existing_factory(
     extended_sites = tuple({site.site_id: site for site in at_site.values()}.values())
     if extended_sites:
         accumulator.factory_sites = extended_sites
-    if change_set.resulting_graph.nodes:  # nothing to build is nothing to draw
+    if change_set.resulting_graph.nodes:  # nothing to build is nothing to draw, nor to plan
         accumulator.graph = change_set.resulting_graph
+        if context.plan is None:
+            accumulator.plan_proposal = propose_plan(
+                context,
+                {target_item_id: target_rate},
+                change_set.resulting_graph,
+                available_supply=surplus,
+            )
     items_in_plan = {flow.item_id for flow in additions.flows}
     raw_needed = _per_item(
         flow
@@ -203,6 +223,8 @@ def _handle_expand_existing_factory(
         },
     }
     result.update(_needs_unlocking(additions, context))
+    if context.plan is not None:
+        result["note"] = _SEPARATE_PLAN
     if extended_sites:
         result["sites"] = {site.site_id: _site_summary(site, context) for site in extended_sites}
     uncovered = {
@@ -544,20 +566,38 @@ def _plan(
     available_supply: Mapping[str, float] | None = None,
     also_allowed: tuple[Recipe, ...] = (),
 ) -> ProductionGraph:
-    """A plan from the recipes the player may use (`_usable_recipes`, plus `also_allowed`).
+    """`_plan_targets` for one target."""
+    return _plan_targets(
+        context,
+        {target_item_id: target_rate},
+        recipe_choices,
+        available_supply=available_supply,
+        also_allowed=also_allowed,
+    )
 
-    With the player's own pick of recipes that's all there is: when it can't make the item but
+
+def _plan_targets(
+    context: OrchestratorContext,
+    targets: Mapping[str, float],
+    recipe_choices: dict[str, str] | None,
+    *,
+    available_supply: Mapping[str, float] | None = None,
+    also_allowed: tuple[Recipe, ...] = (),
+) -> ProductionGraph:
+    """A plan making each of `targets` at its rate, from the recipes the player may use
+    (`_usable_recipes`, plus `also_allowed`).
+
+    With the player's own pick of recipes that's all there is: when it can't make a target but
     every recipe could, `_PlanningBlocked` says which recipes it would take. By default -- the
     recipes the player has unlocked -- a plan those can't make is made from every recipe instead,
-    and `_needs_unlocking` says what's missing. Raises what `plan_production` raises."""
+    and `_needs_unlocking` says what's missing. Raises what `plan_targets` raises."""
     raw_item_ids = raw_resource_ids(context)
     usable = _usable_recipes(context)
     usable += tuple(recipe for recipe in also_allowed if recipe not in usable)
 
     def plan(recipes: tuple[Recipe, ...]) -> ProductionGraph:
-        return plan_production(
-            target_item_id,
-            target_rate,
+        return plan_targets(
+            targets,
             recipes,
             recipe_choices,
             raw_item_ids=raw_item_ids,
@@ -570,17 +610,18 @@ def _plan(
         try:
             return plan(usable)
         except ValueError:
-            missing = find_missing_recipes(
-                target_item_id,
-                target_rate,
-                usable,
-                context.recipes,
-                recipe_choices,
-                raw_item_ids=raw_item_ids,
-                available_supply=available_supply,
-            )
-            if missing:
-                raise _PlanningBlocked(target_item_id, missing) from None
+            for target_item_id, target_rate in targets.items():
+                missing = find_missing_recipes(
+                    target_item_id,
+                    target_rate,
+                    usable,
+                    context.recipes,
+                    recipe_choices,
+                    raw_item_ids=raw_item_ids,
+                    available_supply=available_supply,
+                )
+                if missing:
+                    raise _PlanningBlocked(target_item_id, missing) from None
             raise
     if len(usable) < len(context.recipes):
         try:

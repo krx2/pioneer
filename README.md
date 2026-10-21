@@ -62,7 +62,34 @@ that answer (are its numbers from the tools, does the plan balance, does it fit 
 and the feedback buttons. While an answer is on its way, the page shows what the assistant is doing
 (which tool it runs on what) and the answer's text as the model writes it. The sidebar lists past
 conversations, graphs and maps included; "New conversation" starts from a clean context.
-Feedback, a log of every answer and the conversations go to `data/`, which is gitignored.
+Feedback, a log of every answer and the conversations — their plans included — go to `data/`,
+which is gitignored.
+
+## One conversation, one plan
+
+An answer that plans something — a new production chain, or an extension of your factory — offers
+**Accept as plan**. Accepted, it becomes the conversation's plan, and what follows works on it:
+
+- **Changing it.** Ask for a change — "make it 20 a minute", "add 5 Rotors a minute", "use Cast
+  Screw for the screws", "drop the rotors" — and the plan is revised, not planned again from
+  scratch. It's planned anew from what it was made of, every stage keeping its recipe unless you
+  asked for another, so whatever you didn't ask to change comes out exactly as it was. The answer
+  says what changes: machines to add, to take down, or to switch over to another recipe in the
+  same building — and, for the last two, how many of them you've built already. A revision is a
+  proposal until **Accept plan changes** makes it the plan. Only a proposal for the plan as it
+  stands can be accepted: once one is, the others' buttons go.
+- **How far you are.** The bar over the conversation says what the plan makes and how much of it is
+  built. That's read from the save: the buildings of each stage's recipe beyond what stood when the
+  recipe came into the plan, whatever their clock — an underclocked machine is still built. It
+  counts every such building, also one put up for something else: the save doesn't say what a
+  building is for. The bar asks again every minute, so the game's autosaves move it along.
+- **The panel.** Click the bar for every stage with how much of it stands, a box to tick a stage
+  built before the save shows it — ticked stages count as built for the assistant too — a link to
+  the plan's graph, and its revisions: when each was accepted, the question that asked for it, and
+  what it changed.
+
+A plan made with no save loaded has nothing to count from: its progress shows as unknown until you
+tick stages. The plan, its revisions and your ticks are kept with the conversation.
 
 ## What it works from: the header
 
@@ -126,6 +153,9 @@ from the game's files, which are UE5 IoStore archives since Update 8: umodel can
   stage's building, machines, power and belt tier, plus a free deposit for every raw input.
 - "Add 400 screws a minute to my factory" — the minimal change to what's already built, using its
   spare output first, and which of your factories to extend.
+- "Make it 20 a minute and add 5 Rotors" — once a conversation has a plan, the plan revised: what to
+  build, take down or switch over, and how much of that you've built already.
+- "How far am I with the plan?" — each stage, and what of it the save shows built.
 - "Which alternate recipe for Iron Ingot is best?" — every recipe planned side by side.
 - "What do I need to unlock for Computers?" — the technologies, their prerequisites and costs.
 - "How do I get 500 MW?" — generators, fuel, water and the extractors for it.
@@ -157,9 +187,9 @@ src/pioneer/
   resource_db/          resource nodes and purity (docs/resource_nodes.json)
   save_parser/          .sav -> placed buildings + production graph
   server_client/        the dedicated server's HTTPS API
-  verifier/             the arithmetic: machines, balance, power, distance, transport
-  production_planner/   target rate -> production graph
-  expansion_advisor/    plan + existing factory -> what to build
+  verifier/             the arithmetic: machines, balance, power, distance, transport, plan progress
+  production_planner/   target rates -> production graph
+  expansion_advisor/    plan + existing factory -> what to build; a plan's revision -> what changes
   location_advisor/     free deposits, and where your factories are
   anomaly_detector/     shortfalls, waste, blackouts, congestion
   qa_engine/            retrieval + answer synthesis

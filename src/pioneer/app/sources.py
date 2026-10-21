@@ -110,6 +110,8 @@ class SaveStatus:
     machines: float = 0.0
     """Effective machines: a clocked-down one counts for less than one."""
     recipes_running: int = 0
+    saved_at: float | None = None
+    """When the save in use was written, as a Unix time: what everything read from it is as of."""
     loading: str | None = None
     """The save being read in the background, by file name, while `file` stays in use."""
     error: str | None = None

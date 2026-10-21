@@ -14,6 +14,7 @@ from pioneer.contracts.geometry import Coordinates
 from pioneer.contracts.intent import Intent, IntentKind
 from pioneer.contracts.locations import FactorySite, RankedLocation
 from pioneer.contracts.placement import Carrier, PlacementRecord, TransportLink
+from pioneer.contracts.plan import Plan, PlanTarget, StageProgress
 from pioneer.contracts.planning import ChangeAction, ChangeItem, ChangeSet
 from pioneer.contracts.production_graph import MaterialFlow, ProductionGraph, ProductionNode
 from pioneer.contracts.recipes import (
@@ -53,6 +54,8 @@ __all__ = [
     "ItemCount",
     "MaterialFlow",
     "PlacementRecord",
+    "Plan",
+    "PlanTarget",
     "ProductionGraph",
     "ProductionNode",
     "Purity",
@@ -60,6 +63,7 @@ __all__ = [
     "Recipe",
     "ResourceNode",
     "ResponseArtifact",
+    "StageProgress",
     "Technology",
     "TransportError",
     "TransportLink",

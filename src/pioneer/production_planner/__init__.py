@@ -8,7 +8,14 @@ from pioneer.production_planner.planner import (
     MissingRecipe,
     find_missing_recipes,
     plan_production,
+    plan_targets,
     recipes_for_output,
 )
 
-__all__ = ["MissingRecipe", "find_missing_recipes", "plan_production", "recipes_for_output"]
+__all__ = [
+    "MissingRecipe",
+    "find_missing_recipes",
+    "plan_production",
+    "plan_targets",
+    "recipes_for_output",
+]

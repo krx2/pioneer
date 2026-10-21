@@ -175,11 +175,13 @@ def test_a_save_that_fails_to_parse_keeps_the_last_good_one_until_it_changes(tmp
     assert saves.loaded == ["good.sav", "torn.sav"]  # not retried while unchanged
     assert live.sources().save.error == "could not read torn.sav (chunk tag mismatch)"
     assert live.sources().save.file == "good.sav"
+    assert live.sources().save.saved_at == 1_000  # what's in use is as of the good one
 
     saves.states["torn.sav"] = _state(7)
     os.utime(torn, (3_000, 3_000))
     assert _machines(live.current()[0]) == 7
     assert live.sources().save.error is None
+    assert live.sources().save.saved_at == 3_000
 
 
 def test_without_a_save_nothing_is_known_about_the_factory(tmp_path) -> None:
@@ -464,6 +466,7 @@ def test_the_sources_say_what_the_context_is_built_from(tmp_path) -> None:
     assert (sources.tech.known, sources.tech.tier) == (True, 1)
     assert (sources.tech.milestones_unlocked, sources.tech.milestones_total) == (1, 3)
     assert (sources.save.file, sources.save.session, sources.save.buildings) == ("a.sav", "test", 1)
+    assert sources.save.saved_at == 1_000
     assert (sources.save.machines, sources.save.recipes_running, sources.save.mode) == (
         2.5,
         1,

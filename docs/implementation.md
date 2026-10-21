@@ -88,7 +88,9 @@ every module is allowed to depend on.
 - `PlacementRecord` (building type + coordinates, from a save) — produced by Save Parser, consumed
   by Location Advisor, Anomaly Detector
 - `GameState` (progress, phase) — produced by Server Client
-- `ChangeSet` (extend/add instructions) — produced by Expansion Advisor
+- `ChangeSet` (extend/add instructions) — produced by Expansion Advisor; its `ChangeItem`s also
+  say what a revision of the player's plan changes, where stages come to be removed or
+  reconfigured to another recipe (Stage 17)
 - `AnomalyRecord` (resource/location/severity) — produced by Anomaly Detector
 - `RankedLocation` — produced by Location Advisor
 - `ResponseArtifact` (the Chat/Graph/Map payload a single assistant turn produces, plus a feedback
@@ -96,6 +98,9 @@ every module is allowed to depend on.
   by the Verification/Feedback module
 - `Intent` (the classification the Orchestrator produces internally) — only needed at Stage 16,
   but worth sketching here while the other shapes are fresh
+- `Plan`, `PlanTarget` (a conversation's plan and what it was planned from) and `StageProgress`
+  (how far one of its stages is built) — added with Stage 17: produced by the Orchestrator and the
+  Verifier, kept by the web layer
 
 **Done when:** every module below can be described purely in terms of "takes a `<Contract>`,
 returns a `<Contract>`" without referencing any other module by name.
@@ -201,6 +206,9 @@ produces a distance.
 - `machine_count(recipe, target_rate) -> int`
 - `power_balance(graph) -> surplus/deficit`
 - `distance(a, b) -> float`
+- Added with Stage 17: `plan_progress(plan, placements)` — how far the save has built each stage of
+  the player's plan, counting buildings (not clock-scaled machines) beyond the plan's baseline,
+  and what the player marked built by hand where that's more.
 
 **Test fixtures:** hand-built small `ProductionGraph` fixtures (e.g. the iron ingot → iron rod
 chain from the source deck) with known-correct expected results — don't call the Planner or Save
@@ -295,6 +303,9 @@ resources to X via graph search over recipe data.
 - `available_supply`: demand already covered from outside the plan — an existing factory's spare
   output — gets no new machines, and neither does anything upstream of it. This is what the
   Expansion Advisor (Stage 8) is fed.
+- `plan_targets`: several targets in one graph, each at its own rate, demand summed before any
+  machine is counted — so a stage two targets share is rounded up once. `plan_production` is its
+  one-target case; a plan with more than one target (Stage 17) is planned with it.
 
 **Test fixtures:** a small hand-written `Recipe` set covering the iron chain (own `fixtures/`,
 don't import Stage 2's loader or read `docs/en-US.json` from here) plus hand-verified expected
@@ -319,6 +330,11 @@ with the existing factory's surplus as `available_supply`), produces a `ChangeSe
   extended node shows what's new and `verifier.added_machines` can score only the additions.
 - Mapping each addition onto the existing factory: `EXTEND` a node already running its recipe,
   `ADD` otherwise, with the plan's flows rewired onto the resulting node ids.
+- Added with Stage 17: `plan_changes(before, after, built)` — what goes from one version of the
+  player's plan to the next, stage by stage by recipe: `EXTEND`/`REMOVE` of a recipe both run,
+  `ADD`/`REMOVE` of one only one runs, and an item's recipe swapped in the same building as a
+  `RECONFIGURE` of the machines both have. Given how much of the old version is built, each
+  `REMOVE` and `RECONFIGURE` says how many of its machines already stand.
 
 **Revised after real-data testing:** the original design diffed a from-scratch plan against the
 existing factory's *gross* machine counts. On a real save that answered "5/min more Reinforced
@@ -530,7 +546,8 @@ plumbs it together.
   for an item side by side, and `plan_power` lists the generators, fuel, water and extractors for a
   power target, with the chain that makes a named fuel.
 - `handle_query` takes the conversation so far (`history`); the web page sends its last eight
-  turns with each question.
+  turns with each question. A conversation's plan comes in through the context instead
+  (Stage 17).
 - **Found running against a real model** (qwen2.5:14b through Ollama, which both live smoke tests
   now pass): it answered a game-mechanics question from its own memory — wrongly, and the chat
   check caught the number — so the system prompt now tells it that what it remembers about the
@@ -580,6 +597,75 @@ see README.md for the rest of the setup.
 **Done when:** "I want to produce 10/min of X" goes in through Chat and comes back out as a
 verified Chat + Graph + Map response, built entirely from real module calls, with no fixtures left
 standing in for a finished module.
+
+---
+
+## Stage 17 — One conversation, one plan
+
+**Goal:** a conversation works towards one plan. While the player builds it, its progress fills in
+from the save; asked for a change, the assistant adapts that plan — knowing what's built of it —
+instead of planning anew and hoping the result looks similar. Design in architecture.md §4.3.
+
+**Built in three steps, each on top of Stage 16:**
+1. *The plan as state.* `contracts.Plan` pins what a plan was planned from: its targets, the recipe
+   each stage runs (read off the graph), and for an expansion the existing factory's spare output
+   then. `plan_production` and `expand_existing_factory` offer what they planned as a proposal
+   (`ResponseArtifact.plan_proposal`, `orchestrator.plans.propose_plan`); the player accepts it on
+   the page, and the web layer keeps it with the conversation (`web.conversations`, serialized by
+   `web.plans`). Every later question of that conversation runs with the plan in
+   `OrchestratorContext.plan`: the model is shown it next to what data it has
+   (`plans.plan_note`) and gets `show_plan` and `revise_plan` (`orchestrator.plan_tools`), offered
+   only in a conversation with a plan. `revise_plan` takes just the change — a target's rate, a
+   target added or dropped, another recipe for an item — plans the rest from the pinned
+   parameters (`production_planner.plan_targets`), and reports `expansion_advisor.plan_changes`.
+   The revision is a proposal too.
+2. *Progress from the save.* `verifier.plan_progress` counts the save's buildings of each stage's
+   recipe beyond the plan's baseline. The model is told it in the plan note and `show_plan`, and a
+   revision's `REMOVE`/`RECONFIGURE` say how many of their machines already stand. The page's
+   plan bar shows it, asking again every minute (`GET /api/conversations/{id}/plan`), by the save
+   whose time `app.sources.SaveStatus.saved_at` gives.
+3. *The plan panel.* The bar opens into every stage's progress with a box to mark it built
+   (`POST .../plan/marks`; a mark counts as built for the model too), a link to the plan's graph,
+   and the plan's revisions — when each was accepted, the question that asked for it, what it
+   changed.
+
+**Decisions along the way:**
+- The player accepts a plan and each revision; an answer never changes the plan on its own. Only a
+  proposal for the plan as it stands can be accepted, so an older revision, or a second first
+  plan, can't overwrite a newer one. A proposal goes with its own graph only: a later tool in the
+  same turn drawing another graph takes the offer back.
+- In a conversation with a plan, `plan_production` and `expand_existing_factory` plan apart and
+  propose nothing; their results tell the model that changing the plan, or adding a target to it,
+  is `revise_plan`'s job. Another target joins the plan — one graph, planned together.
+- Two baselines. The save's production graph counts machines clock-scaled (three constructors at
+  50% are 1.5), which is right for what a plan extending the factory extends
+  (`Plan.baseline_machines`) and wrong for progress: a player underclocking the machines a plan
+  rounded up would never see a stage done. Progress counts buildings
+  (`Plan.baseline_buildings`). On a real late-game save the two differ — 31 Iron Plate
+  constructors against 29.55 effective machines.
+- A recipe new to the plan in a revision counts from what stands of it when it comes in. A plan
+  extending the factory extends the factory as it stood (synthetic nodes from
+  `baseline_machines`), not as it stands — what the player built for the plan since is the plan's,
+  not more factory.
+- Progress counts every building of a stage's recipe, also one put up for something else: the save
+  doesn't say what a building is for. With no save when a recipe came into the plan, its progress
+  can't be told (`StageProgress.built` is `None`) until the player marks it.
+- Marks are kept beside the plan, not in it (`marked` in the conversation's plan entry), so they
+  carry across revisions and a proposal made before a mark can't drop it. A stage counts the
+  save's count or the marks, whichever is more: both count the same machines.
+- Each change names its building (`ChangeItem.building_id`), so the revision history reads on its
+  own. A plan accepted before revisions were noted gets itself as its first revision.
+
+**Tests:** `tests/production_planner/test_planner.py` (several targets),
+`tests/expansion_advisor/test_revision.py`, `tests/verifier/test_progress.py`,
+`tests/orchestrator/test_plans.py` and `tests/web/test_plans.py`, plus `tests/app/test_live.py`
+for the save's time.
+
+**Done when:** in one conversation, a plan is accepted, a follow-up revises it keeping every stage
+it didn't ask to change, and the plan's progress shows what the save — or the player — says is
+built. Checked by hand against qwen2.5:14b and a real late-game save: the model reached for
+`revise_plan` on "make it 20 per minute, and add 5 Rotors" and on "make it 60 Iron Plates per
+minute instead".
 
 ---
 

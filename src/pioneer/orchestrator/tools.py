@@ -1,5 +1,6 @@
 """The tools the model is offered: each one's name, description and parameter schema,
-bound to its handler."""
+bound to its handler. The plan's own tools are offered only in a conversation that has a plan:
+elsewhere they'd be tokens of a small context window spent on nothing."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ from pioneer.orchestrator.factory_tools import (
     _handle_factory_power,
     _handle_show_existing_factory,
 )
+from pioneer.orchestrator.plan_tools import _handle_revise_plan, _handle_show_plan
 from pioneer.orchestrator.planning_tools import (
     _handle_answer_question,
     _handle_compare_recipes,
@@ -43,7 +45,7 @@ def _build_tools(
         ),
         "additionalProperties": {"type": "string"},
     }
-    return [
+    tools = [
         _Tool(
             name="find_item",
             description=(
@@ -262,5 +264,57 @@ def _build_tools(
             handler=lambda args: _handle_answer_question(
                 args, context, accumulator, qa_chat_completion, llm_base_url, llm_model, llm_api_key
             ),
+        ),
+    ]
+    if context.plan is None:
+        return tools
+    return [
+        *tools,
+        _Tool(
+            name="show_plan",
+            description=(
+                "Draw the player's plan for this conversation as it stands, with each stage's "
+                "recipe, building, machines and power, and how much of it the player has built "
+                "by the latest save. Use when they ask to see their plan or how far they are."
+            ),
+            parameters={"type": "object", "properties": {}},
+            handler=lambda args: _handle_show_plan(context, accumulator),
+        ),
+        _Tool(
+            name="revise_plan",
+            description=(
+                "Change the player's plan for this conversation, keeping everything they didn't "
+                "ask to change: a target's rate, another target besides the others, a target "
+                "dropped, another recipe for an item. Reports what changes -- machines to add, "
+                "remove, or reconfigure to another recipe, and how many of those the player has "
+                "built already -- and draws the revised plan, which the player then accepts on the "
+                "page. Use for every change to the plan, never plan_production."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "object",
+                        "description": (
+                            "Item -> rate per minute: a target of the plan gets the new rate, any "
+                            "other item becomes a new target besides the others " + _ITEM_HINT
+                        ),
+                        "additionalProperties": {"type": "number"},
+                    },
+                    "remove_targets": {
+                        "type": "array",
+                        "description": "Targets to drop from the plan " + _ITEM_HINT,
+                        "items": {"type": "string"},
+                    },
+                    "recipe_choices": {
+                        "type": "object",
+                        "description": (
+                            "Item -> recipe id: run that item's stage with this recipe from now on"
+                        ),
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+            },
+            handler=lambda args: _handle_revise_plan(args, context, accumulator),
         ),
     ]

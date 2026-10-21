@@ -14,6 +14,12 @@ water, crude oil, ...) and at any item no recipe produces. The first matters on 
 game has recipes *producing* most raw resources (1.0's Converter turns one ore into another,
 unpackaging yields crude oil), and following them walks ore -> ore -> ore in a circle.
 
+**Several targets at once.** `plan_targets` plans a chain making every one of several items, each
+at its own rate -- the player's plan, once it has more than one target. Demand from all of them is
+summed before any machine is counted, so a stage two targets share is planned once, its machines
+rounded up once, and a target another target consumes gets that demand on top of its own rate.
+`plan_production` is the one-target case.
+
 **Planning on top of what's already there.** `available_supply` is per-minute supply of items on
 hand outside the plan — when expanding a factory, its spare output (the Verifier's positive
 balance). Each item's demand draws on that supply before any machine is planned for it, so a
@@ -98,42 +104,68 @@ def plan_production(
     recipe that doesn't actually produce the item it's keyed to, or if every recipe chain for the
     target loops back on itself — or, given `game_recipes`, needs an item only a recipe left out
     of `recipes` makes, more of it than `available_supply` has."""
+    return plan_targets(
+        {target_item_id: target_rate},
+        recipes,
+        recipe_choices,
+        raw_item_ids=raw_item_ids,
+        available_supply=available_supply,
+        game_recipes=game_recipes,
+    )
+
+
+def plan_targets(
+    targets: Mapping[str, float],
+    recipes: tuple[Recipe, ...],
+    recipe_choices: dict[str, str] | None = None,
+    *,
+    raw_item_ids: Collection[str] = (),
+    available_supply: Mapping[str, float] | None = None,
+    game_recipes: tuple[Recipe, ...] | None = None,
+) -> ProductionGraph:
+    """`plan_production` for several targets at once, each item at its rate (see the module
+    docstring): one graph making all of them. Raises what `plan_production` raises, for any one of
+    the targets, and for none at all."""
+    if not targets:
+        raise ValueError("no target to plan for")
     raw = frozenset(raw_item_ids)
     supply = available_supply or {}
     dead_ends = _dead_ends(recipes, game_recipes, raw) if game_recipes is not None else frozenset()
-    if target_item_id in raw:
-        raise ValueError(
-            f"{target_item_id!r} is a raw resource -- it's extracted, not crafted, so there's "
-            f"nothing to plan"
-        )
-    if not recipes_for_output(target_item_id, recipes):
-        raise ValueError(
-            f"no recipe produces {target_item_id!r} -- nothing to plan (it's a raw resource, "
-            f"or not in the supplied recipe list)"
-        )
+    for target_item_id in targets:
+        if target_item_id in raw:
+            raise ValueError(
+                f"{target_item_id!r} is a raw resource -- it's extracted, not crafted, so "
+                f"there's nothing to plan"
+            )
+        if not recipes_for_output(target_item_id, recipes):
+            raise ValueError(
+                f"no recipe produces {target_item_id!r} -- nothing to plan (it's a raw "
+                f"resource, or not in the supplied recipe list)"
+            )
 
     # A dead end the existing factory has spare of can still be taken from it.
     blocked = frozenset(item for item in dead_ends if supply.get(item, 0.0) <= 0)
     chosen_recipes = _choose_recipes(
-        target_item_id, recipes, recipe_choices, raw, blocked, alternates_as_fallback=False
+        tuple(targets), recipes, recipe_choices, raw, blocked, alternates_as_fallback=False
     )
     if chosen_recipes is None:
         chosen_recipes = _choose_recipes(
-            target_item_id, recipes, recipe_choices, raw, blocked, alternates_as_fallback=True
+            tuple(targets), recipes, recipe_choices, raw, blocked, alternates_as_fallback=True
         )
     if chosen_recipes is None:
+        named = ", ".join(repr(target_item_id) for target_item_id in targets)
         if blocked:
             raise ValueError(
-                f"no chain of the given recipes makes {target_item_id!r}: every one loops back "
+                f"no chain of the given recipes makes {named}: every one loops back "
                 f"on itself or needs an item only a left-out recipe makes"
             )
         raise ValueError(
-            f"every recipe chain for {target_item_id!r} loops back on itself -- cyclic recipe "
+            f"every recipe chain for {named} loops back on itself -- cyclic recipe "
             f"dependency, cannot compute a planning order"
         )
 
-    order = _topological_order(*_requirements(target_item_id, chosen_recipes))
-    demand = _accumulate_demand(target_item_id, target_rate, order, chosen_recipes, supply)
+    order = _topological_order(*_requirements(tuple(targets), chosen_recipes))
+    demand = _accumulate_demand(targets, order, chosen_recipes, supply)
     short = [
         item
         for item in order
@@ -157,7 +189,11 @@ def plan_production(
     )
     flows = [
         *_internal_flows(order, chosen_recipes, demand),
-        *_split_flow(target_item_id, target_rate, None, demand),
+        *(
+            flow
+            for target_item_id, target_rate in targets.items()
+            for flow in _split_flow(target_item_id, target_rate, None, demand)
+        ),
     ]
     return ProductionGraph(nodes=nodes, flows=tuple(flows))
 
@@ -329,7 +365,7 @@ def _ranked_candidates(
 
 
 def _choose_recipes(
-    target_item_id: str,
+    target_item_ids: tuple[str, ...],
     recipes: tuple[Recipe, ...],
     recipe_choices: dict[str, str] | None,
     raw_item_ids: frozenset[str],
@@ -337,8 +373,8 @@ def _choose_recipes(
     *,
     alternates_as_fallback: bool,
 ) -> dict[str, Recipe] | None:
-    """One recipe per crafted item reachable from the target, or `None` if every chain loops or
-    runs into one of `dead_ends`.
+    """One recipe per crafted item reachable from the targets, or `None` if every chain for one of
+    them loops or runs into one of `dead_ends`.
 
     Picked depth-first: each item tries its candidates best-first and settles on the first whose
     whole ingredient chain resolves without looping back to an item still being resolved above
@@ -375,17 +411,17 @@ def _choose_recipes(
         finally:
             in_progress.discard(item_id)
 
-    return chosen if resolve(target_item_id) else None
+    return chosen if all(resolve(target_item_id) for target_item_id in target_item_ids) else None
 
 
 def _requirements(
-    target_item_id: str, chosen_recipes: dict[str, Recipe]
+    target_item_ids: tuple[str, ...], chosen_recipes: dict[str, Recipe]
 ) -> tuple[set[str], dict[str, set[str]]]:
-    """Every item the chosen recipes reach from the target, and the items each crafted one
+    """Every item the chosen recipes reach from the targets, and the items each crafted one
     directly needs — the graph `_topological_order` sorts."""
     requires: dict[str, set[str]] = defaultdict(set)
-    all_items = {target_item_id}
-    to_visit = deque([target_item_id])
+    all_items = set(target_item_ids)
+    to_visit = deque(target_item_ids)
     while to_visit:
         item = to_visit.popleft()
         recipe = chosen_recipes.get(item)
@@ -417,7 +453,7 @@ def _machine_count(per_machine_rate: float, target_rate: float) -> int:
 
 
 def _topological_order(all_items: set[str], requires: dict[str, set[str]]) -> list[str]:
-    """Kahn's algorithm: target first, an item only after every item that consumes it."""
+    """Kahn's algorithm: targets first, an item only after every item that consumes it."""
     in_degree: dict[str, int] = dict.fromkeys(all_items, 0)
     for needed_items in requires.values():
         for needed in needed_items:
@@ -453,14 +489,13 @@ class _Demand:
 
 
 def _accumulate_demand(
-    target_item_id: str,
-    target_rate: float,
+    targets: Mapping[str, float],
     order: list[str],
     chosen_recipes: dict[str, Recipe],
     available_supply: Mapping[str, float],
 ) -> _Demand:
     demand = _Demand()
-    demand.total[target_item_id] = target_rate
+    demand.total.update(targets)
 
     for item in order:
         recipe = chosen_recipes.get(item)

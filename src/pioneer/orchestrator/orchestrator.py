@@ -35,6 +35,15 @@ which was checked against that turn's own tools when it was given. Only the newe
 `_HISTORY_BUDGET_CHARS` are passed on (see `recent_history`): a local model's context window is
 small, and what overflows it is cut from the front — the system prompt and the tools.
 
+**The player's plan.** A conversation may have a plan the player accepted (see
+`contracts.plan`): it comes in as `OrchestratorContext.plan`, and the model is shown it next to
+what data it has (`plans.plan_note`), with how far the save has built it -- grounding too, since a
+follow-up may repeat its numbers --
+and offered the tools that draw and revise it. An answer that plans something offers that plan to
+be accepted (`ResponseArtifact.plan_proposal`): the first in a conversation, or a revision of the
+plan it has. A plan is offered only with its own graph: a later tool drawing another one takes the
+offer back.
+
 **Progress.** Given an `on_event` sink, `handle_query` says what it's doing while it works (see
 `base.ProgressSink`): that it's thinking, which tool it's running on what, and when text a
 streaming transport already passed on turned out to be a round of tool calls rather than the
@@ -88,6 +97,7 @@ from pioneer.orchestrator.base import (
     _ArtifactAccumulator,
 )
 from pioneer.orchestrator.items import display_names
+from pioneer.orchestrator.plans import plan_note, progress_of
 from pioneer.orchestrator.progress import describe_tool_call
 from pioneer.orchestrator.tool_calls import (
     _assistant_message,
@@ -167,19 +177,22 @@ def handle_query(
 ) -> ResponseArtifact | OrchestratorUnavailable:
     emit = on_event or _ignore
     history = recent_history(history)  # what the model sees is also what the answer is held to
+    names = display_names(context)
+    system = f"{_SYSTEM_PROMPT}\n\n{context_note(context)}"
     accumulator = _ArtifactAccumulator(
         grounding=[question, *(text for turn in history for text in turn)]
     )
-    names = display_names(context)
+    if context.plan is not None:
+        note = plan_note(context.plan, names, progress_of(context.plan, context))
+        system += f"\n\n{note}"
+        accumulator.grounding.append(note)
     tools = _build_tools(
         context, accumulator, qa_chat_completion, llm_base_url, llm_model, llm_api_key
     )
     tool_schemas = [tool.as_schema() for tool in tools]
     tools_by_name = {tool.name: tool for tool in tools}
 
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": f"{_SYSTEM_PROMPT}\n\n{context_note(context)}"},
-    ]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     for earlier_question, earlier_answer in history:
         messages.append({"role": "user", "content": earlier_question})
         messages.append({"role": "assistant", "content": earlier_answer})
@@ -196,6 +209,7 @@ def handle_query(
             message.get("content"), tools_by_name
         )
         if not tool_calls:
+            proposal = accumulator.plan_proposal
             return ResponseArtifact(
                 response_id=response_id,
                 chat=message.get("content") or "",
@@ -206,6 +220,11 @@ def handle_query(
                 question=question,
                 grounding=tuple(accumulator.grounding),
                 missing_recipes=tuple(dict.fromkeys(accumulator.missing_recipes)),
+                plan_proposal=(
+                    proposal
+                    if proposal is not None and proposal.graph is accumulator.graph
+                    else None
+                ),
             )
 
         emit({"type": "discard"})

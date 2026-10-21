@@ -56,6 +56,8 @@ _ACTIVITIES: dict[str, Callable[[_Arguments, Mapping[str, str]], str]] = {
     "rank_build_locations": _for("item_id", "Ranking build sites for"),
     "diagnose_factory_problems": lambda arguments, names: "Diagnosing your factory",
     "answer_game_question": lambda arguments, names: "Searching the game's documentation",
+    "show_plan": lambda arguments, names: "Drawing your plan",
+    "revise_plan": lambda arguments, names: "Revising your plan",
 }
 
 

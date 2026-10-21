@@ -182,6 +182,7 @@ class LiveContext:
         """The save being read in the background."""
         self._state: SaveState | None = None
         self._state_path: Path | None = None
+        self._state_saved_at: float | None = None
         self._sites: tuple[FactorySite, ...] = ()
         self._save_error: str | None = None
 
@@ -267,6 +268,7 @@ class LiveContext:
                 buildings=len(state.placements) if state else 0,
                 machines=sum(node.machine_count for node in state.graph.nodes) if state else 0.0,
                 recipes_running=len(state.graph.nodes) if state else 0,
+                saved_at=self._state_saved_at if state else None,
                 loading=self._loading[0].name if self._loading else None,
                 error=self._save_error,
             ),
@@ -481,6 +483,7 @@ class LiveContext:
         if path is None:
             before = (self._state, self._save_key, self._loading, self._save_error)
             self._save_key = self._loading = self._state = self._state_path = None
+            self._state_saved_at = None
             self._sites, self._save_error = (), problem
             self._loaded.notify_all()
             return before != (None, None, None, problem)
@@ -549,6 +552,7 @@ class LiveContext:
         else:
             self._state, self._sites = outcome
             self._state_path = key[0]
+            self._state_saved_at = key[1] / 1e9
             self._save_error = None
         self._sources = None
 

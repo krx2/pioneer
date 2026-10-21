@@ -22,6 +22,16 @@ With a `ConversationStore`, every answer is also kept in its conversation — th
 names, or a new one — for the page's sidebar to list and reopen, together with its graph and map
 pages, which are then served from there once the answer has left memory.
 
+A conversation's plan lives there too. An answer proposing one says so (`plan_proposal`: what it
+makes, and which revision it would be), for the page to offer accepting it, and keeps the proposal
+in its conversation; `POST /api/conversations/{id}/plan` accepts it. Every later question in that
+conversation is answered with the plan in its context (`OrchestratorContext.plan`) -- read from
+the store, never taken from the page. Whatever shows the plan also says how far the save in use
+has built it, and from when that save is, and the revisions it went through;
+`GET /api/conversations/{id}/plan` tells just that, for the page to follow the game's autosaves,
+and `POST .../plan/marks` notes a stage the player marked built by hand -- which then counts as
+built for the model too.
+
 The icons in `icon_dir` (see `pioneer.icons`) are served under `/icons/`, and every page is told
 which ids have one: an item or building its own, a recipe the item it makes. Without the folder,
 or for an id with no icon in it, the pages draw what they drew before icons existed. Likewise the
@@ -51,7 +61,7 @@ from pydantic import BaseModel, Field
 
 from pioneer.app import LiveContext
 from pioneer.chat_presentation import render_message
-from pioneer.contracts import Feedback, ProductionGraph, ResponseArtifact
+from pioneer.contracts import Feedback, Plan, ProductionGraph, ResponseArtifact
 from pioneer.graph_presentation import render_page as render_graph_page
 from pioneer.map_image import WORLD_BOUNDS
 from pioneer.map_presentation import MapBackground
@@ -61,6 +71,7 @@ from pioneer.orchestrator import (
     OrchestratorUnavailable,
     ProgressSink,
     display_names,
+    progress_of,
 )
 from pioneer.verification_feedback import (
     FeedbackStore,
@@ -69,8 +80,15 @@ from pioneer.verification_feedback import (
     ResponseLog,
     ResponseScore,
 )
-from pioneer.web.conversations import ConversationStore, PageKind
+from pioneer.web.conversations import ConversationStore, PageKind, PlanChanged
 from pioneer.web.page import render_chat_page
+from pioneer.web.plans import (
+    history_summary,
+    marks_from_json,
+    plan_from_json,
+    plan_summary,
+    plan_to_json,
+)
 from pioneer.web.sources import source_routes
 
 ContextSource = Callable[[], tuple[OrchestratorContext, str]]
@@ -112,6 +130,18 @@ class AskRequest(BaseModel):
     turn: int | None = Field(default=None, ge=0)
     """Which of its turns the answer is: an earlier one when it's answered again. None: a new one
     at its end."""
+
+
+class AcceptPlanRequest(BaseModel):
+    response_id: str = Field(min_length=1, max_length=64)
+    """The answer whose proposed plan becomes the conversation's."""
+
+
+class MarkRequest(BaseModel):
+    recipe_id: str = Field(min_length=1, max_length=200)
+    """The plan's stage, by the recipe it runs."""
+    built: float = Field(ge=0, le=100_000)
+    """How many of its machines the player marked built; 0 clears the mark."""
 
 
 class FeedbackRequest(BaseModel):
@@ -217,6 +247,40 @@ def create_app(
             products=products,
         )
 
+    def plan_of(accepted: dict[str, Any] | None) -> Plan | None:
+        """A conversation's plan as stored, with what the player marked built; none without one,
+        or with one that can't be read -- torn or hand-mangled: then it's as if there were none."""
+        if accepted is None:
+            return None
+        try:
+            plan = plan_from_json(accepted.get("plan"))
+        except ValueError:
+            return None
+        return replace(plan, marked_built=marks_from_json(accepted.get("marked")))
+
+    def conversation_plan(conversation_id: str | None) -> Plan | None:
+        """The plan the conversation has, as the model is to work from it."""
+        if conversations is None or conversation_id is None:
+            return None
+        with lock:
+            accepted = conversations.plan(conversation_id)
+        return plan_of(accepted)
+
+    def accepted_summary(accepted: dict[str, Any] | None) -> dict[str, Any] | None:
+        """What the page shows of a conversation's plan -- with how far the save in use has
+        built it, and the revisions it went through -- and which answer proposed it."""
+        plan = plan_of(accepted)
+        if accepted is None or plan is None:
+            return None
+        progress = progress_of(plan, context()[0])
+        as_of = live.sources().save.saved_at if live is not None else None
+        return {
+            **plan_summary(plan, names, progress, as_of=as_of, icons=icons),
+            "response_id": accepted.get("response_id"),
+            "accepted_at": accepted.get("accepted_at"),
+            "history": history_summary(accepted.get("history"), names),
+        }
+
     def question_of(request: AskRequest) -> str:
         question = request.question.strip()
         if not question:
@@ -228,6 +292,9 @@ def create_app(
     ) -> dict[str, Any]:
         """Answers, verifies, remembers and stores one question: the body both endpoints send."""
         current, status = context()
+        plan = conversation_plan(request.conversation_id)
+        if plan is not None:
+            current = replace(current, plan=plan)
         history = [(turn.question, turn.answer) for turn in request.history]
         steps: list[str] = []
         thoughts: list[str] = []
@@ -261,6 +328,12 @@ def create_app(
             "verification": _verification_summary(score),
             # Recipes the player turned off that a plan would need: the page offers them.
             "missing_recipes": list(result.missing_recipes),
+            # A plan the player can accept as the conversation's: only where it can be kept.
+            "plan_proposal": (
+                plan_summary(result.plan_proposal, names)
+                if result.plan_proposal is not None and conversations is not None
+                else None
+            ),
             # How it was worked out, for the page to show folded above the answer.
             "process": (
                 {"steps": steps, "thinking": "".join(thoughts)} if steps or thoughts else None
@@ -288,8 +361,13 @@ def create_app(
                 for kind, page in pages.items():
                     conversations.save_page(result.response_id, kind, page)
                 turn = request.turn if request.turn is not None else len(request.history)
+                proposal = result.plan_proposal and plan_to_json(result.plan_proposal)
                 conversation_id = conversations.save_turn(
-                    request.conversation_id, turn, question, body
+                    request.conversation_id,
+                    turn,
+                    question,
+                    body,
+                    proposal,
                 )
         return {**body, "status": status, "conversation_id": conversation_id}
 
@@ -330,9 +408,57 @@ def create_app(
     def get_conversation(conversation_id: str) -> dict[str, Any]:
         with lock:
             found = conversations.get(conversation_id) if conversations is not None else None
+            accepted = conversations.plan(conversation_id) if conversations is not None else None
         if found is None:
             raise HTTPException(status_code=404, detail="unknown conversation")
-        return found
+        return {
+            **found,
+            # The proposals themselves stay on the server: each answer says what it proposes.
+            "turns": [
+                {key: value for key, value in turn.items() if key != "plan_proposal"}
+                for turn in found["turns"]
+            ],
+            "plan": accepted_summary(accepted),
+        }
+
+    @app.get("/api/conversations/{conversation_id}/plan")
+    def get_plan(conversation_id: str) -> dict[str, Any]:
+        with lock:
+            found = conversations.get(conversation_id) if conversations is not None else None
+            accepted = conversations.plan(conversation_id) if conversations is not None else None
+        if found is None:
+            raise HTTPException(status_code=404, detail="unknown conversation")
+        return {"plan": accepted_summary(accepted)}
+
+    @app.post("/api/conversations/{conversation_id}/plan/marks")
+    def mark_plan(conversation_id: str, request: MarkRequest) -> dict[str, Any]:
+        with lock:
+            accepted = conversations.plan(conversation_id) if conversations is not None else None
+        plan = plan_of(accepted)
+        if conversations is None or plan is None:
+            raise HTTPException(status_code=404, detail="this conversation has no plan")
+        if all(node.recipe_id != request.recipe_id for node in plan.graph.nodes):
+            raise HTTPException(status_code=422, detail="no stage of the plan runs this recipe")
+        with lock:
+            marked = conversations.mark_plan(conversation_id, request.recipe_id, request.built)
+        return {"plan": accepted_summary(marked)}
+
+    @app.post("/api/conversations/{conversation_id}/plan")
+    def accept_plan(conversation_id: str, request: AcceptPlanRequest) -> dict[str, Any]:
+        with lock:
+            try:
+                accepted = (
+                    conversations.accept_plan(conversation_id, request.response_id)
+                    if conversations is not None
+                    else None
+                )
+            except PlanChanged:
+                raise HTTPException(
+                    status_code=409, detail="the plan has changed since this was proposed"
+                ) from None
+        if accepted is None:
+            raise HTTPException(status_code=404, detail="no plan proposed by this answer")
+        return {"plan": accepted_summary(accepted)}
 
     @app.delete("/api/conversations/{conversation_id}")
     def delete_conversation(conversation_id: str) -> dict[str, bool]:

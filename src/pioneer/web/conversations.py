@@ -8,6 +8,13 @@ draws it as it was first shown. The graph and map pages those links point at are
 under `pages/`: the server holds only the newest answers in memory, and a conversation's panels
 should outlive that.
 
+A conversation also keeps its plan (see `contracts.plan`): an answer that planned something keeps
+the plan it proposed next to it, as `web.plans` writes it, and accepting that proposal makes it the
+conversation's plan -- only while it's still a proposal for the plan the conversation has, so a
+revision of an older version, or a second first plan, can't overwrite a newer one. Each accepted
+revision is noted in the plan's `history`, with the question that asked for it; what the player
+marked built (`marked`, recipe id -> machines) stays with the plan across its revisions.
+
 Every id is checked against the shape the server itself hands out before it's made into a path,
 so no request can name a file outside `directory`.
 """
@@ -25,6 +32,11 @@ PageKind = Literal["graph", "map"]
 
 _ID = re.compile(r"^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$")
 _TITLE_CHARS = 60
+
+
+class PlanChanged(Exception):
+    """The proposal isn't one for the plan the conversation has now: another one was accepted
+    since."""
 
 
 class ConversationStore:
@@ -49,11 +61,17 @@ class ConversationStore:
         return self._read(path) if path is not None else None
 
     def save_turn(
-        self, conversation_id: str | None, turn: int, question: str, answer: dict[str, Any]
+        self,
+        conversation_id: str | None,
+        turn: int,
+        question: str,
+        answer: dict[str, Any],
+        plan_proposal: dict[str, Any] | None = None,
     ) -> str:
         """Puts `answer` to `question` at `turn` of the conversation — a new turn at its end, or
-        in place of one answered again — and returns the conversation's id. Without an id, or
-        with one no conversation has, a new conversation is started."""
+        in place of one answered again — with the plan it proposes, if any, and returns the
+        conversation's id. Without an id, or with one no conversation has, a new conversation is
+        started."""
         now = _now()
         conversation = self.get(conversation_id) if conversation_id else None
         if conversation is None:
@@ -65,16 +83,79 @@ class ConversationStore:
             }
         turns: list[dict[str, Any]] = conversation["turns"]
         entry = {"question": question, "answer": answer}
+        if plan_proposal is not None:
+            entry["plan_proposal"] = plan_proposal
         if 0 <= turn < len(turns):
             turns[turn] = entry
         else:
             turns.append(entry)
         conversation["updated_at"] = now
-        path = self._path(conversation["id"])
-        assert path is not None  # the id is one this store made or checked
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(conversation, ensure_ascii=False), encoding="utf-8")
+        self._write(conversation)
         return conversation["id"]
+
+    def plan(self, conversation_id: str) -> dict[str, Any] | None:
+        """The conversation's plan as it was accepted: `plan`, the `response_id` of the answer that
+        proposed it, its `history` and what the player `marked` built. `None` without a plan, or
+        without the conversation."""
+        conversation = self.get(conversation_id)
+        return _accepted(conversation) if conversation is not None else None
+
+    def accept_plan(self, conversation_id: str, response_id: str) -> dict[str, Any] | None:
+        """Makes the plan the answer `response_id` proposed the conversation's plan, and returns
+        it as `plan` does. `None` when the conversation has no such answer, or it proposed no plan;
+        `PlanChanged` when its proposal isn't for the plan the conversation has now."""
+        conversation = self.get(conversation_id)
+        if conversation is None:
+            return None
+        proposing = next(
+            (
+                turn
+                for turn in conversation["turns"]
+                if turn.get("answer", {}).get("response_id") == response_id
+            ),
+            {},
+        )
+        proposed = proposing.get("plan_proposal")
+        if not isinstance(proposed, dict):
+            return None
+        current = _accepted(conversation)
+        if current is not None and current.get("response_id") == response_id:
+            return current  # accepted already
+        revision = current["plan"].get("revision", 0) if current is not None else 0
+        if proposed.get("revision") != revision + 1:
+            raise PlanChanged(response_id)
+        now = _now()
+        before = current or {}
+        conversation["plan"] = {
+            "plan": proposed,
+            "response_id": response_id,
+            "accepted_at": now,
+            "history": [
+                *before.get("history", []),
+                _revision(conversation, proposed, response_id, now),
+            ],
+            "marked": before.get("marked", {}),
+        }
+        self._write(conversation)
+        return conversation["plan"]
+
+    def mark_plan(
+        self, conversation_id: str, recipe_id: str, machines: float
+    ) -> dict[str, Any] | None:
+        """Notes that the player marked `machines` of the plan's `recipe_id` stage built -- none
+        clears the mark -- and returns the plan as `plan` does; `None` without one."""
+        conversation = self.get(conversation_id)
+        accepted = _accepted(conversation) if conversation is not None else None
+        if conversation is None or accepted is None:
+            return None
+        marked = dict(accepted.get("marked") or {})
+        if machines > 0:
+            marked[recipe_id] = machines
+        else:
+            marked.pop(recipe_id, None)
+        conversation["plan"] = {**accepted, "marked": marked}
+        self._write(conversation)
+        return conversation["plan"]
 
     def delete(self, conversation_id: str) -> bool:
         """Removes a conversation and the pages of its answers; `False` if there was none."""
@@ -104,6 +185,12 @@ class ConversationStore:
             return None
         return path.read_text(encoding="utf-8")
 
+    def _write(self, conversation: dict[str, Any]) -> None:
+        path = self._path(conversation["id"])
+        assert path is not None  # the id is one this store made or checked
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(conversation, ensure_ascii=False), encoding="utf-8")
+
     def _path(self, conversation_id: str | None) -> Path | None:
         if not conversation_id or not _ID.match(conversation_id):
             return None
@@ -125,6 +212,41 @@ class ConversationStore:
         if not all(key in conversation for key in ("id", "title", "updated_at")):
             return None
         return conversation
+
+
+def _accepted(conversation: dict[str, Any]) -> dict[str, Any] | None:
+    """The conversation's plan as it was accepted -- one accepted before revisions were noted with
+    the one revision it is noted as its history."""
+    accepted = conversation.get("plan")
+    if not isinstance(accepted, dict):
+        return None
+    if isinstance(accepted.get("history"), list):
+        return accepted
+    plan = accepted.get("plan") if isinstance(accepted.get("plan"), dict) else {}
+    noted = _revision(conversation, plan, accepted.get("response_id"), accepted.get("accepted_at"))
+    return {**accepted, "history": [noted]}
+
+
+def _revision(
+    conversation: dict[str, Any], plan: dict[str, Any], response_id: Any, accepted_at: Any
+) -> dict[str, Any]:
+    """A revision of the plan as its history keeps it: which answer proposed it and when it was
+    accepted, the question that answer was to, and what it changed."""
+    question = next(
+        (
+            turn.get("question")
+            for turn in conversation["turns"]
+            if turn.get("answer", {}).get("response_id") == response_id
+        ),
+        None,
+    )
+    return {
+        "revision": plan.get("revision"),
+        "response_id": response_id,
+        "accepted_at": accepted_at,
+        "question": question,
+        "changes": plan.get("changes", []),
+    }
 
 
 def _title(question: str) -> str:

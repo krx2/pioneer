@@ -11,7 +11,8 @@ Layout, each module importing only the ones above it:
 - `items`: item names and ids -- resolving what the model passes, and the `names` map.
 - `existing_factory`: the save's factory as the Verifier sees it -- balance, power, site graphs.
 - `summaries`: compact summaries of a production graph for the model.
-- `factory_tools`, `planning_tools`: the tool handlers.
+- `plans`: the player's plan -- a proposal from what was just planned, and the note on it.
+- `factory_tools`, `planning_tools`, `plan_tools`: the tool handlers.
 - `tools`: the tool schemas offered to the model, bound to their handlers.
 - `progress`: what a tool call is doing, in words, for the page's live status.
 - `tool_calls`: running the model's tool calls, including ones written as text.
@@ -29,6 +30,7 @@ from pioneer.orchestrator.base import (
 from pioneer.orchestrator.existing_factory import site_balance
 from pioneer.orchestrator.items import display_names
 from pioneer.orchestrator.orchestrator import handle_query
+from pioneer.orchestrator.plans import progress_of
 from pioneer.orchestrator.verification import verify_response
 
 __all__ = [
@@ -39,6 +41,7 @@ __all__ = [
     "TransportError",
     "display_names",
     "handle_query",
+    "progress_of",
     "site_balance",
     "verify_response",
 ]

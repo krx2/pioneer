@@ -12,6 +12,16 @@ takes its place, with that thought process folded above it to be opened again.
 
 The sidebar, under the header, lists the stored conversations; the open one's id is the page's URL
 fragment, so a reload, or a link, opens it again.
+
+An answer proposing a plan offers to accept it as the conversation's plan -- the first one, or a
+revision of the one it has -- and once one is accepted, a bar over the conversation says what the
+plan makes and how much of it the save shows built, stage by stage on hover. It asks again every
+minute while the page is in view, so the game's autosaves move it along. Only a proposal for the
+plan as it stands can be accepted: once one is, the others' buttons go.
+
+Clicked, the bar opens the plan's panel under it: each stage with what's built of it, a box to
+tick a stage built that the save doesn't show yet, a link to the plan's graph, and the revisions
+the plan went through -- when, asked by which question, changing what.
 """
 
 from __future__ import annotations
@@ -50,6 +60,7 @@ def render_chat_page(*, status: str, sources: dict[str, Any] | None = None) -> s
 </aside>
 <div class="scrim" id="scrim"></div>
 <div class="main">
+  <div class="plan-bar" id="plan-bar" hidden></div>
   <main class="chat" id="chat"></main>
   <form id="ask" class="composer">
     <div class="composer-box">
@@ -203,6 +214,84 @@ body { padding-bottom: 120px; }
 .meta button:hover, .meta select:hover { border-color: var(--ficsit); }
 .meta .chosen { background: var(--ficsit); color: var(--on-ficsit); border-color: var(--ficsit); }
 .meta .open-recipes { color: var(--ficsit); border-color: var(--ficsit); font-weight: 600; }
+.meta .accept-plan {
+  color: var(--on-ficsit); background: var(--ficsit); border-color: var(--ficsit); font-weight: 600;
+}
+.meta .accept-plan:hover { background: var(--ficsit-hover); }
+.plan-bar {
+  position: sticky; top: var(--bar-height); z-index: 1; padding: 10px 20px 0;
+  background: linear-gradient(var(--bg) 75%, transparent);
+}
+.plan-bar[hidden] { display: none; }
+.plan-inner {
+  box-sizing: border-box; width: 100%; max-width: 760px; margin: 0 auto; padding: 8px 12px;
+  display: flex; align-items: center; gap: 10px; color: var(--text); font: inherit;
+  font-size: 13px; text-align: left; cursor: pointer;
+  background: var(--steel); border: 1px solid var(--line); border-radius: 10px;
+}
+.plan-inner:hover { border-color: var(--ficsit); }
+.plan-inner[aria-expanded="true"] { border-radius: 10px 10px 0 0; }
+.plan-chevron { flex: none; color: var(--muted); transition: transform 0.15s; }
+.plan-inner[aria-expanded="true"] .plan-chevron { transform: rotate(180deg); }
+.plan-tag {
+  flex: none; padding: 1px 8px; border-radius: 6px; color: var(--on-ficsit);
+  background: var(--ficsit); font: 700 12px var(--display); letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.plan-targets {
+  flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.plan-revision { flex: none; color: var(--muted); }
+.plan-progress { flex: none; display: flex; align-items: center; gap: 6px; cursor: default; }
+.plan-progress.unknown { color: var(--muted); }
+.plan-meter {
+  width: 64px; height: 6px; overflow: hidden; border-radius: 3px; background: var(--line);
+}
+.plan-meter span { display: block; height: 100%; background: #8fcf86; }
+.plan-panel {
+  box-sizing: border-box; max-width: 760px; margin: 0 auto; padding: 2px 14px 12px;
+  max-height: calc(100vh - var(--bar-height) - 190px); overflow-y: auto; font-size: 13px;
+  background: var(--steel); border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 10px 10px;
+}
+.plan-panel-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+}
+.plan-makes { margin: 8px 0 0; }
+.plan-graph { flex: none; color: var(--ficsit); }
+.plan-section h3 {
+  margin: 14px 0 4px; color: var(--muted); font: 12px var(--display);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.plan-stages, .plan-history, .plan-changes { margin: 0; padding: 0; list-style: none; }
+.plan-stage {
+  display: flex; align-items: center; gap: 10px; padding: 5px 0;
+  border-top: 1px solid var(--line);
+}
+.plan-stage:first-child, .plan-history > li:first-child { border-top: 0; }
+.plan-stage label {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; cursor: pointer;
+}
+.plan-stage input { flex: none; width: 16px; height: 16px; margin: 0; accent-color: #8fcf86; }
+.plan-stage input:disabled { cursor: default; }
+.plan-stage.done .plan-stage-name { color: var(--muted); }
+.plan-icon { flex: none; width: 22px; height: 22px; }
+.plan-stage-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.plan-stage-machines { margin-left: 6px; color: var(--muted); }
+.plan-stage-count {
+  flex: none; min-width: 52px; text-align: right; font-variant-numeric: tabular-nums;
+}
+.plan-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.plan-history > li { padding: 8px 0; border-top: 1px solid var(--line); }
+.plan-revision-head { display: flex; align-items: baseline; gap: 10px; }
+.plan-revision-head span { color: var(--muted); font-size: 12px; }
+.plan-question { display: block; margin: 3px 0 4px; color: var(--muted); font-style: italic; }
+.plan-changes li { position: relative; padding: 1px 0 1px 14px; }
+.plan-changes li::before { content: "\\2022"; position: absolute; left: 2px; color: var(--muted); }
+.plan-changes .change-add::before, .plan-changes .change-extend::before { color: #8fcf86; }
+.plan-changes .change-remove::before { color: #ff8f80; }
+.plan-changes .change-reconfigure::before { color: var(--ficsit); }
+@media (max-width: 520px) { .plan-revision, .plan-meter, .plan-stage-machines { display: none; } }
 .meta .again { padding: 2px 8px; font-size: 15px; line-height: 1.2; }
 .meta button:disabled { opacity: 0.45; cursor: progress; }
 .answer { display: flex; flex-direction: column; gap: 14px; }
@@ -340,6 +429,12 @@ const SUGGESTIONS = [
 ];
 let turns = [];  // the open conversation, one {question, answer} per turn
 let conversationId = null;  // its id on the server; null until its first answer
+let plan = null;  // its plan, as the server keeps it; null until one is accepted
+const planBar = document.getElementById("plan-bar");
+const planControls = [];  // each proposing answer's accept control, redrawn as the plan changes
+const PLAN_REFRESH_MS = 60000;  // how often the plan's progress is asked again, the page in view
+let planTimer = null;
+let planOpen = false;  // the plan's panel, open under its bar
 let busy = false;  // one question at a time: each answer is asked with the turns before it
 
 function element(tag, className, text) {
@@ -418,6 +513,8 @@ function startConversation() {
   if (busy) return;
   conversationId = null;
   turns = [];
+  planControls.length = 0;
+  setPlan(null);
   showWelcome();
   setLocation(null);
   markActive();
@@ -436,6 +533,11 @@ async function openConversation(id) {
   const conversation = await response.json();
   conversationId = conversation.id;
   turns = [];
+  plan = conversation.plan || null;
+  planControls.length = 0;
+  showPlan();
+  clearTimeout(planTimer);
+  if (plan) planTimer = setTimeout(refreshPlan, PLAN_REFRESH_MS);
   chat.replaceChildren();
   conversation.turns.forEach((stored, turn) => {
     addQuestion(stored.question);
@@ -497,6 +599,293 @@ async function refreshConversations() {
     list.appendChild(element("p", "sidebar-empty", "Your conversations will show up here."));
   }
   markActive();
+}
+
+// --- The plan ------------------------------------------------------------------------------
+
+function formatRate(rate) {
+  return String(Math.round(rate * 100) / 100);
+}
+
+function describeTargets(targets) {
+  return targets.map((target) => `${formatRate(target.rate_per_minute)}/min ${target.name}`)
+    .join(" \\u00B7 ");
+}
+
+function showPlan() {
+  planBar.hidden = !plan;
+  if (!plan) {
+    planOpen = false;
+    planBar.replaceChildren();
+    return;
+  }
+  const inner = element("button", "plan-inner");
+  inner.type = "button";
+  inner.setAttribute("aria-expanded", String(planOpen));
+  inner.setAttribute("aria-controls", "plan-panel");
+  const targets = element("span", "plan-targets", describeTargets(plan.targets));
+  targets.title = targets.textContent;
+  inner.append(element("span", "plan-tag", "Plan"), targets);
+  if (plan.progress) inner.appendChild(planProgress(plan.progress));
+  inner.append(
+    element("span", "plan-revision", `revision ${plan.revision}`),
+    element("span", "plan-chevron", "\\u25BE"),
+  );
+  inner.addEventListener("click", () => {
+    planOpen = !planOpen;
+    showPlan();
+  });
+  planBar.replaceChildren(inner);
+  if (planOpen) planBar.appendChild(planPanel());
+}
+
+function meter(share) {
+  const bar = element("span", "plan-meter");
+  const fill = document.createElement("span");
+  fill.style.width = `${Math.round(Math.max(0, Math.min(share, 1)) * 100)}%`;
+  bar.appendChild(fill);
+  return bar;
+}
+
+// The plan opened under its bar: every stage with how much of it is built, a box to tick what
+// the save doesn't show yet, and the revisions the plan went through.
+function planPanel() {
+  const panel = element("div", "plan-panel");
+  panel.id = "plan-panel";
+  const head = element("div", "plan-panel-head");
+  head.appendChild(element("p", "plan-makes", `Makes ${describeTargets(plan.targets)}`));
+  if (plan.response_id) {
+    const graph = element("a", "plan-graph", "Open graph");
+    graph.href = `/responses/${encodeURIComponent(plan.response_id)}/graph`;
+    graph.target = "_blank";
+    graph.rel = "noopener";
+    head.appendChild(graph);
+  }
+  panel.appendChild(head);
+  if (plan.progress) panel.appendChild(planStages(plan.progress));
+  if (plan.history && plan.history.length) panel.appendChild(planHistory(plan.history));
+  return panel;
+}
+
+function planStages(progress) {
+  const section = element("section", "plan-section");
+  section.appendChild(element("h3", "", "Stages"));
+  const list = element("ul", "plan-stages");
+  for (const stage of progress.stages) list.appendChild(stageRow(stage, progress.stages));
+  section.appendChild(list);
+  const notes = [];
+  if (progress.known === "none") {
+    notes.push("The save can't tell how much of this plan you've built: tick what you have.");
+  } else if (progress.as_of) {
+    notes.push(`Built by the save written ${new Date(progress.as_of * 1000).toLocaleString()}.`);
+  }
+  notes.push("A stage you tick counts as built, whatever the save says.");
+  section.appendChild(element("p", "plan-note", notes.join(" ")));
+  return section;
+}
+
+function stageRow(stage, stages) {
+  const done = stage.built !== null && stage.built >= stage.to_build;
+  const bySave = stage.in_save !== null && stage.in_save >= stage.to_build;
+  const row = element("li", done ? "plan-stage done" : "plan-stage");
+  const label = element("label");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = done;
+  box.disabled = bySave;
+  box.title = bySave ? "The save shows all of them built"
+    : done ? "Untick to count only what the save shows" : "Tick once you've built them all";
+  box.addEventListener("change", () => markStage(stage, stages, box));
+  label.appendChild(box);
+  if (stage.icon) {
+    const icon = document.createElement("img");
+    icon.className = "plan-icon";
+    icon.src = stage.icon;
+    icon.alt = "";
+    label.appendChild(icon);
+  }
+  const name = element("span", "plan-stage-name", stage.recipe);
+  const machines = `${formatRate(stage.to_build)}\\u00D7 ${stage.building}`;
+  name.appendChild(element("span", "plan-stage-machines", machines));
+  name.title = `${stage.building} running ${stage.recipe}`;
+  label.appendChild(name);
+  const built = stage.built === null ? "?" : formatRate(stage.built);
+  const count = element("span", "plan-stage-count", `${built}/${formatRate(stage.to_build)}`);
+  const sources = [stage.in_save === null ? "the save can't tell"
+    : `${formatRate(stage.in_save)} in the save`];
+  if (stage.marked) sources.push(`${formatRate(stage.marked)} ticked by you`);
+  count.title = sources.join(", ");
+  row.append(label, meter(stage.built === null ? 0 : stage.built / stage.to_build), count);
+  return row;
+}
+
+// Ticking marks every machine of the stage built; unticking takes its mark back. A recipe's
+// mark is for all its stages together, so the others' part of it stays.
+async function markStage(stage, stages, box) {
+  const others = stages
+    .filter((other) => other !== stage && other.recipe_id === stage.recipe_id)
+    .reduce((sum, other) => sum + other.marked, 0);
+  const built = box.checked ? others + stage.to_build : others;
+  box.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/conversations/${encodeURIComponent(conversationId)}/plan/marks`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({recipe_id: stage.recipe_id, built}),
+      });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${response.status}`);
+    }
+    setPlan(body.plan);
+  } catch (error) {
+    box.checked = !box.checked;
+    box.disabled = false;
+    box.title = `Could not mark it: ${error.message}`;
+  }
+}
+
+function planHistory(history) {
+  const section = element("section", "plan-section");
+  section.appendChild(element("h3", "", "Revisions"));
+  const list = element("ol", "plan-history");
+  for (const entry of history) {
+    const item = element("li");
+    const head = element("div", "plan-revision-head");
+    head.appendChild(element("b", "", `Revision ${entry.revision}`));
+    if (entry.accepted_at) {
+      head.appendChild(element("span", "", new Date(entry.accepted_at).toLocaleString()));
+    }
+    item.appendChild(head);
+    if (entry.question) item.appendChild(element("q", "plan-question", entry.question));
+    const changes = element("ul", "plan-changes");
+    for (const change of entry.changes) {
+      changes.appendChild(element("li", `change-${change.action}`, describeChange(change)));
+    }
+    if (!entry.changes.length) {
+      changes.appendChild(element("li", "",
+        entry.revision === 1 ? "The plan as first accepted." : "No machines changed."));
+    }
+    item.appendChild(changes);
+    list.appendChild(item);
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function describeChange(change) {
+  const count = formatRate(Math.abs(change.machines));
+  const building = change.building || "machines";
+  const standing = change.already_built ? formatRate(change.already_built) : null;
+  switch (change.action) {
+    case "add":
+      return `+${count} ${building} for ${change.recipe} (a new stage)`;
+    case "extend":
+      return `+${count} ${building} for ${change.recipe}`;
+    case "remove":
+      return `\\u2212${count} ${building} for ${change.recipe}`
+        + (standing ? ` (${standing} built already: take them down)` : "");
+    case "reconfigure":
+      return `Switch ${count} ${building} from ${change.from_recipe} to ${change.recipe}`
+        + (standing ? ` (${standing} built already)` : "");
+    default:
+      return `${change.action} ${count} ${building} for ${change.recipe}`;
+  }
+}
+
+// How much of the plan the save shows built: in all, and stage by stage on hover.
+function planProgress(progress) {
+  const holder = element("span", "plan-progress");
+  const lines = progress.stages.map((stage) => {
+    const built = stage.built === null ? "?" : formatRate(stage.built);
+    return `${stage.building} running ${stage.recipe}: ${built} of ${formatRate(stage.to_build)}`;
+  });
+  if (progress.as_of) {
+    const when = new Date(progress.as_of * 1000);
+    lines.push(`By the save written ${when.toLocaleString()}`);
+  }
+  if (progress.known === "none") {
+    holder.classList.add("unknown");
+    holder.textContent = "progress unknown";
+    lines.push("No save to count your buildings from -- now, or from when the plan was made.");
+  } else {
+    const some = progress.known === "some" ? "*" : "";
+    holder.append(meter(progress.to_build ? progress.built / progress.to_build : 1),
+      element("span", "",
+      `${formatRate(progress.built)}/${formatRate(progress.to_build)} built${some}`));
+    if (some) lines.push("* Only the stages whose progress can be told.");
+  }
+  holder.title = lines.join("\\n");
+  return holder;
+}
+
+// Asks for the plan again -- its progress follows the game's saves -- and keeps doing so.
+async function refreshPlan() {
+  clearTimeout(planTimer);
+  if (!conversationId || !plan) return;
+  const id = conversationId;
+  if (!document.hidden) {
+    try {
+      const response = await fetch(`/api/conversations/${encodeURIComponent(id)}/plan`);
+      const next = response.ok ? (await response.json()).plan : plan;
+      // Unchanged, the open panel is left as it is -- scrolled, say.
+      if (id === conversationId && JSON.stringify(next) !== JSON.stringify(plan)) setPlan(next);
+    } catch (error) {
+      // keep showing what was last known
+    }
+  }
+  if (plan && id === conversationId) planTimer = setTimeout(refreshPlan, PLAN_REFRESH_MS);
+}
+
+function setPlan(next) {
+  plan = next || null;
+  showPlan();
+  for (let i = planControls.length - 1; i >= 0; i--) {
+    if (!planControls[i].holder.isConnected) planControls.splice(i, 1);  // answered again
+  }
+  for (const control of planControls) control.draw();
+}
+
+async function acceptPlan(responseId, holder) {
+  if (!conversationId) return;
+  const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/plan`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({response_id: responseId}),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const reason = typeof body.detail === "string" ? body.detail : `HTTP ${response.status}`;
+    holder.replaceChildren(badge(`could not accept the plan: ${reason}`, false));
+    return;
+  }
+  setPlan(body.plan);
+  refreshPlan();
+}
+
+// Accepting the answer's plan: offered while it's a proposal for the plan as it stands.
+function planControl(answer) {
+  const holder = element("span", "plan-control");
+  const proposal = answer.plan_proposal;
+  function draw() {
+    const revision = plan ? plan.revision : 0;
+    if (plan && plan.response_id === answer.response_id) {
+      holder.replaceChildren(badge(revision > 1 ? "plan changes accepted" : "your plan", true));
+    } else if (proposal.revision === revision + 1) {
+      const label = proposal.revision > 1 ? "Accept plan changes" : "Accept as plan";
+      const button = element("button", "accept-plan", label);
+      button.type = "button";
+      button.title = describeTargets(proposal.targets);
+      button.addEventListener("click", () => acceptPlan(answer.response_id, holder));
+      holder.replaceChildren(button);
+    } else {
+      holder.replaceChildren();
+    }
+  }
+  draw();
+  planControls.push({holder, draw});
+  return holder;
 }
 
 // --- Answers -------------------------------------------------------------------------------
@@ -660,6 +1049,7 @@ function answered(answer) {
     conversationId = answer.conversation_id;
     setLocation(conversationId);
   }
+  refreshPlan();  // the save may have moved on while the question was answered
   refreshConversations();  // a new conversation, or one that's now the most recent
   return answer;
 }
@@ -764,6 +1154,7 @@ function meta(answer, box, turn) {
     });
     meta.append(recipes);
   }
+  if (answer.plan_proposal) meta.appendChild(planControl(answer));
   addChecks(meta, answer.verification || {});
 
   const id = answer.response_id;
@@ -822,6 +1213,13 @@ input.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     form.requestSubmit();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && planOpen) {
+    planOpen = false;
+    showPlan();
   }
 });
 

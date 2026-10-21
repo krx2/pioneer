@@ -46,6 +46,8 @@ game/server state and reasoning over it directly.
 - Advise on technology unlock order.
 - Answer general game-mechanics questions.
 - Visualize proposed plans as graphs and map overlays.
+- Keep one plan per conversation: revise it on request instead of planning anew, and follow how far
+  the player has built it.
 
 ### Out of scope / known limitations
 
@@ -145,12 +147,12 @@ the model call as an injected callable, so the modules themselves stay testable 
 
 | Module | Responsibility | Primary inputs | Nature |
 |---|---|---|---|
-| **Production Planner** | Given a target output rate, build/extend a recipe graph via BFS/graph search from the goal backward to raw resources | Knowledge base | Deterministic |
-| **Expansion Advisor** | Given a new target and the player's *existing* factories (from `.sav`), decide the minimal set of changes (extend factory A, add a linking stage, etc.) instead of planning from scratch | `.sav` state, Production Planner, Verifier | Deterministic |
+| **Production Planner** | Given a target output rate — or several, for a plan with more than one target — build/extend a recipe graph via BFS/graph search from the goal backward to raw resources | Knowledge base | Deterministic |
+| **Expansion Advisor** | Given a new target and the player's *existing* factories (from `.sav`), decide the minimal set of changes (extend factory A, add a linking stage, etc.) instead of planning from scratch; given two versions of the player's plan, say what changes between them (machines to add, take down, or switch to another recipe) | `.sav` state, Production Planner, Verifier | Deterministic |
 | **Location Advisor** | Recommend where to place new buildings, based on remaining unclaimed deposits and their purity/distance | Static resource DB, `.sav` state | Deterministic |
 | **Anomaly Detector** | Scan the current factory for problems: under/over-production gaps, power blackouts, belt/pipe congestion | `.sav` state, Verifier | Deterministic |
 | **Q&A Engine** | Answer free-form game-mechanics questions | Knowledge base + wiki via RAG | Retrieval + LLM |
-| **Verifier** | Ground-truth calculator: machine counts, throughput, resource balance, power balance | Knowledge base, module outputs | Deterministic |
+| **Verifier** | Ground-truth calculator: machine counts, throughput, resource balance, power balance — and how far the player has built their plan | Knowledge base, module outputs, `.sav` state | Deterministic |
 
 The **Verifier** is a shared dependency, not a leaf module: it's where the Expansion Advisor's
 spare capacity, the Anomaly Detector's balances and every figure in an answer come from — through
@@ -178,6 +180,34 @@ Engine's RAG step is the other LLM touchpoint, scoped to answer synthesis). Its 
 Because the orchestrator only ever receives already-verified, structured module output, its own
 failure mode is limited to *misrouting* or *poor phrasing* — it cannot introduce arithmetic errors.
 
+#### The player's plan
+
+A conversation can hold one plan: the production chain the player is working towards, kept as
+structured state (`contracts.Plan`) rather than as text in the chat history. It's what turns a
+follow-up into a change of that plan instead of a fresh one that happens to look similar:
+
+- **Proposed, then accepted.** An answer that plans a chain or an expansion offers it as the
+  conversation's plan; it becomes the plan only once the player accepts it. Every later turn of the
+  conversation runs with the plan in the Orchestrator's context: the model is shown it — its
+  targets, every stage, how much of each is built — and gets two more tools, to draw it and to
+  revise it.
+- **Revised deterministically.** The plan pins what it was planned from: its targets, the recipe
+  each stage runs and, for an expansion, the existing factory's spare output at the time. A
+  revision changes only what the player asked for and plans the rest from the same parameters, so
+  the deterministic planner gives every stage they didn't touch back unchanged — the model never
+  re-derives the plan, it only names the change. The Expansion Advisor says what the revision
+  changes, and the revision is a proposal for the player to accept like the first plan was.
+- **Progress from the save.** The Verifier counts how far the plan is built: the save's buildings
+  of each stage's recipe beyond what stood when that recipe came into the plan — buildings, not
+  clock-scaled machines, so underclocking doesn't read as unbuilt. The player can mark a stage
+  built before the save shows it, and a mark counts like a building. The model and the page are
+  handed the same numbers.
+
+That keeps invariant #1 (§7): rates, machine counts, what a revision changes and how much stands
+all come from deterministic code; the model only decides which change the player asked for. The
+plan is the conversation's, so it lives with the conversation (the web layer's store), and the
+Orchestrator gets it handed in like every other piece of context.
+
 ### 4.4 Presentation layer
 
 A single assistant response is composed of three parts, rendered together:
@@ -189,6 +219,10 @@ A single assistant response is composed of three parts, rendered together:
 | **Factory map** | Proposed or referenced factory location(s) | Overlaid on the static map; shows resource nodes and purity |
 
 Not every response needs all three — a pure Q&A answer may only populate Chat.
+
+Beside the responses, a conversation with a plan (§4.3) shows it in a bar over the chat — what it
+makes and how much of it is built — which opens into a panel: every stage's progress, a box to
+mark a stage built, a link to the plan's graph, and the revisions the plan went through.
 
 ## 5. Example end-to-end flow
 
@@ -204,6 +238,23 @@ Not every response needs all three — a pure Q&A answer may only populate Chat.
 6. Verifier checks the resulting graph balances (inputs/outputs, machine counts, power).
 7. Orchestrator responds: Chat explains the required changes, Graph shows the updated production
    chain highlighting what's new vs. what already existed.
+8. The page offers the plan to be accepted as the conversation's plan (§4.3).
+
+### 5.1 Following up on the plan
+
+> "Make it 20/min, and add 5/min of Rotors."
+
+1. The conversation has a plan the player accepted. The Orchestrator's context carries it, and the
+   model is shown its stages and how far the latest save has built them.
+2. The model calls the revise tool with just the change: one target's new rate, and a new target.
+3. The Production Planner plans both targets with the plan's pinned recipes — and, for a plan
+   extending the factory, against the same spare output as before.
+4. The Expansion Advisor compares the revision with the plan: machines to add, to take down, or to
+   switch over to another recipe — and, by the Verifier's count of the save, how many of those
+   already stand.
+5. Orchestrator responds: Chat says what would change, Graph draws the revised plan, and the page
+   offers to accept it. Accepted, it's the plan the next turn works on, its revision noted in the
+   plan's history.
 
 ## 6. Verification & feedback
 

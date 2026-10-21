@@ -14,6 +14,7 @@ from pioneer.contracts import (
     GameState,
     Item,
     PlacementRecord,
+    Plan,
     ProductionGraph,
     RankedLocation,
     Recipe,
@@ -99,6 +100,10 @@ class OrchestratorContext:
     """The recipes the player picked for plans to use -- unlocked or not -- by id; the rest are
     off limits. `None`: they picked none, so plans use the unlocked ones (see
     `planning_tools._plan`)."""
+    plan: Plan | None = None
+    """The plan the player accepted in this conversation, if they have: the model is shown it, and
+    can draw and revise it (see `plan_tools`). `None`: an answer that plans something offers its
+    plan to be accepted instead."""
 
 
 @dataclass
@@ -112,6 +117,7 @@ class _ArtifactAccumulator:
     factory_sites: tuple[FactorySite, ...] | None = None
     grounding: list[str] = field(default_factory=list)
     missing_recipes: list[str] = field(default_factory=list)
+    plan_proposal: Plan | None = None
 
 
 class _ToolError(Exception):
