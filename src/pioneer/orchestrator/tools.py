@@ -77,8 +77,9 @@ def _build_tools(
             name="plan_production",
             description=(
                 "Plan a brand-new production chain from raw resources up to a target item and "
-                "rate: each stage's recipe, building, machine count and power. Use for 'I want "
-                "to produce N/min of X' when nothing needs to be extended."
+                "rate: each stage's recipe, building, machine count and power, and where to "
+                "build it (build_sites). Use for 'I want to produce N/min of X' when nothing "
+                "needs to be extended."
             ),
             parameters={
                 "type": "object",
@@ -215,7 +216,9 @@ def _build_tools(
             name="rank_build_locations",
             description=(
                 "Rank unclaimed resource deposits of a given item (or 'geyser'), best first, for "
-                "where to build next. Use for 'where should I build/mine X' questions. Distances "
+                "where to build next. Use for 'where should I build/mine X' questions. With "
+                "rate_per_minute: the free deposits close together that give that much, each "
+                "with its extractor, clock speed and power shards (build_sites). Distances "
                 "are measured from the given reference point, else from the middle of the "
                 "player's existing buildings."
             ),
@@ -223,6 +226,10 @@ def _build_tools(
                 "type": "object",
                 "properties": {
                     "item_id": {"type": "string", "description": _ITEM_DESCRIPTION},
+                    "rate_per_minute": {
+                        "type": "number",
+                        "description": "Optional: how much of it a minute the deposits must give",
+                    },
                     "count": {
                         "type": "integer",
                         "description": "Max locations to return, default 5",

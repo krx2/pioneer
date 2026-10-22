@@ -12,7 +12,17 @@ from pioneer.contracts.anomalies import AnomalyKind, AnomalyRecord, AnomalySever
 from pioneer.contracts.game_state import GameState
 from pioneer.contracts.geometry import Coordinates
 from pioneer.contracts.intent import Intent, IntentKind
-from pioneer.contracts.locations import FactorySite, RankedLocation
+from pioneer.contracts.locations import (
+    BuildSite,
+    Extractor,
+    FactorySite,
+    NodeAssignment,
+    RankedLocation,
+    SitePlan,
+    SiteStage,
+    SiteTransfer,
+    SupplyReservation,
+)
 from pioneer.contracts.placement import Carrier, PlacementRecord, TransportLink
 from pioneer.contracts.plan import Plan, PlanTarget, StageProgress
 from pioneer.contracts.planning import ChangeAction, ChangeItem, ChangeSet
@@ -37,12 +47,14 @@ __all__ = [
     "AnomalyRecord",
     "AnomalySeverity",
     "Building",
+    "BuildSite",
     "Carrier",
     "ChangeAction",
     "ChangeItem",
     "ChangeSet",
     "ClassDescription",
     "Coordinates",
+    "Extractor",
     "FactorySite",
     "Feedback",
     "GameState",
@@ -53,6 +65,7 @@ __all__ = [
     "ItemAmount",
     "ItemCount",
     "MaterialFlow",
+    "NodeAssignment",
     "PlacementRecord",
     "Plan",
     "PlanTarget",
@@ -63,7 +76,11 @@ __all__ = [
     "Recipe",
     "ResourceNode",
     "ResponseArtifact",
+    "SitePlan",
+    "SiteStage",
+    "SiteTransfer",
     "StageProgress",
+    "SupplyReservation",
     "Technology",
     "TransportError",
     "TransportLink",

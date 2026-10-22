@@ -156,17 +156,23 @@ PANELS_STYLE = """
 .popover-map .popover-body { flex: 1; padding: 0; overflow: hidden; }
 .map-layout { display: flex; height: 100%; min-height: 0; }
 .map-stage { position: relative; flex: 1; min-width: 0; overflow: hidden; background: #4c7480; }
-.map-svg { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.map-svg {
+  display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; user-select: none;
+}
+.map-svg image { -webkit-user-drag: none; user-drag: none; }
 .map-svg.dragging { cursor: grabbing; }
-.map-node circle { fill: #161a1d; stroke-width: 2.5; }
+.map-node .dot { fill: #161a1d; stroke: currentColor; stroke-width: 2.5; }
 .map-node .taken-dot { fill: #e05d4f; stroke: #161a1d; stroke-width: 1; }
+.map-svg.far .map-node image { display: none; }
+.map-svg.far .map-node .dot { fill: currentColor; stroke: #161a1d; stroke-width: 1.5; }
 .map-site { cursor: pointer; outline: none; }
 .map-site rect { fill: #1b2023; stroke: var(--ficsit); stroke-width: 2.5; }
 .map-site text { fill: var(--text); font: 600 12px var(--display); }
 .map-site.active rect, .map-site:focus rect { fill: #3a2c17; stroke-width: 3.5; }
 .map-svg.focus .map-node { opacity: 0.3; }
 .map-svg.focus .map-node.feeding { opacity: 1; }
-.map-svg.focus .map-node.feeding circle { stroke-width: 4; }
+.map-svg.focus .map-node.feeding .dot { stroke-width: 4; }
+.map-svg.far.focus .map-node.feeding .dot { stroke: var(--ficsit); stroke-width: 3; }
 .map-svg.focus .map-site:not(.active) { opacity: 0.55; }
 .map-link {
   stroke: var(--ficsit); stroke-width: 2.5; vector-effect: non-scaling-stroke; opacity: 0.95;
@@ -891,6 +897,16 @@ const PURITY_COLORS = {impure: "#c27b35", normal: "#9fb6cc", pure: "#f2c94c"};
 const PURITIES = ["impure", "normal", "pure"];
 const MAP_FILTER_KEY = "pioneer.map.filter";
 let mapView = null;  // the part of the world on screen: kept while the page is open
+const MARKERS_AT = 400;  // screen pixels a kilometre at which markers are drawn their full size
+const ICONS_FROM = 0.75;  // drawn smaller than this, a node is a dot of its purity's colour
+const MAX_MAGNIFICATION = 4;  // screen pixels a pixel of the sharpest map tiles may cover
+
+// How big markers are drawn, against their full size, when a screen pixel is `unit` world
+// centimetres: they grow as the map is zoomed in, but by the square root of it and within bounds
+// -- dots that leave the map visible when it's whole, icons that don't cover it close up.
+function markerScale(unit) {
+  return Math.min(Math.max(Math.sqrt(100000 / unit / MARKERS_AT), 0.45), 1.3);
+}
 
 function svgElement(tag, attributes = {}) {
   const node = document.createElementNS(SVG_NS, tag);
@@ -973,7 +989,11 @@ function renderMapPanel(body, data) {
 
   const svg = svgElement("svg", {class: "map-svg", role: "img",
     "aria-label": "Map of factories and resource nodes"});
-  if (data.image && data.world) {
+  const tiles = data.world ? data.tiles : null;
+  const tileLayer = tiles ? svgElement("g", {class: "map-tiles"}) : null;
+  if (tileLayer) {
+    svg.append(tileLayer);
+  } else if (data.image && data.world) {
     svg.append(svgElement("image", {href: data.image, x: world.x, y: world.y, width: world.w,
       height: world.h, preserveAspectRatio: "none"}));
   }
@@ -995,8 +1015,9 @@ function renderMapPanel(body, data) {
 
   const nodesById = new Map();
   for (const node of data.nodes) {
-    const group = svgElement("g", {class: node.occupied ? "map-node taken" : "map-node"});
-    group.append(svgElement("circle", {r: 8, stroke: PURITY_COLORS[node.purity] || "#9fb6cc"}));
+    const group = svgElement("g", {class: node.occupied ? "map-node taken" : "map-node",
+      color: PURITY_COLORS[node.purity] || "#9fb6cc"});
+    group.append(svgElement("circle", {class: "dot", r: 8}));
     if (node.item.icon) {
       group.append(svgElement("image", {href: node.item.icon, x: -6, y: -6, width: 12,
         height: 12}));
@@ -1042,6 +1063,50 @@ function renderMapPanel(body, data) {
     }
     return {x: world.x + (world.w - w) / 2, y: world.y + (world.h - h) / 2, w, h};
   }
+  // The map picture as tiles (see pioneer.map_image): for the part of the world on screen, every
+  // level up to the one sharp at this zoom -- the coarser ones show under it while it loads.
+  const tileLevels = [];  // a group of images a level, the coarsest first
+  const tileImages = new Map();  // "level/column_row" -> its image, on screen or not
+  function drawTiles(pixels) {
+    const wanted = (world.w / mapView.w) * pixels * (window.devicePixelRatio || 1);
+    let sharp = tiles.levels.findIndex(([width]) => width >= wanted);
+    if (sharp < 0) sharp = tiles.levels.length - 1;
+    const keep = new Set();
+    for (let level = 0; level <= sharp; level++) {
+      if (!tileLevels[level]) tileLevels[level] = tileLayer.appendChild(svgElement("g"));
+      const [width, height] = tiles.levels[level];
+      const perX = world.w / width;  // world centimetres a pixel of this level
+      const perY = world.h / height;
+      const span = (from, to, origin, per, count) => [
+        Math.max(0, Math.floor((from - origin) / (per * tiles.size))),
+        Math.min(count - 1, Math.floor((to - origin) / (per * tiles.size))),
+      ];
+      const [left, right] = span(mapView.x, mapView.x + mapView.w, world.x, perX,
+        Math.ceil(width / tiles.size));
+      const [top, bottom] = span(mapView.y, mapView.y + mapView.h, world.y, perY,
+        Math.ceil(height / tiles.size));
+      for (let column = left; column <= right; column++) {
+        for (let row = top; row <= bottom; row++) {
+          const key = `${level}/${column}_${row}`;
+          keep.add(key);
+          if (tileImages.has(key)) continue;
+          const across = Math.min(tiles.size + tiles.overlap, width - column * tiles.size);
+          const down = Math.min(tiles.size + tiles.overlap, height - row * tiles.size);
+          const image = svgElement("image", {href: `${tiles.url}/${key}.webp`,
+            x: world.x + column * tiles.size * perX, y: world.y + row * tiles.size * perY,
+            width: across * perX, height: down * perY, preserveAspectRatio: "none"});
+          image.dataset.level = level;
+          tileImages.set(key, image);
+        }
+      }
+    }
+    for (const [key, image] of tileImages) {
+      if (!keep.has(key)) image.remove();
+      else if (!image.isConnected) tileLevels[image.dataset.level].append(image);
+    }
+  }
+
+  let markerSize = 1;  // see markerScale
   function applyView() {
     const rect = svg.getBoundingClientRect();
     if (!rect.width || !rect.height) return;  // not laid out (yet): nothing to fit
@@ -1049,11 +1114,20 @@ function renderMapPanel(body, data) {
     mapView.h = mapView.w * (rect.height / rect.width);  // the stage's shape, never stretched
     svg.setAttribute("viewBox", `${mapView.x} ${mapView.y} ${mapView.w} ${mapView.h}`);
     const unit = mapView.w / rect.width;  // world centimetres a screen pixel
+    markerSize = markerScale(unit);
+    svg.classList.toggle("far", markerSize < ICONS_FROM);
     for (const [group, x, y] of scaled) {
-      group.setAttribute("transform", `translate(${x} ${y}) scale(${unit})`);
+      group.setAttribute("transform", `translate(${x} ${y}) scale(${unit * markerSize})`);
     }
+    if (tileLayer) drawTiles(rect.width);
     if (active) drawLinks(active);
     if (active) placeTip(active);
+  }
+  function minWidth() {
+    // As close as the map picture stays sharp: no closer than its sharpest tiles allow.
+    if (!tiles) return world.w * 0.01;
+    const sharpest = world.w / tiles.levels[tiles.levels.length - 1][0];
+    return sharpest * svg.getBoundingClientRect().width / MAX_MAGNIFICATION;
   }
   function toWorld(clientX, clientY) {
     const rect = svg.getBoundingClientRect();
@@ -1072,36 +1146,47 @@ function renderMapPanel(body, data) {
     if (!mapView) return;
     const point = toWorld(event.clientX, event.clientY);
     const factor = event.deltaY > 0 ? 1.2 : 1 / 1.2;
-    const w = Math.min(Math.max(mapView.w * factor, world.w * 0.01), world.w * 2);
+    const w = Math.min(Math.max(mapView.w * factor, minWidth()), world.w * 2);
     mapView.x = point.x - (point.x - mapView.x) * (w / mapView.w);
     mapView.y = point.y - (point.y - mapView.y) * (w / mapView.w);
     mapView.w = w;
     applyView();
   }, {passive: false});
+  // A press that moves the map more than a few pixels is a drag, and the click it ends in is no
+  // click; one that doesn't is a click -- on a factory, say. The pointer is captured only once
+  // it's a drag, so that a click still lands on what it was on.
   let drag = null;
+  let dragged = false;  // the last press was a drag
+  // The browser's own dragging of an image (a tile, an icon) or selecting of text would take the
+  // press over before it moves far enough to be the map's drag.
+  svg.addEventListener("dragstart", (event) => event.preventDefault());
+  svg.addEventListener("mousedown", (event) => {
+    if (event.button === 0) event.preventDefault();
+  });
   svg.addEventListener("pointerdown", (event) => {
-    if (!mapView) return;
+    if (!mapView || event.button !== 0) return;
     drag = {x: event.clientX, y: event.clientY, viewX: mapView.x, viewY: mapView.y, moved: 0};
-    svg.setPointerCapture(event.pointerId);
+    dragged = false;
   });
   svg.addEventListener("pointermove", (event) => {
     if (!drag) return;
+    if (!event.buttons) return endDrag();  // let go somewhere the map didn't hear of it
     const rect = svg.getBoundingClientRect();
     drag.moved = Math.max(drag.moved, Math.hypot(event.clientX - drag.x, event.clientY - drag.y));
     if (drag.moved < 4) return;
+    if (!svg.hasPointerCapture(event.pointerId)) svg.setPointerCapture(event.pointerId);
     svg.classList.add("dragging");
     mapView.x = drag.viewX - (event.clientX - drag.x) * (mapView.w / rect.width);
     mapView.y = drag.viewY - (event.clientY - drag.y) * (mapView.h / rect.height);
     applyView();
   });
   function endDrag() {
+    dragged = Boolean(drag && drag.moved >= 4);
+    drag = null;
     svg.classList.remove("dragging");
   }
   svg.addEventListener("pointerup", endDrag);
-  svg.addEventListener("pointercancel", () => {
-    drag = null;
-    endDrag();
-  });
+  svg.addEventListener("pointercancel", endDrag);
   svg.addEventListener("dblclick", () => {
     mapView = fit();
     applyView();
@@ -1113,7 +1198,7 @@ function renderMapPanel(body, data) {
   function drawLinks(site) {
     linkLayer.replaceChildren();
     if (!mapView) return;
-    const unit = mapView.w / svg.getBoundingClientRect().width;
+    const unit = (mapView.w / svg.getBoundingClientRect().width) * markerSize;
     for (const feed of site.feeds) {
       const found = nodesById.get(feed.node);
       if (!found) continue;
@@ -1187,7 +1272,7 @@ function renderMapPanel(body, data) {
     marker.group.addEventListener("blur", () => hide());
   }
   svg.addEventListener("click", (event) => {
-    if (drag && drag.moved >= 4) return;  // the end of a drag, not a click
+    if (dragged) return;  // the end of a drag, not a click
     const hit = siteMarkers.find((marker) => marker.group.contains(event.target));
     pinned = hit && pinned !== hit.site ? hit.site : null;
     if (pinned) show(pinned);

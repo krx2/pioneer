@@ -17,6 +17,9 @@ path names saves use (`Persistent_Level:PersistentLevel.BP_ResourceNode103`): bo
 match all 607 of its nodes at the same positions, and every extractor in them names one, which is
 what makes occupancy and extraction rates exact. `Desc_Geyser_C` is the source's own id for
 geysers, which no item backs. Worlds generated with 1.2's randomized node mode won't match it.
+
+A resource well's satellite nodes are the `BP_FrackingSatellite` actors (`ResourceNode.on_well`):
+worked by a Resource Well Extractor, not a miner or an Oil Extractor.
 """
 
 from __future__ import annotations
@@ -27,6 +30,8 @@ from typing import Any
 
 from pioneer.contracts import Coordinates, Purity, ResourceNode
 from pioneer.resource_db.queries import ResourceDatabase
+
+_WELL_SATELLITE = "BP_FrackingSatellite"
 
 
 def load_from_file(path: Path | str) -> ResourceDatabase:
@@ -45,6 +50,7 @@ def load_from_dict(raw: list[dict[str, Any]] | dict[str, Any]) -> ResourceDataba
             item_id=entry["item_id"],
             purity=Purity(entry["purity"]),
             position=Coordinates(**entry["position"]),
+            on_well=_WELL_SATELLITE in entry["node_id"],
         )
         for entry in raw_nodes
     )

@@ -2,22 +2,30 @@
 accepted through the API, and handed to every later question of its conversation."""
 
 import json
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from pioneer.contracts import (
+    BuildSite,
     ChangeAction,
     ChangeItem,
     Coordinates,
     Item,
     MaterialFlow,
+    NodeAssignment,
     PlacementRecord,
     Plan,
     PlanTarget,
     ProductionGraph,
     ProductionNode,
+    Purity,
     ResponseArtifact,
+    SitePlan,
+    SiteStage,
+    SiteTransfer,
+    SupplyReservation,
 )
 from pioneer.orchestrator import OrchestratorContext
 from pioneer.web import create_app
@@ -413,3 +421,91 @@ def test_unreadable_history_entries_and_marks_are_left_out() -> None:
     assert history_summary("nope", {}) == []
     assert marks_from_json({"a": 2, "b": "3", "c": True, "d": 0, "e": -1}) == (("a", 2.0),)
     assert marks_from_json(None) == ()
+
+
+_SITED = replace(
+    _PLAN,
+    sites=SitePlan(
+        sites=(
+            BuildSite(
+                "new_site_1",
+                Coordinates(x=100.0, y=200.0, z=5.0),
+                (SiteStage("Recipe_IronPlate_C", "Build_ConstructorMk1_C", 3, 1.0),),
+            ),
+        ),
+        deposits=(
+            NodeAssignment(
+                "node_1",
+                "Desc_OreIron_C",
+                Purity.NORMAL,
+                Coordinates(x=90.0, y=210.0),
+                "Build_MinerMk3_C",
+                1.25,
+                1,
+                300.0,
+                "new_site_1",
+            ),
+        ),
+        transfers=(SiteTransfer("Desc_IronIngot_C", "new_site_1", "new_site_2", 30.0),),
+        shortfall=(("Desc_Coal_C", 15.0),),
+    ),
+    reservations=(
+        SupplyReservation("site_3", Coordinates(x=1.0, y=2.0), "Desc_IronIngot_C", 30.0),
+    ),
+)
+
+
+def test_where_a_plan_is_built_is_kept_with_it() -> None:
+    assert plan_from_json(json.loads(json.dumps(plan_to_json(_SITED)))) == _SITED
+
+
+def test_a_plan_kept_before_it_kept_where_it_is_built_reads_back_without_it() -> None:
+    stored = plan_to_json(_SITED)
+    del stored["sites"]
+    del stored["reservations"]
+
+    plan = plan_from_json(stored)
+
+    assert (plan.sites, plan.reservations) == (None, ())
+
+
+def test_other_conversations_plans_keep_what_they_reserved_from_a_plan_here(tmp_path) -> None:
+    """A plan accepted in one conversation: its deposits and reservations are kept from questions
+    in another — and not from its own conversation's, where they're the plan's own."""
+    contexts: list = []
+    answers = iter([_proposing(_R1, _SITED), _proposing(_R2, None), _proposing(_R3, None)])
+
+    def answer(question, current, history, on_event=None):
+        contexts.append(current)
+        return next(answers)
+
+    context = OrchestratorContext(items=_ITEMS)
+    client = TestClient(
+        create_app(
+            context=lambda: (context, "status"),
+            answer=answer,
+            conversations=ConversationStore(tmp_path),
+        )
+    )
+    planned = client.post("/api/ask", json={"question": "plan"}).json()["conversation_id"]
+    client.post(f"/api/conversations/{planned}/plan", json={"response_id": _R1})
+    client.post("/api/ask", json={"question": "another"})
+    client.post("/api/ask", json={"question": "more", "conversation_id": planned, "turn": 1})
+    shown = client.get(f"/api/conversations/{planned}/plan").json()["plan"]
+
+    elsewhere, own = contexts[1], contexts[2]
+    assert elsewhere.reserved_node_ids == {"node_1"}
+    assert elsewhere.reserved_supply == _SITED.reservations
+    assert (own.reserved_node_ids, own.reserved_supply) == (frozenset(), ())
+    assert shown["where"] == {
+        "sites": [
+            {
+                "site_id": "new_site_1",
+                "deposits": 1,
+                "with_extractor": None,  # no save to tell
+                "mines": ["Desc_OreIron_C"],
+                "builds": ["Recipe_IronPlate_C"],
+            }
+        ],
+        "reserved": [{"site_id": "site_3", "item": "Desc_IronIngot_C", "rate_per_minute": 30.0}],
+    }

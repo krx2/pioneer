@@ -83,13 +83,46 @@ An answer that plans something — a new production chain, or an extension of yo
   recipe came into the plan, whatever their clock — an underclocked machine is still built. It
   counts every such building, also one put up for something else: the save doesn't say what a
   building is for. The bar asks again every minute, so the game's autosaves move it along.
-- **The panel.** Click the bar for every stage with how much of it stands, a box to tick a stage
-  built before the save shows it — ticked stages count as built for the assistant too — a link to
-  the plan's graph, and its revisions: when each was accepted, the question that asked for it, and
-  what it changed.
+- **Where it's built stays.** The plan keeps its deposits and sites as accepted. A revision keeps
+  them too: for more, the deposits it has are pushed further and new ones added near them; for
+  less, it drops the deposits it no longer needs — the ones you've already put an extractor on are
+  kept first. A stage stays at the site it was at. Your miners on the plan's deposits don't make
+  them "taken" for the plan itself.
+- **The panel.** Click the bar for where the plan is built — each site, how many of its deposits
+  have an extractor yet, what it builds, and what the plan takes of your factories' spare output —
+  every stage with how much of it stands, a box to tick a stage built before the save shows it —
+  ticked stages count as built for the assistant too — links to the plan's graph and map, and its
+  revisions: when each was accepted, the question that asked for it, and what it changed.
 
 A plan made with no save loaded has nothing to count from: its progress shows as unknown until you
 tick stages. The plan, its revisions and your ticks are kept with the conversation.
+
+## Where a plan is built
+
+A plan says where to build it (`location_advisor.plan_sites`), from the free resource nodes:
+
+- **Worked as players do.** Each node gets the best extractor you've unlocked — Miner Mk.3 over
+  Mk.2 over Mk.1, the Oil Extractor for oil, the Resource Well Extractor on a well — overclocked
+  with power shards up to 250%, but no further than your fastest belt or pipe carries. The answer
+  says each node's clock speed and shards, and how many shards and how much power it all takes. A
+  well's satellites run at the pressurizer's clock, not overclocked here.
+- **No better node than needed.** Of the nodes that cover a resource, the ones sparing the least
+  capacity: 400 iron ore a minute is one normal node at 167%, not a pure one underclocked — the
+  pure one stays free for when it's needed — and one normal node rather than two impure ones.
+- **One site if it fits.** When every deposit the plan needs lies within 400 m of one spot, it's
+  all one site.
+- **Else several, each making its parts.** What can't be had close together is split: each
+  resource is mined where it can be, the deposits close to each other make a site, and each site
+  builds what its own deposits are for — the steel where the iron and coal are, the concrete at the
+  limestone, a far mine just smelting its ore — and sends it on. The answer says what each site
+  builds and what goes where, on how many belts of which tier; the map shows the sites, a line from
+  every deposit to its site, and what each site sends another.
+- **Just what it needs of a megafactory.** A plan extending your factory takes what your factories
+  have to spare before building anything — and reserves of it, factory by factory, only what it
+  uses: 30 ingots a minute of a megafactory's 600 spare, the rest left spare.
+- **Reserved.** The deposits an accepted plan works, and what it reserves of your factories' spare
+  output, aren't offered to the plans of your other conversations. Deleting a conversation frees
+  them.
 
 ## What it works from: the header
 
@@ -107,8 +140,10 @@ The header's five buttons say what the assistant knows right now, each opening a
 - **Map** (`17 sites`): the game's map with the save's factories, each marked with what it makes.
   Point at one for what it takes in and puts out a minute, and arrows from the resource nodes
   that feed it — along its belts and pipes, or, dashed, the nearest when there are none; click to
-  keep it. The side panel picks which nodes to show — by resource, purity, free or taken — and
-  remembers it in the browser. Scroll to zoom, drag to move, double-click to see it all.
+  keep it, click the map to let go. The side panel picks which nodes to show — by resource,
+  purity, free or taken — and remembers it in the browser. Scroll to zoom, drag to move,
+  double-click to see it all. Seen whole, nodes are dots in their purity's colour; zoomed in,
+  they show their resource's icon.
 - **Save**: every save under the game's `SaveGames` folder — Steam, Epic and dedicated-server ones
   — by session, and which one is read: the newest in a folder (following the autosaves), the
   newest of one session, or one file, pinned. A big save is read in the background; the last one
@@ -124,10 +159,22 @@ kept in `data/settings.json` and wins over `.env`, which is never written; the C
 ## The map
 
 The maps — the Map panel and an answer's map alike — lie on the game's own map:
-`docs/map/map.jpg`, the official map from the game's wiki, like the icons the developers' own
-artwork. `pioneer.map_image` says where in the world it lies: x from -324 698.83 to 425 301.83 and
-y from -375 000 to 375 000 cm, east and south — `tests/test_map_image.py` checks that the shipped
-deposits land on its land. Without the file the maps draw a plain grid.
+`docs/map/map.jpg`, the official map from the game's wiki (5000 px square), like the icons the
+developers' own artwork. `pioneer.map_image` says where in the world it lies: x from -324 698.83
+to 425 301.83 and y from -375 000 to 375 000 cm, east and south — `tests/test_map_image.py` checks
+that the shipped deposits land on its land.
+
+The pages draw it from tiles, committed in `docs/map/tiles/`: four levels from 625 to 5000 px,
+512 px tiles, each page loading only those on screen at the level sharp at its zoom. A new picture
+is cut into them with
+
+```
+python -m pioneer.map_image [picture]      # default: docs/map/map.jpg; needs Pillow (dev extra)
+```
+
+Without the tiles the maps draw the picture whole, and without either a plain grid. Markers grow
+as the map is zoomed in, but by the square root of it, within bounds: zoomed in, they don't
+cover the map, and zoomed out they don't bury it.
 
 ## Item icons
 
@@ -150,7 +197,8 @@ from the game's files, which are UE5 IoStore archives since Update 8: umodel can
 ## What it can answer
 
 - "I want to produce 10 Reinforced Iron Plates a minute" — a plan from raw resources up, with each
-  stage's building, machines, power and belt tier, plus a free deposit for every raw input.
+  stage's building, machines, power and belt tier, and where to build it (see "Where a plan is
+  built" below).
 - "Add 400 screws a minute to my factory" — the minimal change to what's already built, using its
   spare output first, and which of your factories to extend.
 - "Make it 20 a minute and add 5 Rotors" — once a conversation has a plan, the plan revised: what to
@@ -159,7 +207,8 @@ from the game's files, which are UE5 IoStore archives since Update 8: umodel can
 - "Which alternate recipe for Iron Ingot is best?" — every recipe planned side by side.
 - "What do I need to unlock for Computers?" — the technologies, their prerequisites and costs.
 - "How do I get 500 MW?" — generators, fuel, water and the extractors for it.
-- "Where should I build a copper mine?" — free deposits ranked by purity and distance.
+- "Where should I build a copper mine?" — free deposits ranked by purity and distance; "...for 600
+  copper ore a minute?" — the deposits close together that give that much, and how to work them.
 - "What's wrong with my factory?" — shortfalls, waste and blackouts in the current save, and its
   wiring: machines no belt or pipe feeds, products with nowhere to go, belts over their tier.
 - "Show me how my factory makes Computers" / "draw site_2" — a graph of what's already built, from
@@ -190,7 +239,7 @@ src/pioneer/
   verifier/             the arithmetic: machines, balance, power, distance, transport, plan progress
   production_planner/   target rates -> production graph
   expansion_advisor/    plan + existing factory -> what to build; a plan's revision -> what changes
-  location_advisor/     free deposits, and where your factories are
+  location_advisor/     free deposits, where your factories are, and where to build a plan
   anomaly_detector/     shortfalls, waste, blackouts, congestion
   qa_engine/            retrieval + answer synthesis
   *_presentation/       chat, D3 graph, SVG map
@@ -198,7 +247,7 @@ src/pioneer/
   orchestrator/         the tools the model calls, and the routing loop
   llm_client/           the HTTP transport to the model
   icons.py              imports item and building icons (docs/icons/)
-  map_image.py          the game's map picture (docs/map/) and where in the world it lies
+  map_image.py          the game's map picture (docs/map/), its tiles, and where in the world it lies
   app/                  the composition root: data loading, the live context the header steers
   web/, startup.py
 tests/                  mirrors the layout above

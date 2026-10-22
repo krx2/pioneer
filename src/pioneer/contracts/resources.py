@@ -24,3 +24,6 @@ class ResourceNode:
     item_id: str
     purity: Purity
     position: Coordinates
+    on_well: bool = False
+    """A satellite node of a resource well, worked by a Resource Well Extractor once a pressurizer
+    stands at the well's core -- not by a miner or an Oil Extractor."""

@@ -22,7 +22,7 @@ from pioneer.config import settings
 from pioneer.icons import ICON_DIR
 from pioneer.llm_client import context_window_warning
 from pioneer.llm_client.judges import chat_judge, terrain_judge
-from pioneer.map_image import map_image
+from pioneer.map_image import map_image, map_tiles
 from pioneer.orchestrator import verify_response
 from pioneer.verification_feedback import JsonlFeedbackStore, ResponseLog
 from pioneer.web.conversations import ConversationStore
@@ -68,6 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         icon_dir=ICON_DIR,
         conversations=ConversationStore(DATA_DIR / "conversations"),
         map_image=map_image(),
+        map_tiles=map_tiles(),
     )
     uvicorn.run(app, host=args.host, port=args.port)
     return 0

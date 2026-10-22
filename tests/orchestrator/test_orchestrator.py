@@ -1424,26 +1424,120 @@ def test_an_extension_names_the_factory_site_that_runs_the_recipe_most() -> None
     assert result.factory_sites == (big,)
 
 
-def test_a_plan_suggests_a_deposit_for_each_raw_input_and_maps_them() -> None:
+def test_a_plan_says_where_to_build_it_on_the_least_node_that_is_enough() -> None:
+    """30 ore a minute: the normal node 900 m off is enough, so the pure one 10 m off is kept."""
     context = OrchestratorContext(
-        recipes=_RECIPES + (_IRON_INGOT,), items=_ITEMS, resource_nodes=_NODES
+        recipes=_RECIPES + (_IRON_INGOT,),
+        items=_ITEMS,
+        resource_nodes=_NODES,
+        buildings=_IRON_BUILDINGS + (replace(_MINER, extracts_from="node"),),
     )
 
     result, tool_result = _run_single_tool(
         context, "plan_production", {"target_item_id": "Iron Plate", "target_rate_per_minute": 20}
     )
 
-    assert tool_result["suggested_sites"] == {
-        "Desc_OreIron_C": {
-            "resource_node_id": "Persistent_Level:PersistentLevel.BP_ResourceNode1",
-            "purity": "pure",
-            "distance_m": 10,
+    sites = tool_result["build_sites"]
+    assert sites["layout"].startswith("one site")
+    (site,) = sites["sites"]
+    assert (site["site_id"], site["distance_from_base_m"]) == ("new_site_1", 900)
+    assert site["deposits"] == [
+        {
+            "item_id": "Desc_OreIron_C",
+            "purity": "normal",
+            "nodes": 1,
+            "extractor": "Build_MinerMk1_C",
+            "clock_percent": 50.0,
+            "power_shards_each": 0,
+            "per_minute": 30.0,
         }
-    }
-    assert [loc.resource_node_id for loc in result.map_locations] == [
-        "Persistent_Level:PersistentLevel.BP_ResourceNode1"
     ]
+    assert "builds" not in site  # one site builds it all
+    assert [loc.resource_node_id for loc in result.map_locations] == [_NODES[1].node_id]
     assert result.map_reference == Coordinates(x=0, y=0, z=0)
+    assert result.build_sites is not None
+    assert [d.resource_node_id for d in result.build_sites.deposits] == [_NODES[1].node_id]
+
+
+def test_deposits_are_worked_by_the_best_extractor_unlocked_up_to_the_fastest_belt() -> None:
+    """Miner Mk.2 is unlocked and Mk.3 isn't; of the belts only Mk.1 (60/min) is. A normal node
+    takes the Mk.2, but the belt carries no more than 60 of the 100 asked for."""
+    miners = tuple(
+        replace(
+            _MINER,
+            building_id=f"Build_MinerMk{n}_C",
+            name=f"Miner Mk.{n}",
+            extraction_rate_per_minute=rate,
+            extracts_from="node",
+            unlockable_by=(f"Schematic_Miner{n}",),
+        )
+        for n, rate in ((1, 60), (2, 120), (3, 240))
+    )
+    belts = tuple(
+        TransportTier(
+            f"Build_ConveyorBeltMk{n}_C",
+            f"Conveyor Belt Mk.{n}",
+            rate,
+            False,
+            unlockable_by=(f"Schematic_Belt{n}",),
+        )
+        for n, rate in ((1, 60), (2, 120))
+    )
+    context = OrchestratorContext(
+        items=_ITEMS,
+        resource_nodes=(_NODES[1],),
+        buildings=miners,
+        transport_tiers=belts,
+        unlocked_technology_ids=frozenset(
+            {"Schematic_Miner1", "Schematic_Miner2", "Schematic_Belt1"}
+        ),
+    )
+
+    _, low = _run_single_tool(
+        context, "rank_build_locations", {"item_id": "Iron Ore", "rate_per_minute": 45}
+    )
+    _, high = _run_single_tool(
+        context, "rank_build_locations", {"item_id": "Iron Ore", "rate_per_minute": 100}
+    )
+
+    (deposit,) = low["build_sites"]["sites"][0]["deposits"]
+    assert (deposit["extractor"], deposit["clock_percent"]) == ("Build_MinerMk2_C", 37.5)
+    (deposit,) = high["build_sites"]["sites"][0]["deposits"]
+    assert (deposit["clock_percent"], deposit["per_minute"]) == (50.0, 60.0)
+    assert high["build_sites"]["not_covered_per_minute"] == {"Desc_OreIron_C": 40.0}
+
+
+def test_a_node_only_a_locked_extractor_can_work_names_what_to_unlock() -> None:
+    oil = Item(item_id="Desc_LiquidOil_C", name="Crude Oil", is_raw_resource=True, is_fluid=True)
+    node = ResourceNode("oil_1", "Desc_LiquidOil_C", Purity.NORMAL, Coordinates(x=5000, y=0))
+    pump = Building(
+        "Build_OilPump_C",
+        "Oil Extractor",
+        40,
+        0,
+        1,
+        extraction_rate_per_minute=120,
+        fixed_resource_id="Desc_LiquidOil_C",
+        extracts_from="node",
+        unlockable_by=("Schematic_5-1_C",),
+    )
+    context = OrchestratorContext(
+        items=(oil,),
+        resource_nodes=(node,),
+        buildings=(pump, replace(_MINER, extracts_from="node")),
+        technologies=(Technology("Schematic_5-1_C", "Oil Processing", 5, kind="milestone"),),
+        unlocked_technology_ids=frozenset(),
+    )
+
+    _, result = _run_single_tool(
+        context, "rank_build_locations", {"item_id": "Crude Oil", "rate_per_minute": 120}
+    )
+
+    (deposit,) = result["build_sites"]["sites"][0]["deposits"]
+    assert deposit["extractor"] == "Build_OilPump_C"
+    assert result["build_sites"]["extractors_to_unlock"] == [
+        {"building_id": "Build_OilPump_C", "unlock_with": "Schematic_5-1_C", "tier": 5}
+    ]
 
 
 def test_an_explicit_site_ranking_is_not_replaced_by_a_plans_suggestions() -> None:

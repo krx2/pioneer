@@ -100,6 +100,15 @@ class ConversationStore:
         conversation = self.get(conversation_id)
         return _accepted(conversation) if conversation is not None else None
 
+    def accepted_plans(self) -> dict[str, dict[str, Any]]:
+        """Every conversation's plan, as `plan` gives it, by conversation id -- those with one."""
+        found = (self._read(path) for path in self._directory.glob("*.json"))
+        return {
+            conversation["id"]: accepted
+            for conversation in found
+            if conversation is not None and (accepted := _accepted(conversation)) is not None
+        }
+
     def accept_plan(self, conversation_id: str, response_id: str) -> dict[str, Any] | None:
         """Makes the plan the answer `response_id` proposed the conversation's plan, and returns
         it as `plan` does. `None` when the conversation has no such answer, or it proposed no plan;

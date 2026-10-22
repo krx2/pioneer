@@ -4,15 +4,21 @@ the same style as Stage 3/9 example outputs, per implementation.md Stage 14."""
 import re
 
 from pioneer.contracts import (
+    BuildSite,
     Coordinates,
     FactorySite,
+    NodeAssignment,
     PlacementRecord,
     Purity,
     RankedLocation,
     ResourceNode,
+    SitePlan,
+    SiteStage,
+    SiteTransfer,
 )
 from pioneer.map_presentation.renderer import (
     MapBackground,
+    MapTileSet,
     build_markers,
     compute_view_box,
     render_page,
@@ -225,3 +231,94 @@ def test_a_map_picture_goes_under_the_markers_instead_of_the_grid() -> None:
     assert 'class="grid-line"' not in with_picture
     assert 'class="grid-line"' in without and 'class="world"' not in without
     assert "const worldWidth = 4000;" in with_picture
+    assert "const tiles = null;" in with_picture
+
+
+def test_a_map_picture_cut_into_tiles_is_left_to_the_script_to_draw() -> None:
+    tiles = MapTileSet("/map-tiles", 512, 1, ((625, 625), (1250, 1250)))
+    background = MapBackground("/map-image/map.jpg", -1000, -2000, 3000, 2000, tiles=tiles)
+    node = ResourceNode(
+        node_id="n", item_id="Desc_OreIron_C", purity=Purity.PURE, position=Coordinates(x=0, y=0)
+    )
+
+    page = render_page((node,), background=background)
+
+    assert '<g class="world-tiles"></g>' in page
+    assert 'class="world"' not in page and 'class="grid-line"' not in page
+    assert (
+        'const tiles = {"url": "/map-tiles", "size": 512, "overlap": 1, '
+        '"levels": [[625, 625], [1250, 1250]]};'
+    ) in page
+    assert 'const world = {"x": -1000, "y": -2000, "w": 4000, "h": 4000};' in page
+
+
+def test_every_marker_says_where_it_stands_for_the_script_to_size_it_around() -> None:
+    page = render_page(_NODES, (), _RANKED)
+
+    groups = re.findall(r'<g class="marker [^"]+" data-x="([^"]+)" data-y="([^"]+)">', page)
+
+    assert len(groups) == len(_NODES) + len(_RANKED)
+    assert "const markerUnit = " in page
+
+
+def test_a_site_plan_marks_its_sites_and_says_how_each_deposit_is_worked() -> None:
+    node = ResourceNode("n1", "Desc_OreIron_C", Purity.NORMAL, Coordinates(x=0, y=0))
+    copper = ResourceNode("n2", "Desc_OreCopper_C", Purity.PURE, Coordinates(x=90_000, y=0))
+    deposits = (
+        NodeAssignment(
+            "n1",
+            "Desc_OreIron_C",
+            Purity.NORMAL,
+            node.position,
+            "Build_MinerMk3_C",
+            100 / 60,
+            2,
+            100.0,
+            "new_site_1",
+        ),
+        NodeAssignment(
+            "n2",
+            "Desc_OreCopper_C",
+            Purity.PURE,
+            copper.position,
+            "Build_MinerMk3_C",
+            0.5,
+            0,
+            60.0,
+            "new_site_2",
+        ),
+    )
+    plan = SitePlan(
+        sites=(
+            BuildSite(
+                "new_site_1",
+                Coordinates(x=0, y=0),
+                (SiteStage("Recipe_IronPlate_C", "Build_ConstructorMk1_C", 5, 1.0),),
+            ),
+            BuildSite("new_site_2", Coordinates(x=90_000, y=0)),
+        ),
+        deposits=deposits,
+        transfers=(SiteTransfer("Desc_OreCopper_C", "new_site_2", "new_site_1", 60.0),),
+    )
+    ranked = tuple(
+        RankedLocation(d.resource_node_id, d.position, d.purity, 0.0, d.rate_per_minute)
+        for d in deposits
+    )
+    names = {
+        "Build_MinerMk3_C": "Miner Mk.3",
+        "Desc_OreIron_C": "Iron Ore",
+        "Desc_OreCopper_C": "Copper Ore",
+        "Recipe_IronPlate_C": "Iron Plate",
+    }
+
+    page = render_page((node, copper), (), ranked, names=names, site_plan=plan)
+
+    assert "Iron Ore, normal: Miner Mk.3 at 167%, 2 shards, 100/min to new_site_1" in page
+    assert "Copper Ore, pure: Miner Mk.3 at 50%, 60/min to new_site_2" in page
+    assert ">new_site_1: Iron Plate</text>" in page
+    assert ">new_site_2: Copper Ore, sent on</text>" in page
+    assert page.count('class="haul"') == 2
+    assert page.count('<line class="sends"') == 1
+    assert "Copper Ore 60/min to new_site_1" in page
+    assert "site to build" in page
+    assert "site to build" not in render_page((node,), (), ranked)

@@ -5,22 +5,37 @@ Split the same way as `graph_presentation`: `build_markers` is a pure, unit-test
 (contracts in, marker specs out); `render_page` lays those markers out as an SVG, panned and
 zoomed by `MAP_SCRIPT` moving the SVG's own `viewBox` -- no D3 needed, since it's just a fixed
 set of markers rather than a force simulation. The SVG works in the game's own coordinates, so a
-picture of the game's map (`MapBackground`) goes under the markers as one `<image>` spanning the
-world it shows; without one, a grid stands in for it.
+picture of the game's map (`MapBackground`) goes under the markers spanning the world it shows: as
+tiles, when it's been cut into them (`MapTileSet`), the script drawing those of the part on screen
+at the level sharp at its zoom; else as one `<image>`. Without a picture, a grid stands in for it.
+
+Markers are drawn in the game's coordinates too, sized for the first view, and the script resizes
+them as the view changes: on the game's map by how long a kilometre is on screen -- the square root
+of it, within bounds, as the header's map does -- and on a grid by the square root of the zoom. So
+up close they don't cover what they mark, and the whole map isn't buried under them.
 """
 
 from __future__ import annotations
 
 import html
+import json
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from pioneer.contracts import FactorySite, PlacementRecord, Purity, RankedLocation, ResourceNode
+from pioneer.contracts import (
+    FactorySite,
+    NodeAssignment,
+    PlacementRecord,
+    Purity,
+    RankedLocation,
+    ResourceNode,
+    SitePlan,
+)
 
-MarkerKind = Literal["resource", "existing_building", "recommended", "factory"]
+MarkerKind = Literal["resource", "existing_building", "recommended", "factory", "new_site"]
 
 _CLASS_ID_AFFIX = re.compile(r"^(?:Desc|Recipe|Build|BP|Schematic|Research)_|_C$")
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
@@ -44,22 +59,49 @@ _PURITY_COLOR = {
 _EXISTING_COLOR = "#6b7683"
 _RECOMMENDED_COLOR = "#33c17a"
 _FACTORY_COLOR = "#2f6fed"
+_NEW_SITE_COLOR = "#f2a344"
+_LABELLED = ("recommended", "factory", "new_site")
+
+
+@dataclass(frozen=True)
+class MapTileSet:
+    """The map picture cut into tiles (see `pioneer.map_image`): tile `<column>_<row>` of level `n`
+    is at `<url>/<n>/<column>_<row>.webp`, `size` px a side and `overlap` px more where it has a
+    neighbour to the right or below."""
+
+    url: str
+    size: int
+    overlap: int
+    levels: tuple[tuple[int, int], ...]
+    """Each level's (width, height) in px, the smallest first: every level shows the whole map."""
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "url": self.url,
+            "size": self.size,
+            "overlap": self.overlap,
+            "levels": [list(level) for level in self.levels],
+        }
 
 
 @dataclass(frozen=True)
 class MapBackground:
-    """A picture of the game's map, and the part of the world it shows, in game coordinates."""
+    """A picture of the game's map, and the part of the world it shows, in game coordinates: one
+    image at `href`, or the `tiles` it's cut into -- those, when there are both."""
 
-    href: str
+    href: str | None
     min_x: float
     min_y: float
     max_x: float
     max_y: float
+    tiles: MapTileSet | None = None
 
     def svg(self) -> str:
+        if self.tiles is not None:
+            return '<g class="world-tiles"></g>'  # filled by MAP_SCRIPT with the tiles on screen
         width, height = self.max_x - self.min_x, self.max_y - self.min_y
         return (
-            f'<image class="world" href="{html.escape(self.href)}" x="{self.min_x}" '
+            f'<image class="world" href="{html.escape(self.href or "")}" x="{self.min_x}" '
             f'y="{self.min_y}" width="{width}" height="{height}" preserveAspectRatio="none" />'
         )
 
@@ -82,11 +124,16 @@ def build_markers(
     names: Mapping[str, str] | None = None,
     factory_sites: tuple[FactorySite, ...] = (),
     icons: Mapping[str, str] | None = None,
+    site_plan: SitePlan | None = None,
 ) -> tuple[MapMarker, ...]:
     """`names` maps item, recipe and building ids to the names labels show; an id without one
     falls back to `readable_id`, never to the raw class id. A factory site is labelled with its id
     and the recipes most of its buildings run. `icons` maps ids to icon URLs: a deposit and a
-    recommended site show the resource's, a building its own, a factory its main recipe's."""
+    recommended site show the resource's, a building its own, a factory its main recipe's.
+
+    With a `site_plan`, a recommended deposit it works is labelled with how — extractor, clock
+    speed, power shards, what it gives and to which site — rather than ranked, and each of the
+    plan's sites is a marker of its own, labelled with what it builds, first what it's for."""
 
     def name(class_id: str) -> str:
         return (names or {}).get(class_id) or readable_id(class_id)
@@ -120,21 +167,42 @@ def build_markers(
     # save's map the resource pins are past `label_limit` and so unlabelled, leaving a green
     # "#1 pure" that never says what the player would be mining there.
     resource_of = {node.node_id: node.item_id for node in resource_nodes}
+    worked = {d.resource_node_id: d for d in site_plan.deposits} if site_plan else {}
     markers += [
         MapMarker(
             x=location.position.x,
             y=location.position.y,
             kind="recommended",
-            label=f"#{rank} {_recommended_resource(location, resource_of, name)}"
+            label=_deposit_label(worked[location.resource_node_id], name)
+            if location.resource_node_id in worked
+            else f"#{rank} {_recommended_resource(location, resource_of, name)}"
             f"{location.purity.value}, score {location.score:.2f}",
             color=_RECOMMENDED_COLOR,
-            rank=rank,
+            rank=None if location.resource_node_id in worked else rank,
             icon=icon(resource_of.get(location.resource_node_id)),
         )
         for rank, location in enumerate(
             sorted(ranked_locations, key=lambda loc: -loc.score), start=1
         )
     ]
+    for site in site_plan.sites if site_plan else ():
+        mined = sorted({d.item_id for d in site_plan.deposits if d.site_id == site.site_id})
+        made = [stage.recipe_id for stage in site.stages][:3]
+        markers.append(
+            MapMarker(
+                x=site.position.x,
+                y=site.position.y,
+                kind="new_site",
+                label=f"{site.site_id}: "
+                + (
+                    ", ".join(name(recipe_id) for recipe_id in made)
+                    if made
+                    else ", ".join(name(item_id) for item_id in mined) + ", sent on"
+                ),
+                color=_NEW_SITE_COLOR,
+                icon=icon(made[0]) if made else icon(next(iter(mined), None)),
+            )
+        )
     markers += [
         MapMarker(
             x=site.position.x,
@@ -156,6 +224,16 @@ def _recommended_resource(
     ranking alone doesn't carry the item, and a map drawn without the nodes can't name it."""
     item_id = resource_of.get(location.resource_node_id)
     return f"{name(item_id)}, " if item_id is not None else ""
+
+
+def _deposit_label(deposit: NodeAssignment, name: Callable[[str], str]) -> str:
+    """`Iron Ore, normal: Miner Mk.3 at 167%, 2 shards, 400/min to new_site_1`."""
+    shards = f", {deposit.power_shards} shard{'s' if deposit.power_shards != 1 else ''}"
+    return (
+        f"{name(deposit.item_id)}, {deposit.purity.value}: {name(deposit.extractor_id)} at "
+        f"{deposit.clock_speed * 100:.0f}%{shards if deposit.power_shards else ''}, "
+        f"{deposit.rate_per_minute:.0f}/min to {deposit.site_id}"
+    )
 
 
 def _recipe_counts(site: FactorySite) -> dict[str, int]:
@@ -187,6 +265,7 @@ _MARKER_RADIUS_FACTOR = {
     "existing_building": 0.5,
     "recommended": 0.8,
     "factory": 1.1,
+    "new_site": 1.3,
 }
 """Marker radius as a fraction of `unit` (see `render_page`) — sized relative to the view box
 rather than a fixed pixel count, since game coordinates can range from small fixture numbers up
@@ -206,7 +285,7 @@ def _svg_marker(marker: MapMarker, *, unit: float, show_label: bool) -> str:
         f'<rect x="{marker.x - radius}" y="{marker.y - radius}" width="{radius * 2}" '
         f'height="{radius * 2}" fill="{fill}" stroke="{stroke}" '
         f'stroke-width="{stroke_width}" />'
-        if marker.kind in ("existing_building", "factory")
+        if marker.kind in ("existing_building", "factory", "new_site")
         else f'<circle cx="{marker.x}" cy="{marker.y}" r="{radius}" fill="{fill}" '
         f'stroke="{stroke}" stroke-width="{stroke_width}" />'
     )
@@ -234,7 +313,7 @@ def _svg_marker(marker: MapMarker, *, unit: float, show_label: bool) -> str:
     # A recommended location's position is typically the same resource node it recommends (per
     # Location Advisor), so its label goes *above* the marker rather than below — otherwise it'd
     # collide with the resource node's own label sitting right underneath at the same coordinates.
-    above = marker.kind in ("recommended", "factory")
+    above = marker.kind in _LABELLED
     label_y = marker.y - radius - unit if above else marker.y + radius + unit
     label = (
         f'<text x="{marker.x}" y="{label_y}" text-anchor="middle" class="label" '
@@ -243,7 +322,7 @@ def _svg_marker(marker: MapMarker, *, unit: float, show_label: bool) -> str:
         else ""
     )
     return (
-        f'<g class="marker marker-{marker.kind}">'
+        f'<g class="marker marker-{marker.kind}" data-x="{marker.x}" data-y="{marker.y}">'
         f"<title>{html.escape(marker.label)}</title>"
         f"{shape}{badge}{label}"
         f"</g>"
@@ -261,25 +340,38 @@ def render_page(
     factory_sites: tuple[FactorySite, ...] = (),
     icons: Mapping[str, str] | None = None,
     background: MapBackground | None = None,
+    site_plan: SitePlan | None = None,
 ) -> str:
     """Every marker keeps its label as a hover tooltip; past `label_limit` markers only the
     recommended sites and factories are also labelled on the map — a real map's hundreds of nodes
     would otherwise bury the pins under text. With a `background`, the game's map lies under the
-    markers, and zooming out goes as far as all of it."""
+    markers, and zooming out goes as far as all of it. With a `site_plan`, its sites are marked,
+    a line runs from each deposit to the site it feeds, and one between sites for what one sends
+    another, labelled with what and how much."""
     markers = build_markers(
-        resource_nodes, placements, ranked_locations, names, factory_sites, icons
+        resource_nodes, placements, ranked_locations, names, factory_sites, icons, site_plan
     )
     label_everything = len(markers) <= label_limit
     min_x, min_y, w, h = compute_view_box(markers)
     unit = max(w, h) / 45
     grid = background.svg() if background else _svg_grid(min_x, min_y, w, h, unit=unit)
     world_width = background.max_x - background.min_x if background else 0
+    world = (
+        {
+            "x": background.min_x,
+            "y": background.min_y,
+            "w": background.max_x - background.min_x,
+            "h": background.max_y - background.min_y,
+        }
+        if background
+        else None
+    )
+    tiles = background.tiles.as_json() if background and background.tiles else None
     markers_svg = "".join(
-        _svg_marker(
-            m, unit=unit, show_label=label_everything or m.kind in ("recommended", "factory")
-        )
+        _svg_marker(m, unit=unit, show_label=label_everything or m.kind in _LABELLED)
         for m in markers
     )
+    links = _svg_links(site_plan, unit, names) if site_plan else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -291,6 +383,7 @@ def render_page(
 <body>
 <svg id="map" viewBox="{min_x} {min_y} {w} {h}" preserveAspectRatio="xMidYMid meet">
 {grid}
+{links}
 {markers_svg}
 </svg>
 <div id="legend">
@@ -300,15 +393,52 @@ def render_page(
   <span><i class="sq" style="background:{_EXISTING_COLOR}"></i> existing building</span>
   <span><i class="dot" style="background:{_RECOMMENDED_COLOR}"></i> recommended</span>
   <span><i class="sq" style="background:{_FACTORY_COLOR}"></i> factory to extend</span>
+  {
+        f'<span><i class="sq" style="background:{_NEW_SITE_COLOR}"></i> site to build</span>'
+        if site_plan
+        else ""
+    }
 </div>
 <script>
 const initialView = {{x: {min_x}, y: {min_y}, w: {w}, h: {h}}};
 const worldWidth = {world_width};
+const markerUnit = {unit};
+const world = {json.dumps(world)};
+const tiles = {json.dumps(tiles)};
 {MAP_SCRIPT}
 </script>
 </body>
 </html>
 """
+
+
+def _svg_links(site_plan: SitePlan, unit: float, names: Mapping[str, str] | None = None) -> str:
+    """A line from each deposit to the site it feeds, and between sites, one for each thing one
+    sends another — labelled halfway along with what, how much and where to."""
+    at = {site.site_id: site.position for site in site_plan.sites}
+    lines = [
+        f'<line class="haul" x1="{d.position.x}" y1="{d.position.y}" '
+        f'x2="{at[d.site_id].x}" y2="{at[d.site_id].y}" />'
+        for d in site_plan.deposits
+        if d.site_id in at
+    ]
+    sent: dict[tuple[str, str], list[str]] = {}
+    for transfer in site_plan.transfers:
+        item = (names or {}).get(transfer.item_id) or readable_id(transfer.item_id)
+        sent.setdefault((transfer.from_site_id, transfer.to_site_id), []).append(
+            f"{item} {transfer.rate_per_minute:.0f}/min"
+        )
+    for (source, target), what in sent.items():
+        a, b = at[source], at[target]
+        mx, my = (a.x + b.x) / 2, (a.y + b.y) / 2
+        text = html.escape(f"{', '.join(what)} to {target}")
+        lines.append(f'<line class="sends" x1="{a.x}" y1="{a.y}" x2="{b.x}" y2="{b.y}" />')
+        lines.append(
+            f'<g class="marker marker-sends" data-x="{mx}" data-y="{my}"><title>{text}</title>'
+            f'<text x="{mx}" y="{my}" text-anchor="middle" class="label sends-label" '
+            f'style="font-size:{unit * 0.8:g}px;stroke-width:{unit * 0.25:g}px">{text}</text></g>'
+        )
+    return f'<g class="links">{"".join(lines)}</g>'
 
 
 def _svg_grid(min_x: float, min_y: float, w: float, h: float, *, unit: float) -> str:
@@ -329,11 +459,15 @@ def _svg_grid(min_x: float, min_y: float, w: float, h: float, *, unit: float) ->
 STYLE = """
 :root { color-scheme: dark; }
 html, body { margin:0; height:100%; background:#1f2427; font-family: system-ui, sans-serif; }
-svg { width:100%; height:100%; display:block; cursor:grab; touch-action:none; }
+svg { width:100%; height:100%; display:block; cursor:grab; touch-action:none; user-select:none; }
+svg image { -webkit-user-drag:none; user-drag:none; }
 svg.dragging { cursor:grabbing; }
 .grid-line { stroke:#2c3439; }
 .label { fill:#d3dade; paint-order: stroke; stroke:#1f2427; }
 .badge { fill:#1f2427; font-weight:bold; }
+.haul { stroke:#33c17a; stroke-width:2px; vector-effect:non-scaling-stroke; opacity:0.85; }
+.sends { stroke:#f2a344; stroke-width:4px; vector-effect:non-scaling-stroke; opacity:0.9; }
+.sends-label { fill:#f2c98f; }
 #legend {
   position:fixed; top:12px; left:12px; display:flex; flex-wrap:wrap; gap:14px;
   color:#d3dade; font-size:12px; background:#16191bcc; padding:8px 12px;
@@ -344,13 +478,104 @@ svg.dragging { cursor:grabbing; }
 """
 
 MAP_SCRIPT = """
+const SVG_NS = "http://www.w3.org/2000/svg";
 const svg = document.getElementById("map");
 let view = {...initialView};
-const minWidth = initialView.w * 0.04;
 const maxWidth = Math.max(initialView.w * 6, worldWidth * 1.2);
+const MAX_MAGNIFICATION = 4;  // screen pixels a pixel of the sharpest tiles may be stretched over
+const markers = [...svg.querySelectorAll(".marker")].map(
+  (group) => [group, Number(group.dataset.x), Number(group.dataset.y)]);
+const tileLayer = tiles && world ? svg.querySelector(".world-tiles") : null;
+const tileLevels = [];  // a group of images a level, the coarsest first: the sharper over it
+const tileImages = new Map();  // "level/column_row" -> its image, on screen or not
+
+function minWidth() {
+  // As far in as the markers allow, but not past where the map picture stays sharp.
+  const rect = svg.getBoundingClientRect();
+  if (!tileLayer || !rect.width) return initialView.w * 0.04;
+  const sharpest = world.w / tiles.levels[tiles.levels.length - 1][0];
+  return Math.max(initialView.w * 0.04,
+    Math.min(sharpest * rect.width / MAX_MAGNIFICATION, initialView.w));
+}
+
+function onScreen() {
+  // The view box is fitted into the window ("meet"): one way, the screen shows more than it.
+  const rect = svg.getBoundingClientRect();
+  const scale = Math.max(view.w / rect.width, view.h / rect.height);
+  const w = rect.width * scale;
+  const h = rect.height * scale;
+  return {x: view.x - (w - view.w) / 2, y: view.y - (h - view.h) / 2, w, h, pixels: rect.width};
+}
+
+function drawTiles() {
+  // Every level up to the one sharp at this zoom, for the part of the world on screen.
+  const shown = onScreen();
+  const wanted = (world.w / shown.w) * shown.pixels * (window.devicePixelRatio || 1);
+  let sharp = tiles.levels.findIndex(([width]) => width >= wanted);
+  if (sharp < 0) sharp = tiles.levels.length - 1;
+  const keep = new Set();
+  for (let level = 0; level <= sharp; level++) {
+    if (!tileLevels[level]) {
+      tileLevels[level] = document.createElementNS(SVG_NS, "g");
+      tileLayer.append(tileLevels[level]);
+    }
+    const [width, height] = tiles.levels[level];
+    const perX = world.w / width;  // world units a pixel of this level
+    const perY = world.h / height;
+    const span = (from, to, origin, per, count) => [
+      Math.max(0, Math.floor((from - origin) / (per * tiles.size))),
+      Math.min(count - 1, Math.floor((to - origin) / (per * tiles.size))),
+    ];
+    const [left, right] = span(shown.x, shown.x + shown.w, world.x, perX,
+      Math.ceil(width / tiles.size));
+    const [top, bottom] = span(shown.y, shown.y + shown.h, world.y, perY,
+      Math.ceil(height / tiles.size));
+    for (let column = left; column <= right; column++) {
+      for (let row = top; row <= bottom; row++) {
+        const key = `${level}/${column}_${row}`;
+        keep.add(key);
+        if (tileImages.has(key)) continue;
+        const image = document.createElementNS(SVG_NS, "image");
+        const across = Math.min(tiles.size + tiles.overlap, width - column * tiles.size);
+        const down = Math.min(tiles.size + tiles.overlap, height - row * tiles.size);
+        image.setAttribute("href", `${tiles.url}/${key}.webp`);
+        image.setAttribute("x", world.x + column * tiles.size * perX);
+        image.setAttribute("y", world.y + row * tiles.size * perY);
+        image.setAttribute("width", across * perX);
+        image.setAttribute("height", down * perY);
+        image.setAttribute("preserveAspectRatio", "none");
+        image.dataset.level = level;
+        tileImages.set(key, image);
+      }
+    }
+  }
+  for (const [key, image] of tileImages) {
+    if (!keep.has(key)) image.remove();
+    else if (!image.isConnected) tileLevels[image.dataset.level].append(image);
+  }
+}
+
+function markerScale() {
+  // On the game's map, markers are as big as a kilometre is long on screen allows -- the square
+  // root of it, within bounds, as on the header's map; on a grid, they're sized for the first
+  // view and grow by the square root of the zoom. Either way, close up they don't cover the map.
+  const perPixel = onScreen().w / onScreen().pixels;  // world units a screen pixel
+  if (world) {
+    const pixelsPerKm = 100000 / perPixel;
+    const size = Math.min(Math.max(Math.sqrt(pixelsPerKm / 400), 0.6), 1.2);
+    return (16 * size * perPixel) / markerUnit;  // a marker unit 16 screen pixels at full size
+  }
+  const zoom = initialView.w / view.w;
+  return Math.min(Math.max(Math.sqrt(zoom), 0.5), 1.6) / zoom;
+}
 
 function applyView() {
   svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
+  const scale = markerScale();
+  for (const [group, x, y] of markers) {
+    group.setAttribute("transform", `translate(${x} ${y}) scale(${scale}) translate(${-x} ${-y})`);
+  }
+  if (tileLayer) drawTiles();
 }
 
 function toSvgPoint(clientX, clientY) {
@@ -365,7 +590,7 @@ svg.addEventListener("wheel", (event) => {
   event.preventDefault();
   const point = toSvgPoint(event.clientX, event.clientY);
   const factor = event.deltaY > 0 ? 1.15 : 1 / 1.15;
-  const newWidth = Math.min(Math.max(view.w * factor, minWidth), maxWidth);
+  const newWidth = Math.min(Math.max(view.w * factor, minWidth()), maxWidth);
   const newHeight = newWidth * (initialView.h / initialView.w);
   view.x = point.x - (point.x - view.x) * (newWidth / view.w);
   view.y = point.y - (point.y - view.y) * (newHeight / view.h);
@@ -375,6 +600,10 @@ svg.addEventListener("wheel", (event) => {
 }, {passive: false});
 
 let drag = null;
+// The browser's own dragging of an image (a tile, an icon) or selecting of text would take the
+// press over from the map's drag.
+svg.addEventListener("dragstart", (event) => event.preventDefault());
+svg.addEventListener("mousedown", (event) => { if (event.button === 0) event.preventDefault(); });
 svg.addEventListener("pointerdown", (event) => {
   drag = {startX: event.clientX, startY: event.clientY, viewX: view.x, viewY: view.y};
   svg.setPointerCapture(event.pointerId);
@@ -392,4 +621,5 @@ svg.addEventListener("pointerup", endDrag);
 svg.addEventListener("pointercancel", endDrag);
 svg.addEventListener("pointerleave", endDrag);
 svg.addEventListener("dblclick", () => { view = {...initialView}; applyView(); });
+new ResizeObserver(() => applyView()).observe(svg);
 """

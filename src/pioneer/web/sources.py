@@ -67,10 +67,13 @@ def source_routes(
     names: Mapping[str, str],
     icons: Mapping[str, str],
     map_picture: str | None = None,
+    map_tiles: Mapping[str, Any] | None = None,
     world: tuple[float, float, float, float] | None = None,
 ) -> APIRouter:
     """`names` and `icons` are the knowledge base's in-game names and icon URLs, by id;
-    `map_picture` the URL of the game's map, and `world` the part of the world it shows."""
+    `map_picture` the URL of the game's map, `map_tiles` the tiles it's cut into (as
+    `map_presentation.MapTileSet.as_json` puts them), and `world` the part of the world it
+    shows."""
     router = APIRouter()
 
     def named(class_id: str) -> dict[str, Any]:
@@ -231,6 +234,7 @@ def source_routes(
 
         return {
             "image": map_picture,
+            "tiles": map_tiles,
             "world": dict(zip(("min_x", "min_y", "max_x", "max_y"), world, strict=True))
             if world
             else None,

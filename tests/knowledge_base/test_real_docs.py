@@ -305,3 +305,28 @@ def test_every_mam_research_is_in_a_tree(kb) -> None:
     ]
     quartz = dict(trees)["Quartz"]
     assert [t.name for t in quartz[:3]] == ["Quartz", "Quartz Crystals", "Silica"]
+
+
+def test_buildings_and_belts_know_what_unlocks_them(kb) -> None:
+    """From their build-gun recipes, which the knowledge base doesn't keep as recipes."""
+    miner_mk2 = building_for(kb, "Build_MinerMk2_C")
+    belts = {tier.building_id: tier for tier in kb.transport_tiers}
+
+    assert miner_mk2.unlockable_by == ("Schematic_4-1_C",)
+    assert building_for(kb, "Build_MinerMk3_C").unlockable_by == ("Schematic_8-4_C",)
+    assert belts["Build_ConveyorBeltMk5_C"].unlockable_by == ("Schematic_7-2_C",)
+    assert belts["Build_PipelineMK2_C"].unlockable_by == ("Schematic_6-5_C",)
+    assert all(tier.unlockable_by for tier in kb.transport_tiers)
+
+
+def test_extractors_say_what_they_are_built_on(kb) -> None:
+    built_on = {b.building_id: b.extracts_from for b in kb.buildings if b.extracts_from}
+
+    assert built_on == {
+        "Build_MinerMk1_C": "node",
+        "Build_MinerMk2_C": "node",
+        "Build_MinerMk3_C": "node",
+        "Build_OilPump_C": "node",
+        "Build_FrackingExtractor_C": "well",
+        "Build_WaterPump_C": "water",
+    }

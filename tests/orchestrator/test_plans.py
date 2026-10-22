@@ -7,9 +7,11 @@ from dataclasses import replace
 from typing import Any
 
 from pioneer.contracts import (
+    Building,
     ChangeAction,
     ChangeItem,
     Coordinates,
+    FactorySite,
     Item,
     ItemAmount,
     PlacementRecord,
@@ -17,7 +19,10 @@ from pioneer.contracts import (
     PlanTarget,
     ProductionGraph,
     ProductionNode,
+    Purity,
     Recipe,
+    ResourceNode,
+    SupplyReservation,
 )
 from pioneer.orchestrator.base import OrchestratorContext
 from pioneer.orchestrator.orchestrator import handle_query
@@ -451,3 +456,178 @@ def test_what_the_player_marked_built_is_told_to_the_model() -> None:
     assert "1 of 2 machines, by the latest save and what the player marked built (for the" in system
     assert shown["stages"][0]["marked_built_by_player"] == 1
     assert shown["built_so_far"] == {"machines_built": 1, "machines_to_build": 2}
+
+
+# --- where a plan is built ---------------------------------------------------------------------
+
+_MINER = Building(
+    "Build_MinerMk1_C", "Miner Mk.1", 5, 0, 1, extraction_rate_per_minute=60, extracts_from="node"
+)
+_BUILDINGS = (
+    Building("Build_SmelterMk1_C", "Smelter", 4, 1, 1),
+    Building("Build_ConstructorMk1_C", "Constructor", 4, 1, 1),
+    _MINER,
+)
+_NEAR = ResourceNode("near", "Desc_OreIron_C", Purity.IMPURE, Coordinates(x=1000, y=0))
+_FAR = ResourceNode("far", "Desc_OreIron_C", Purity.NORMAL, Coordinates(x=30_000, y=0))
+_ON_NODES = replace(_CONTEXT, buildings=_BUILDINGS, resource_nodes=(_NEAR, _FAR))
+
+
+def _mined(*nodes: ResourceNode) -> OrchestratorContext:
+    """`_ON_NODES` with a save in which a miner stands on each of `nodes`."""
+    return replace(
+        _ON_NODES,
+        existing_graph=_existing(smelters=0, constructors=0),
+        existing_placements=tuple(
+            PlacementRecord("Build_MinerMk1_C", node.position, resource_node_id=node.node_id)
+            for node in nodes
+        ),
+    )
+
+
+def test_a_plan_is_offered_with_where_it_is_built() -> None:
+    """60 ore: the impure node near the base is enough at 200%."""
+    result, (tool_result,), _ = _run(
+        _ON_NODES,
+        _call("plan_production", {"target_item_id": "Iron Plate", "target_rate_per_minute": 40}),
+    )
+
+    plan = result.plan_proposal
+    assert plan.sites is not None and plan.sites == result.build_sites
+    assert [d.resource_node_id for d in plan.sites.deposits] == ["near"]
+    assert tool_result["build_sites"]["sites"][0]["deposits"][0]["clock_percent"] == 200.0
+
+
+def test_a_revision_keeps_the_deposits_it_is_built_on() -> None:
+    """The player has put a miner on the plan's node. Asked for more, the plan keeps it — it's the
+    plan's own, not taken — and adds the normal node 300 m off for the rest, to the same site."""
+    plan = _proposed(
+        _ON_NODES,
+        "plan_production",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
+    )
+
+    result, tool_result = _revise(plan, _mined(_NEAR), targets={"Iron Plate": 60})
+
+    sites = result.plan_proposal.sites
+    assert {(d.resource_node_id, d.site_id) for d in sites.deposits} == {
+        ("near", "new_site_1"),
+        ("far", "new_site_1"),
+    }
+    assert sites.sites[0].position == plan.sites.sites[0].position
+    (site,) = tool_result["build_sites"]["sites"]
+    assert site["kept_from_plan"] is True
+    impure = next(d for d in site["deposits"] if d["purity"] == "impure")
+    assert (impure["clock_percent"], impure["extractors_built"]) == (250.0, 1)
+
+
+def test_show_plan_shows_where_it_is_built_as_accepted_and_how_far() -> None:
+    plan = _proposed(
+        _ON_NODES,
+        "plan_production",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
+    )
+    context = replace(_mined(_NEAR), plan=plan)
+
+    result, (tool_result,), requests = _run(context, _call("show_plan", {}))
+
+    assert result.build_sites == plan.sites
+    assert tool_result["build_sites"]["deposits_with_an_extractor"] == "1 of 1"
+    system = requests[0]["messages"][0]["content"]
+    assert (
+        "Built at: new_site_1; fed from 1 deposits, 1 of them with an extractor already" in system
+    )
+
+
+def test_deposits_other_plans_work_are_not_offered() -> None:
+    context = replace(_ON_NODES, reserved_node_ids=frozenset({"near"}))
+
+    plan = _proposed(
+        context,
+        "plan_production",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
+    )
+
+    assert [d.resource_node_id for d in plan.sites.deposits] == ["far"]
+
+
+def _two_factories(**fields: Any) -> OrchestratorContext:
+    """A megafactory — 3 smelters and a constructor, 60 ingots and 20 plates a minute to spare —
+    and 1 km off a lone smelter, 30 ingots to spare."""
+
+    def placed(recipe_id: str, building_id: str, x: float) -> PlacementRecord:
+        return PlacementRecord(building_id, Coordinates(x=x, y=0), recipe_id=recipe_id)
+
+    mega = tuple(placed("Recipe_IngotIron_C", "Build_SmelterMk1_C", 0) for _ in range(3)) + (
+        placed("Recipe_IronPlate_C", "Build_ConstructorMk1_C", 0),
+    )
+    lone = (placed("Recipe_IngotIron_C", "Build_SmelterMk1_C", 100_000),)
+    sites = (
+        FactorySite("site_1", Coordinates(x=0, y=0), mega),
+        FactorySite("site_2", Coordinates(x=100_000, y=0), lone),
+    )
+    return replace(
+        _CONTEXT,
+        existing_graph=_existing(smelters=4, constructors=1),
+        existing_placements=mega + lone,
+        factory_sites=sites,
+        **fields,
+    )
+
+
+def test_an_expansion_reserves_just_what_it_takes_of_a_megafactorys_spare() -> None:
+    """40 plates: the 20 spare, and 30 ingots for one more constructor — at the megafactory, which
+    extends: of its 60 spare ingots it gives 30, and the rest stays spare."""
+    result, (tool_result,), _ = _run(
+        _two_factories(),
+        _call(
+            "expand_existing_factory",
+            {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
+        ),
+    )
+
+    reserved = {
+        (r.site_id, r.item_id): r.rate_per_minute for r in result.plan_proposal.reservations
+    }
+    assert reserved == {("site_1", "Desc_IronPlate_C"): 20, ("site_1", "Desc_IronIngot_C"): 30}
+    ingots = next(
+        r for r in tool_result["reserved_from_factories"] if r["item_id"] == "Desc_IronIngot_C"
+    )
+    assert (ingots["per_minute"], ingots["site_spare_per_minute"]) == (30, 60)
+
+
+def test_what_other_plans_reserved_is_not_spare() -> None:
+    """Another conversation's plan took 60 of the megafactory's ingots: the 30 come from the lone
+    smelter now."""
+    theirs = SupplyReservation("site_1", Coordinates(x=0, y=0), "Desc_IronIngot_C", 60)
+
+    result, _, _ = _run(
+        _two_factories(reserved_supply=(theirs,)),
+        _call(
+            "expand_existing_factory",
+            {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
+        ),
+    )
+
+    reserved = {
+        (r.site_id, r.item_id): r.rate_per_minute for r in result.plan_proposal.reservations
+    }
+    assert reserved[("site_2", "Desc_IronIngot_C")] == 30
+    assert ("site_1", "Desc_IronIngot_C") not in reserved
+
+
+def test_a_revision_keeps_taking_what_it_reserved_from_where_it_did() -> None:
+    plan = _proposed(
+        _two_factories(),
+        "expand_existing_factory",
+        {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
+    )
+
+    result, tool_result = _revise(plan, _two_factories(), targets={"Iron Plate": 60})
+
+    reserved = {
+        (r.site_id, r.item_id): r.rate_per_minute for r in result.plan_proposal.reservations
+    }
+    assert reserved[("site_1", "Desc_IronPlate_C")] == 20
+    assert reserved[("site_1", "Desc_IronIngot_C")] >= 30
+    assert tool_result["reserved_from_factories"]

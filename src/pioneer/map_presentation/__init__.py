@@ -7,6 +7,7 @@ only on `pioneer.contracts`; tested against fixture data.
 from pioneer.map_presentation.renderer import (
     MapBackground,
     MapMarker,
+    MapTileSet,
     build_markers,
     compute_view_box,
     readable_id,
@@ -16,6 +17,7 @@ from pioneer.map_presentation.renderer import (
 __all__ = [
     "MapBackground",
     "MapMarker",
+    "MapTileSet",
     "build_markers",
     "compute_view_box",
     "readable_id",

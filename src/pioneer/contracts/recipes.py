@@ -74,6 +74,13 @@ class Building:
     """For a generator whose fuels need a supplemental resource: how much of it (m³ for fluids) it
     consumes per minute per MW it generates — 0.6 for the Coal-Powered Generator, whose 75 MW take
     45 m³ of water a minute. 0 for every other building."""
+    unlockable_by: tuple[str, ...] = ()
+    """Every technology that unlocks building it; any one of them is enough. Empty when the data
+    names none."""
+    extracts_from: str | None = None
+    """For an extractor, what it's built on: "node" (miners and the Oil Extractor, on a resource
+    node), "well" (the Resource Well Extractor, on a resource well's satellite node) or "water"
+    (the Water Extractor, on open water). `None` for every other building."""
 
 
 @dataclass(frozen=True)
@@ -85,6 +92,9 @@ class TransportTier:
     capacity_per_minute: float
     """Items per minute for a belt, m³ per minute for a pipe."""
     carries_fluids: bool
+    unlockable_by: tuple[str, ...] = ()
+    """Every technology that unlocks building it; any one of them is enough. Empty when the data
+    names none."""
 
 
 @dataclass(frozen=True)

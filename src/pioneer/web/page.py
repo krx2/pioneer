@@ -259,6 +259,7 @@ body { padding-bottom: 120px; }
 }
 .plan-makes { margin: 8px 0 0; }
 .plan-graph { flex: none; color: var(--ficsit); }
+.plan-links { flex: none; display: flex; gap: 12px; }
 .plan-section h3 {
   margin: 14px 0 4px; color: var(--muted); font: 12px var(--display);
   text-transform: uppercase; letter-spacing: 0.08em;
@@ -282,6 +283,12 @@ body { padding-bottom: 120px; }
   flex: none; min-width: 52px; text-align: right; font-variant-numeric: tabular-nums;
 }
 .plan-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.plan-sites { margin: 0; padding: 0; list-style: none; }
+.plan-sites > li { padding: 5px 0; border-top: 1px solid var(--line); }
+.plan-sites > li:first-child { border-top: 0; }
+.plan-site-head { display: flex; align-items: baseline; gap: 10px; }
+.plan-site-head span, .plan-site-builds { color: var(--muted); font-size: 12px; }
+.plan-site-builds { display: block; margin-top: 2px; }
 .plan-history > li { padding: 8px 0; border-top: 1px solid var(--line); }
 .plan-revision-head { display: flex; align-items: baseline; gap: 10px; }
 .plan-revision-head span { color: var(--muted); font-size: 12px; }
@@ -655,16 +662,50 @@ function planPanel() {
   const head = element("div", "plan-panel-head");
   head.appendChild(element("p", "plan-makes", `Makes ${describeTargets(plan.targets)}`));
   if (plan.response_id) {
-    const graph = element("a", "plan-graph", "Open graph");
-    graph.href = `/responses/${encodeURIComponent(plan.response_id)}/graph`;
-    graph.target = "_blank";
-    graph.rel = "noopener";
-    head.appendChild(graph);
+    const links = element("span", "plan-links");
+    for (const [kind, label] of [["graph", "Open graph"], ["map", "Open map"]]) {
+      if (kind === "map" && !plan.where) continue;
+      const link = element("a", "plan-graph", label);
+      link.href = `/responses/${encodeURIComponent(plan.response_id)}/${kind}`;
+      link.target = "_blank";
+      link.rel = "noopener";
+      links.appendChild(link);
+    }
+    head.appendChild(links);
   }
   panel.appendChild(head);
+  if (plan.where) panel.appendChild(planWhere(plan.where));
   if (plan.progress) panel.appendChild(planStages(plan.progress));
   if (plan.history && plan.history.length) panel.appendChild(planHistory(plan.history));
   return panel;
+}
+
+// Where the plan is built: each site with its deposits -- how many have an extractor standing on
+// them yet -- and what it builds, and what the plan takes of the factories' spare output.
+function planWhere(where) {
+  const section = element("section", "plan-section");
+  section.appendChild(element("h3", "", "Where"));
+  const list = element("ul", "plan-sites");
+  for (const site of where.sites) {
+    const item = element("li");
+    const head = element("div", "plan-site-head");
+    const deposits = site.with_extractor === null
+      ? `${site.deposits} deposit${site.deposits === 1 ? "" : "s"}`
+      : `${site.with_extractor}/${site.deposits} deposits with an extractor`;
+    head.append(element("b", "", site.site_id),
+      element("span", "", `${deposits} · ${site.mines.join(", ")}`));
+    item.appendChild(head);
+    if (site.builds.length) {
+      item.appendChild(element("span", "plan-site-builds", `Builds ${site.builds.join(", ")}`));
+    }
+    list.appendChild(item);
+  }
+  for (const taken of where.reserved) {
+    list.appendChild(element("li", "plan-site-builds",
+      `Takes ${formatRate(taken.rate_per_minute)}/min ${taken.item} of ${taken.site_id}'s spare`));
+  }
+  section.appendChild(list);
+  return section;
 }
 
 function planStages(progress) {

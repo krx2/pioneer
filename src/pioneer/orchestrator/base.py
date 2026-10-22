@@ -19,6 +19,8 @@ from pioneer.contracts import (
     RankedLocation,
     Recipe,
     ResourceNode,
+    SitePlan,
+    SupplyReservation,
     Technology,
     TransportLink,
     TransportTier,
@@ -104,6 +106,12 @@ class OrchestratorContext:
     """The plan the player accepted in this conversation, if they have: the model is shown it, and
     can draw and revise it (see `plan_tools`). `None`: an answer that plans something offers its
     plan to be accepted instead."""
+    reserved_node_ids: frozenset[str] = frozenset()
+    """Resource nodes the plans of the player's other conversations work: no plan here is offered
+    them."""
+    reserved_supply: tuple[SupplyReservation, ...] = ()
+    """What the plans of the player's other conversations take of their factories' spare output:
+    not spare for a plan here."""
 
 
 @dataclass
@@ -114,6 +122,8 @@ class _ArtifactAccumulator:
     graph: ProductionGraph | None = None
     map_locations: tuple[RankedLocation, ...] | None = None
     map_reference: Coordinates | None = None
+    site_plan: SitePlan | None = None
+    """Where the plan in this answer is to be built; its deposits are `map_locations`."""
     factory_sites: tuple[FactorySite, ...] | None = None
     grounding: list[str] = field(default_factory=list)
     missing_recipes: list[str] = field(default_factory=list)

@@ -10,6 +10,10 @@ How far the player has built it is told by the Verifier from the save (`StagePro
 stands of each stage's recipe beyond what stood when it came into the plan -- or what the player
 marked built by hand, where that's more.
 
+Where it's built comes with it (`Plan.sites`): its deposits and sites, kept as they were accepted
+-- a revision adds deposits for more or drops what's no longer needed, but moves none -- and what
+it reserves of the spare output of the player's factories (`Plan.reservations`).
+
 Mappings are tuples of pairs, so a plan stays a plain frozen value like every other contract.
 """
 
@@ -17,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pioneer.contracts.locations import SitePlan, SupplyReservation
 from pioneer.contracts.planning import ChangeItem
 from pioneer.contracts.production_graph import ProductionGraph
 
@@ -56,6 +61,12 @@ class Plan:
     """Recipe id -> how many of its machines the player marked built by hand: counted as built
     whatever the save says, which may be older than what they've done. Kept by the conversation
     beside the plan, across its revisions -- not part of what a revision proposes."""
+    sites: SitePlan | None = None
+    """Where the plan is built: the deposits it's fed from, worked how, and the sites its stages
+    go to. `None` for a plan made before plans kept it, or with no node data to choose from."""
+    reservations: tuple[SupplyReservation, ...] = ()
+    """What the plan takes of the spare output of the player's factories, factory by factory --
+    for a plan extending the factory. Other plans aren't offered it."""
 
 
 @dataclass(frozen=True)

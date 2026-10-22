@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pioneer.contracts.geometry import Coordinates
-from pioneer.contracts.locations import FactorySite, RankedLocation
+from pioneer.contracts.locations import FactorySite, RankedLocation, SitePlan
 from pioneer.contracts.plan import Plan
 from pioneer.contracts.production_graph import ProductionGraph
 
@@ -37,6 +37,9 @@ class ResponseArtifact:
     distances are checked against (architecture.md §6)."""
     factory_sites: tuple[FactorySite, ...] | None = None
     """The player's existing factories the answer points at — where an expansion extends."""
+    build_sites: SitePlan | None = None
+    """Where the answer's plan is to be built — its deposits, worked how, on how many sites, and
+    what goes between them. Its deposits are `map_locations` too."""
     feedback: Feedback | None = None
     question: str | None = None
     """The player's message this answers."""

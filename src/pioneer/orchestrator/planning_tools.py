@@ -43,6 +43,8 @@ from pioneer.orchestrator.existing_factory import (
 )
 from pioneer.orchestrator.items import _item_summary, _resolve_item_id, raw_resource_ids
 from pioneer.orchestrator.plans import propose_plan
+from pioneer.orchestrator.reservations import reservation_summary, reserve, unreserved
+from pioneer.orchestrator.sites import _build_sites
 from pioneer.orchestrator.summaries import _graph_summary, _per_item, _stage_power
 from pioneer.production_planner import (
     MissingRecipe,
@@ -61,7 +63,6 @@ from pioneer.verifier import (
 )
 
 _DEFAULT_COMPARISON_RATE = 10.0
-_WATER_ID = "Desc_Water_C"
 _SEPARATE_PLAN = (
     "this is a separate plan, not a change to the player's plan for this conversation: to change "
     "theirs -- or add this target to it -- call revise_plan"
@@ -120,12 +121,15 @@ def _handle_plan_production(
         **_needs_unlocking(graph, context),
     }
     accumulator.graph = graph
+    raw_inputs = _per_item(f for f in graph.flows if f.source_node_id is None)
+    sites_found, sites = _build_sites(raw_inputs, context, accumulator, graph)
     if context.plan is None:
-        accumulator.plan_proposal = propose_plan(context, {target_item_id: target_rate}, graph)
+        accumulator.plan_proposal = propose_plan(
+            context, {target_item_id: target_rate}, graph, sites=sites
+        )
     else:
         summary["note"] = _SEPARATE_PLAN
-    raw_inputs = _per_item(f for f in graph.flows if f.source_node_id is None)
-    summary.update(_suggest_sites(raw_inputs, context, accumulator))
+    summary.update(sites_found)
     return _with_spare_power(summary, context)
 
 
@@ -142,9 +146,10 @@ def _handle_expand_existing_factory(
     raw_item_ids = raw_resource_ids(context)
     try:
         existing_balance = _existing_item_balance(context)
+        spare = unreserved(existing_balance, context)  # what other plans reserved isn't spare
         surplus = {
             item_id: rate
-            for item_id, rate in existing_balance.items()
+            for item_id, rate in spare.items()
             if rate > 0 and item_id not in raw_item_ids
         }
         additions = _plan(
@@ -186,6 +191,30 @@ def _handle_expand_existing_factory(
     extended_sites = tuple({site.site_id: site for site in at_site.values()}.values())
     if extended_sites:
         accumulator.factory_sites = extended_sites
+    items_in_plan = {flow.item_id for flow in additions.flows}
+    raw_needed = _per_item(
+        flow
+        for flow in additions.flows
+        if flow.source_node_id is None and flow.item_id in raw_item_ids
+    )
+    drawn = _per_item(
+        flow for flow in additions.flows if flow.source_node_id is None and flow.item_id in surplus
+    )
+    # Ore the factory mines to spare is used before any new deposit: reserved like the rest.
+    mined_spare = {
+        item_id: min(rate, spare[item_id])
+        for item_id, rate in raw_needed.items()
+        if spare.get(item_id, 0.0) > 0
+    }
+    # The ore goes to the factory being extended: its deposits are sought from there.
+    near = extended_sites[0].position if extended_sites else None
+    reservations = reserve(drawn | mined_spare, context, spare, near=near)
+    uncovered = {
+        item_id: rate - mined_spare.get(item_id, 0.0)
+        for item_id, rate in raw_needed.items()
+        if rate > mined_spare.get(item_id, 0.0) + _RATE_EPSILON
+    }
+    sites_found, sites = _build_sites(uncovered, context, accumulator, reference=near)
     if change_set.resulting_graph.nodes:  # nothing to build is nothing to draw, nor to plan
         accumulator.graph = change_set.resulting_graph
         if context.plan is None:
@@ -194,27 +223,17 @@ def _handle_expand_existing_factory(
                 {target_item_id: target_rate},
                 change_set.resulting_graph,
                 available_supply=surplus,
+                sites=sites,
+                reservations=reservations,
             )
-    items_in_plan = {flow.item_id for flow in additions.flows}
-    raw_needed = _per_item(
-        flow
-        for flow in additions.flows
-        if flow.source_node_id is None and flow.item_id in raw_item_ids
-    )
     result: dict[str, Any] = {
         "target_item_id": target_item_id,
         "target_rate_per_minute": target_rate,
         "changes": changes,
-        "drawn_from_existing_surplus_per_minute": _per_item(
-            flow
-            for flow in additions.flows
-            if flow.source_node_id is None and flow.item_id in surplus
-        ),
+        "drawn_from_existing_surplus_per_minute": drawn,
         "raw_resources_needed_per_minute": raw_needed,
         "spare_extraction_per_minute": {
-            item_id: existing_balance[item_id]
-            for item_id in raw_needed
-            if existing_balance.get(item_id, 0.0) > 0
+            item_id: spare[item_id] for item_id in raw_needed if spare.get(item_id, 0.0) > 0
         },
         "existing_shortfalls_per_minute": {
             item_id: -rate
@@ -227,12 +246,9 @@ def _handle_expand_existing_factory(
         result["note"] = _SEPARATE_PLAN
     if extended_sites:
         result["sites"] = {site.site_id: _site_summary(site, context) for site in extended_sites}
-    uncovered = {
-        item_id: rate - max(existing_balance.get(item_id, 0.0), 0.0)
-        for item_id, rate in raw_needed.items()
-        if rate > max(existing_balance.get(item_id, 0.0), 0.0)
-    }
-    result.update(_suggest_sites(uncovered, context, accumulator))
+    if reservations:
+        result["reserved_from_factories"] = reservation_summary(reservations, context, spare)
+    result.update(sites_found)
     if all("power_mw" in change for change in changes):
         added = added_machines(change_set.resulting_graph)
         result["added_power_draw_mw"] = power_balance(added, context.buildings)
@@ -426,6 +442,13 @@ def _handle_rank_locations(
         )
     item_id = _resolve_item_id(args["item_id"], context)
     reference = reference_point(args, context)
+    if args.get("rate_per_minute") is not None:
+        rate = _target_rate({"target_rate_per_minute": args["rate_per_minute"]})
+        sites, _ = _build_sites(
+            {item_id: rate}, context, accumulator, reference=reference, replace_map=True
+        )
+        if sites:
+            return {"reference": {"x": reference.x, "y": reference.y, "z": reference.z}, **sites}
     count = int(args.get("count", 5))
     if count < 1:
         raise _ToolError(f"count must be at least 1, got {count}")
@@ -433,6 +456,7 @@ def _handle_rank_locations(
     top = ranked[:count]
     accumulator.map_locations = top
     accumulator.map_reference = reference
+    accumulator.site_plan = None
     return {
         "reference": {"x": reference.x, "y": reference.y, "z": reference.z},
         "locations": [
@@ -479,40 +503,6 @@ def _handle_answer_question(
         return {"answer": None, "note": "no relevant passages found for this question"}
     assert isinstance(result, LLMUnavailable)
     return {"answer": None, "error": f"LLM unavailable: {result.reason}"}
-
-
-def _suggest_sites(
-    raw_rates: Mapping[str, float],
-    context: OrchestratorContext,
-    accumulator: _ArtifactAccumulator,
-) -> dict[str, Any]:
-    """`{"suggested_sites": ...}`: the best free deposit for each raw resource in `raw_rates`, from
-    the player's base -- also published as the answer's map, unless something already is. Water
-    needs no deposit (extractors go on any open water), so it gets none."""
-    if not context.resource_nodes:
-        return {}
-    reference = reference_point({}, context)
-    suggestions: dict[str, Any] = {}
-    locations = []
-    for item_id in sorted(raw_rates):
-        if item_id == _WATER_ID:
-            continue
-        ranked = rank_locations(
-            item_id, context.resource_nodes, context.existing_placements, reference
-        )
-        if not ranked:
-            continue
-        best = ranked[0]
-        locations.append(best)
-        suggestions[item_id] = {
-            "resource_node_id": best.resource_node_id,
-            "purity": best.purity.value,
-            "distance_m": best.distance_to_reference / _CM_PER_M,
-        }
-    if locations and accumulator.map_locations is None:
-        accumulator.map_locations = tuple(locations)
-        accumulator.map_reference = reference
-    return {"suggested_sites": suggestions} if suggestions else {}
 
 
 class _PlanningBlocked(Exception):

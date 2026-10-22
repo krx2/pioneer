@@ -22,6 +22,7 @@ from pioneer.contracts import (
     ResourceNode,
     ResponseArtifact,
 )
+from pioneer.map_image import MapTiles
 from pioneer.orchestrator import OrchestratorContext, OrchestratorUnavailable
 from pioneer.save_parser import SaveHeader, SaveState
 from pioneer.verification_feedback import (
@@ -642,3 +643,25 @@ def test_the_map_picture_is_served_and_drawn_under_answer_maps(tmp_path) -> None
     assert without.get("/map-image/map.jpg").status_code == 404
     assert '<image class="world" href="/map-image/map.jpg"' in page
     assert 'class="world"' not in plain
+
+
+def test_map_tiles_are_served_and_drawn_under_answer_maps_instead_of_the_picture(tmp_path) -> None:
+    (tmp_path / "1").mkdir()
+    (tmp_path / "1" / "1_0.webp").write_bytes(b"RIFF fake webp")
+    picture = tmp_path / "map.jpg"
+    picture.write_bytes(b"\xff\xd8 fake jpeg")
+    tiles = MapTiles(tmp_path, 512, 1, ((600, 400), (1200, 800)))
+    client, _ = _client(_artifact(map_locations=(_SITE,)), map_image=picture, map_tiles=tiles)
+
+    page = client.get(_ask(client).json()["map_url"]).text
+    tile = client.get("/map-tiles/1/1_0.webp")
+
+    assert tile.content == b"RIFF fake webp"
+    assert tile.headers["content-type"] == "image/webp"
+    assert client.get("/map-tiles/1/0_0.webp").status_code == 404  # not there
+    assert client.get("/map-tiles/1/3_0.webp").status_code == 404  # past the level's edge
+    assert client.get("/map-tiles/2/0_0.webp").status_code == 404  # no such level
+    assert client.get("/map-image/map.jpg").status_code == 200  # pages kept from before tiles
+    assert '<g class="world-tiles"></g>' in page
+    assert '"levels": [[600, 400], [1200, 800]]' in page
+    assert 'class="world"' not in page

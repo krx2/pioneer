@@ -13,7 +13,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from pioneer.contracts import Plan, PlanTarget, ProductionGraph, StageProgress
+from pioneer.contracts import (
+    Plan,
+    PlanTarget,
+    ProductionGraph,
+    SitePlan,
+    StageProgress,
+    SupplyReservation,
+)
 from pioneer.orchestrator.base import OrchestratorContext
 from pioneer.verifier import buildings_by_recipe, plan_progress
 
@@ -24,9 +31,12 @@ def propose_plan(
     graph: ProductionGraph,
     *,
     available_supply: Mapping[str, float] | None = None,
+    sites: SitePlan | None = None,
+    reservations: Sequence[SupplyReservation] = (),
 ) -> Plan:
     """The plan `graph` is, offered to the player: from scratch, or -- given the existing factory's
-    `available_supply` it was planned on -- extending their factory."""
+    `available_supply` it was planned on -- extending their factory; built where `sites` says,
+    taking what `reservations` say of their factories' spare output."""
     recipe_ids = dict.fromkeys(node.recipe_id for node in graph.nodes)
     machines = machines_by_recipe(context.existing_graph)
     buildings = standing_buildings(context)
@@ -40,6 +50,8 @@ def propose_plan(
         baseline_buildings=(
             tuple((r, buildings.get(r, 0)) for r in recipe_ids) if buildings is not None else ()
         ),
+        sites=sites,
+        reservations=tuple(reservations),
     )
 
 
@@ -77,10 +89,26 @@ def progress_of(plan: Plan, context: OrchestratorContext) -> tuple[StageProgress
     )
 
 
-def plan_note(plan: Plan, names: Mapping[str, str], progress: Sequence[StageProgress]) -> str:
+def deposits_built(plan: Plan, context: OrchestratorContext) -> tuple[int, int] | None:
+    """How many of the plan's deposits have an extractor standing on them in the save, of how
+    many -- `None` for a plan keeping no deposits, or with no save to tell."""
+    if plan.sites is None or not plan.sites.deposits or context.existing_graph is None:
+        return None
+    built = {p.resource_node_id for p in context.existing_placements if p.resource_node_id}
+    deposits = plan.sites.deposits
+    return sum(d.resource_node_id in built for d in deposits), len(deposits)
+
+
+def plan_note(
+    plan: Plan,
+    names: Mapping[str, str],
+    progress: Sequence[StageProgress],
+    deposits: tuple[int, int] | None = None,
+) -> str:
     """The player's plan as the model is shown it, next to what data it has: what the plan makes,
     every stage and how much of it is built, in the game's names -- with each recipe's id, which
-    revise_plan takes."""
+    revise_plan takes -- and where it's built: its sites and deposits (`deposits`: how many have
+    an extractor already, of how many), and what it reserves of the factories' spare output."""
     targets = ", ".join(
         f"{target.rate_per_minute:g}/min {names.get(target.item_id, target.item_id)}"
         for target in plan.targets
@@ -104,18 +132,39 @@ def plan_note(plan: Plan, names: Mapping[str, str], progress: Sequence[StageProg
     basis = (
         "it extends their existing factory" if plan.extends_factory else "it's planned from scratch"
     )
+    where = _where(plan, names, deposits)
     return (
         f"The player's plan for this conversation -- revision {plan.revision}, accepted by the "
         f"player; {basis}:\n"
         f"- Makes: {targets}\n"
         f"- Stages to build: {'; '.join(stages) or 'none'}\n"
         f"- Built so far: {_built_so_far(progress)}\n"
+        f"{where}"
         "Questions in this conversation are about this plan. To change it -- a target's rate, "
         "another target, a stage's recipe -- call revise_plan, never plan_production or "
         "expand_existing_factory: those make a separate plan, not a change to this one. To draw "
         "it, call show_plan. A revision becomes the plan only once the player accepts it on "
         "the page: say what it would change, never that the plan has changed."
     )
+
+
+def _where(plan: Plan, names: Mapping[str, str], deposits: tuple[int, int] | None) -> str:
+    """The note's lines on where the plan is built, each ending in a newline -- none when it
+    keeps nothing of it."""
+    lines = []
+    if plan.sites is not None and plan.sites.sites:
+        fed = f"{len(plan.sites.deposits)} deposits"
+        if deposits is not None:
+            fed += f", {deposits[0]} of them with an extractor already"
+        sites = ", ".join(site.site_id for site in plan.sites.sites)
+        lines.append(f"- Built at: {sites}; fed from {fed} (show_plan says which)\n")
+    if plan.reservations:
+        reserved = "; ".join(
+            f"{r.rate_per_minute:g}/min {names.get(r.item_id, r.item_id)} from {r.site_id}"
+            for r in plan.reservations
+        )
+        lines.append(f"- Reserves of the factories' spare output: {reserved}\n")
+    return "".join(lines)
 
 
 def _built_so_far(progress: Sequence[StageProgress]) -> str:

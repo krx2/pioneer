@@ -26,6 +26,7 @@ from pioneer.contracts import (
     TransportLink,
 )
 from pioneer.knowledge_base import KnowledgeBase
+from pioneer.map_image import MapTiles
 from pioneer.orchestrator import OrchestratorContext
 from pioneer.save_parser import SaveHeader, SaveState
 from pioneer.server_client import TransportError
@@ -538,7 +539,7 @@ def test_the_map_shows_each_factory_what_feeds_it_and_every_node(tmp_path) -> No
         ("node_taken", "pure", True),
         ("node_free", "impure", False),
     ]
-    assert (body["image"], body["world"]) == (None, None)
+    assert (body["image"], body["tiles"], body["world"]) == (None, None, None)
 
 
 def test_with_a_map_picture_the_map_says_where_it_lies(tmp_path) -> None:
@@ -548,9 +549,25 @@ def test_with_a_map_picture_the_map_says_where_it_lies(tmp_path) -> None:
     body = _map_client(tmp_path, map_image=picture).get("/api/map").json()
 
     assert body["image"] == "/map-image/map.jpg"
+    assert body["tiles"] is None
     assert body["world"] == {
         "min_x": -324_698.832031,
         "min_y": -375_000.0,
         "max_x": 425_301.832031,
         "max_y": 375_000.0,
     }
+
+
+def test_with_map_tiles_the_map_says_where_they_are(tmp_path) -> None:
+    tiles = MapTiles(tmp_path, 512, 1, ((625, 625), (1250, 1250)))
+
+    body = _map_client(tmp_path, map_tiles=tiles).get("/api/map").json()
+
+    assert body["tiles"] == {
+        "url": "/map-tiles",
+        "size": 512,
+        "overlap": 1,
+        "levels": [[625, 625], [1250, 1250]],
+    }
+    assert body["image"] is None
+    assert body["world"]["min_x"] == -324_698.832031

@@ -55,6 +55,10 @@ docs/implementation.md Stage 2 discussion) and encoded as deliberate choices bel
 - **Belt and pipe capacity** is `mSpeed` / 2 items a minute for a belt (Mk.1's 120 is 60/min) and
   `mFlowLimit` m³ a second for a pipeline. The export lists each pipeline twice — with and without
   flow indicators — at the same capacity; only the plain one is kept.
+- **What unlocks a building** is what unlocks its build-gun recipe (`Recipe_MinerMk2_C`), whose
+  product is the building's build-menu descriptor (`Desc_MinerMk2_C`) — the building itself is
+  `Build_MinerMk2_C`. So `Building.unlockable_by` and `TransportTier.unlockable_by` come from those
+  recipes, though the recipes themselves aren't kept.
 - **Generators consume more than fuel.** Each entry of a generator's `mFuel` names, per fuel, a
   supplemental resource (water, for coal and nuclear) and a byproduct (nuclear waste, with
   `mByproductAmount` per fuel unit). How much supplemental resource is consumed comes from the
@@ -100,6 +104,12 @@ _EXTRACTOR_NATIVE_CLASSES = (
     "FGBuildableWaterPump",
     "FGBuildableFrackingExtractor",
 )
+_EXTRACTS_FROM = {
+    "FGBuildableResourceExtractor": "node",
+    "FGBuildableFrackingExtractor": "well",
+    "FGBuildableWaterPump": "water",
+}
+_BUILD_GUN = "BP_BuildGun_C"
 _GENERATOR_NATIVE_CLASSES = (
     "FGBuildableGeneratorFuel",
     "FGBuildableGeneratorNuclear",
@@ -172,15 +182,40 @@ def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
         )
         for recipe in recipes
     )
+    building_unlocks = _building_unlocks(
+        entries_by_native_class.get(_RECIPE_NATIVE_CLASS, []), recipe_to_technologies
+    )
 
     return KnowledgeBase(
         recipes=recipes,
-        buildings=buildings,
+        buildings=tuple(
+            replace(building, unlockable_by=building_unlocks.get(building.building_id, ()))
+            for building in buildings
+        ),
         technologies=technologies,
         items=items,
         descriptions=_load_descriptions(entries_by_native_class),
-        transport_tiers=_load_transport_tiers(entries_by_native_class),
+        transport_tiers=tuple(
+            replace(tier, unlockable_by=building_unlocks.get(tier.building_id, ()))
+            for tier in _load_transport_tiers(entries_by_native_class)
+        ),
     )
+
+
+def _building_unlocks(
+    recipe_entries: list[dict[str, Any]], recipe_to_technologies: dict[str, list[str]]
+) -> dict[str, tuple[str, ...]]:
+    """Per building, every technology unlocking the build-gun recipe that places it — see the
+    module docstring."""
+    unlocks: dict[str, tuple[str, ...]] = {}
+    for entry in recipe_entries:
+        if _BUILD_GUN not in parse_quoted_class_list(entry.get("mProducedIn", "")):
+            continue
+        technologies = tuple(recipe_to_technologies.get(entry["ClassName"], ()))
+        for descriptor, _ in parse_item_amounts(entry.get("mProduct", "")):
+            if descriptor.startswith("Desc_") and technologies:
+                unlocks.setdefault("Build_" + descriptor.removeprefix("Desc_"), technologies)
+    return unlocks
 
 
 def _load_transport_tiers(
@@ -380,6 +415,7 @@ def _load_buildings(
                     fixed_resource_id=fixed_resource_id,
                     fuels=fuels,
                     supplemental_per_minute_per_mw=_supplemental_rate(entry, fuels, fluid_item_ids),
+                    extracts_from=_EXTRACTS_FROM.get(native_class),
                 )
             )
     return tuple(buildings)

@@ -97,7 +97,7 @@ from pioneer.orchestrator.base import (
     _ArtifactAccumulator,
 )
 from pioneer.orchestrator.items import display_names
-from pioneer.orchestrator.plans import plan_note, progress_of
+from pioneer.orchestrator.plans import deposits_built, plan_note, progress_of
 from pioneer.orchestrator.progress import describe_tool_call
 from pioneer.orchestrator.tool_calls import (
     _assistant_message,
@@ -138,6 +138,11 @@ _SYSTEM_PROMPT = (
     "turned on and that any one of its `any_of` recipes will do; for one they haven't unlocked "
     "yet, say what unlocks it (`unlock_with`). Several entries are all needed. The page offers a "
     "button that opens the player's recipe list on exactly those recipes.\n\n"
+    "A plan's `build_sites` says where to build it: one site with every deposit close by, or "
+    "several, each building the parts its own deposits are for (`builds`) and sending them on "
+    "(`sends`). Give, per site, its deposits as listed -- how many nodes of which purity, the "
+    "extractor, its clock speed and power shards -- and for several sites what each builds and "
+    "sends where. Never pick deposits or sites yourself.\n\n"
     "Answer only what was asked. A simple lookup -- how much the factory produces, an item's "
     "balance, what a recipe needs -- is one tool call: make it, then report its numbers (a "
     "short list or table is fine) with no diagnosis, recommendations or follow-up offers the "
@@ -183,7 +188,12 @@ def handle_query(
         grounding=[question, *(text for turn in history for text in turn)]
     )
     if context.plan is not None:
-        note = plan_note(context.plan, names, progress_of(context.plan, context))
+        note = plan_note(
+            context.plan,
+            names,
+            progress_of(context.plan, context),
+            deposits_built(context.plan, context),
+        )
         system += f"\n\n{note}"
         accumulator.grounding.append(note)
     tools = _build_tools(
@@ -217,6 +227,7 @@ def handle_query(
                 map_locations=accumulator.map_locations,
                 map_reference=accumulator.map_reference,
                 factory_sites=accumulator.factory_sites,
+                build_sites=accumulator.site_plan,
                 question=question,
                 grounding=tuple(accumulator.grounding),
                 missing_recipes=tuple(dict.fromkeys(accumulator.missing_recipes)),

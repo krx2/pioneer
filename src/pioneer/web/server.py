@@ -36,7 +36,8 @@ The icons in `icon_dir` (see `pioneer.icons`) are served under `/icons/`, and ev
 which ids have one: an item or building its own, a recipe the item it makes. Without the folder,
 or for an id with no icon in it, the pages draw what they drew before icons existed. Likewise the
 picture of the game's map, `map_image` (see `pioneer.map_image`): served under `/map-image/`, it
-lies under every map's markers; without it, maps draw their grid.
+lies under every map's markers; without it, maps draw their grid. The tiles it's cut into,
+`map_tiles`, are served under `/map-tiles/` and drawn instead, when there are any.
 
 Given the `app.LiveContext` the context comes from, the app also serves what the page's header
 shows and steers: `/api/status` says, source by source, what the context is built from — the
@@ -63,8 +64,8 @@ from pioneer.app import LiveContext
 from pioneer.chat_presentation import render_message
 from pioneer.contracts import Feedback, Plan, ProductionGraph, ResponseArtifact
 from pioneer.graph_presentation import render_page as render_graph_page
-from pioneer.map_image import WORLD_BOUNDS
-from pioneer.map_presentation import MapBackground
+from pioneer.map_image import WORLD_BOUNDS, MapTiles
+from pioneer.map_presentation import MapBackground, MapTileSet
 from pioneer.map_presentation import render_page as render_map_page
 from pioneer.orchestrator import (
     OrchestratorContext,
@@ -169,6 +170,7 @@ def create_app(
     icon_dir: Path | None = None,
     conversations: ConversationStore | None = None,
     map_image: Path | None = None,
+    map_tiles: MapTiles | None = None,
 ) -> FastAPI:
     """`live`, when given, is where `context` comes from, and the header's panels show and steer
     its sources; without it, `context` alone says what the assistant knows."""
@@ -197,9 +199,17 @@ def create_app(
     icons = icon_urls(first, with_icons)
     chat_icons = named_icons(first, icons)
     known_ids = set(response_log.response_ids()) if response_log is not None else set()
+    picture = map_image if map_image is not None and map_image.is_file() else None
+    tile_set = (
+        MapTileSet("/map-tiles", map_tiles.tile_size, map_tiles.overlap, map_tiles.levels)
+        if map_tiles is not None
+        else None
+    )
     background = (
-        MapBackground(f"/map-image/{map_image.name}", *WORLD_BOUNDS)
-        if map_image is not None and map_image.is_file()
+        MapBackground(
+            f"/map-image/{picture.name}" if picture else None, *WORLD_BOUNDS, tiles=tile_set
+        )
+        if picture or tile_set
         else None
     )
 
@@ -233,6 +243,7 @@ def create_app(
             names=names,
             icons=icons,
             map_picture=background.href if background else None,
+            map_tiles=tile_set.as_json() if tile_set else None,
             world=WORLD_BOUNDS if background else None,
         )
     )
@@ -266,16 +277,47 @@ def create_app(
             accepted = conversations.plan(conversation_id)
         return plan_of(accepted)
 
+    def reserved_elsewhere(conversation_id: str | None) -> dict[str, Any]:
+        """What the plans of every other conversation have reserved -- the deposits they work and
+        what they take of the factories' spare output -- as the context's fields take it: not to
+        be offered to a plan in this one."""
+        if conversations is None:
+            return {}
+        with lock:
+            accepted = conversations.accepted_plans()
+        others = [
+            plan
+            for other, kept in accepted.items()
+            if other != conversation_id and (plan := plan_of(kept)) is not None
+        ]
+        return {
+            "reserved_node_ids": frozenset(
+                deposit.resource_node_id
+                for plan in others
+                if plan.sites is not None
+                for deposit in plan.sites.deposits
+            ),
+            "reserved_supply": tuple(r for plan in others for r in plan.reservations),
+        }
+
     def accepted_summary(accepted: dict[str, Any] | None) -> dict[str, Any] | None:
         """What the page shows of a conversation's plan -- with how far the save in use has
-        built it, and the revisions it went through -- and which answer proposed it."""
+        built it, where it's built, and the revisions it went through -- and which answer
+        proposed it."""
         plan = plan_of(accepted)
         if accepted is None or plan is None:
             return None
-        progress = progress_of(plan, context()[0])
+        current = context()[0]
+        progress = progress_of(plan, current)
         as_of = live.sources().save.saved_at if live is not None else None
+        worked = (
+            {p.resource_node_id for p in current.existing_placements if p.resource_node_id}
+            if current.existing_graph is not None
+            else None
+        )
+        summary = plan_summary(plan, names, progress, as_of=as_of, icons=icons, worked_nodes=worked)
         return {
-            **plan_summary(plan, names, progress, as_of=as_of, icons=icons),
+            **summary,
             "response_id": accepted.get("response_id"),
             "accepted_at": accepted.get("accepted_at"),
             "history": history_summary(accepted.get("history"), names),
@@ -293,8 +335,7 @@ def create_app(
         """Answers, verifies, remembers and stores one question: the body both endpoints send."""
         current, status = context()
         plan = conversation_plan(request.conversation_id)
-        if plan is not None:
-            current = replace(current, plan=plan)
+        current = replace(current, plan=plan, **reserved_elsewhere(request.conversation_id))
         history = [(turn.question, turn.answer) for turn in request.history]
         steps: list[str] = []
         thoughts: list[str] = []
@@ -499,9 +540,18 @@ def create_app(
 
     @app.get("/map-image/{name}")
     def map_picture(name: str) -> FileResponse:
-        if background is None or map_image is None or name != map_image.name:
+        if picture is None or name != picture.name:
             raise HTTPException(status_code=404, detail="no such map image")
-        return FileResponse(map_image, headers={"Cache-Control": "public, max-age=86400"})
+        return FileResponse(picture, headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.get("/map-tiles/{level:int}/{column:int}_{row:int}.webp")
+    def map_tile(level: int, column: int, row: int) -> FileResponse:
+        tile = map_tiles.path(level, column, row) if map_tiles is not None else None
+        if tile is None:
+            raise HTTPException(status_code=404, detail="no such map tile")
+        return FileResponse(
+            tile, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"}
+        )
 
     @app.get("/icons/{class_id}.png")
     def icon(class_id: str) -> FileResponse:
@@ -587,6 +637,7 @@ def _render_map(
         icons=icons,
         factory_sites=artifact.factory_sites or (),
         background=background,
+        site_plan=artifact.build_sites,
     )
 
 

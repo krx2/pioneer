@@ -386,9 +386,13 @@ def test_an_expansion_on_a_real_save_names_where_to_build(kb) -> None:
     assert all(site["buildings"] > 50 for site in result["sites"].values())
     assert artifact.factory_sites is not None
     assert sorted(site.site_id for site in artifact.factory_sites) == ["site_1", "site_2"]
-    assert set(result["suggested_sites"]) == {"Desc_OreIron_C"}
+    sites = result["build_sites"]["sites"]
+    assert {d["item_id"] for site in sites for d in site["deposits"]} == {"Desc_OreIron_C"}
     mined = {p.resource_node_id for p in state.placements if p.resource_node_id}
-    assert result["suggested_sites"]["Desc_OreIron_C"]["resource_node_id"] not in mined
+    assert artifact.build_sites is not None
+    assert not {d.resource_node_id for d in artifact.build_sites.deposits} & mined
+    given = sum(d.rate_per_minute for d in artifact.build_sites.deposits)
+    assert given == pytest.approx(result["raw_resources_needed_per_minute"]["Desc_OreIron_C"])
 
 
 def test_real_saves_group_into_factory_sites(kb) -> None:

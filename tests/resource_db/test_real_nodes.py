@@ -44,3 +44,9 @@ def test_the_file_records_where_its_data_came_from() -> None:
 
     assert "GreyHak/sat_sav_parse" in provenance["source"]
     assert "GPL-3.0" in provenance["source_license"]
+
+
+def test_resource_wells_satellites_are_told_apart(db) -> None:
+    on_wells = Counter(node.item_id for node in db.nodes if node.on_well)
+
+    assert on_wells == {"Desc_NitrogenGas_C": 45, "Desc_Water_C": 55, "Desc_LiquidOil_C": 18}

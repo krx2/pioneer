@@ -370,6 +370,14 @@ numerically sufficient — matching the worked example in architecture.md §5.
 machines within 50 m of each other, through any chain of them — so an expansion can say where to
 build: real saves come out as 4 to 22 sites.
 
+`plan_sites` says where a whole plan is built: for each raw resource, the free nodes covering its
+need with the least capacity to spare (each worked by the extractor the caller names, overclocked
+up to what its belt carries), all on one site when they lie within 400 m of one spot, else split
+into sites each building the stages its own deposits are for, with what goes between them. Given
+the plan as it was (`kept`), it revises rather than chooses anew: the deposits stay — fewer for
+less, those built on first; more for more, near what's kept — and so do the sites and where each
+stage is built; nodes other plans work (`reserved`) are never offered.
+
 ---
 
 ## Stage 10 — Anomaly Detector (module)
@@ -460,8 +468,11 @@ many are new.
 
 Factory sites an answer points at render as pins too, labelled with what they mostly make. The
 background is the game's own map — the official one from the game's wiki, committed at
-`docs/map/map.jpg` like the icons — placed by the world's bounds (`pioneer.map_image`); without
-the file, a plain grid.
+`docs/map/map.jpg` like the icons — placed by the world's bounds (`pioneer.map_image`), and drawn
+from the tiles `python -m pioneer.map_image` cuts it into (`docs/map/tiles/`), only those on screen
+at the level sharp at the zoom; without tiles, the picture whole, and without either, a plain grid.
+Markers grow with the zoom by its square root, within bounds, so they neither cover the map close
+up nor bury it seen whole.
 
 ---
 
@@ -537,9 +548,11 @@ plumbs it together.
   name fits several items or none).
 - Planning and expansion results name each stage's building and its power, the power an expansion
   adds, and what the save's grid has to spare — so the model never has to guess a building or add
-  up watts itself. They also name the belt or pipe tier each flow needs, the best free deposit for
-  each raw input (published as the answer's map, so "I want to produce N/min of X" comes back as
-  Chat + Graph + Map), and, for an expansion, the factory site each extended recipe is built at.
+  up watts itself. They also name the belt or pipe tier each flow needs, where to build the plan
+  (`build_sites`: the free deposits for each raw input, with extractor, clock speed and power
+  shards, on one site or several each making its parts — published as the answer's map, so "I want
+  to produce N/min of X" comes back as Chat + Graph + Map), and, for an expansion, the factory
+  site each extended recipe is built at.
   Distances are in metres.
 - Planning prefers what the player has unlocked (from the save) and names what a stage still
   needs; `plan_unlocks` gives the unlock order with costs, `compare_recipes` plans every recipe
@@ -628,6 +641,13 @@ instead of planning anew and hoping the result looks similar. Design in architec
    (`POST .../plan/marks`; a mark counts as built for the model too), a link to the plan's graph,
    and the plan's revisions — when each was accepted, the question that asked for it, what it
    changed.
+4. *Where it's built, kept.* `Plan.sites` keeps the plan's deposits and sites as accepted, and
+   `Plan.reservations` what a plan extending the factory takes of each factory's spare output —
+   only what it uses (`orchestrator.reservations`: a factory's spare is its own surplus, scaled to
+   the whole factory's). `show_plan` shows them as kept, with how many deposits have an extractor
+   yet; `revise_plan` revises them (`plan_sites(kept=...)`, `reserve(kept=...)`) instead of
+   choosing anew. Every question runs with what the plans of the player's other conversations
+   reserved (`OrchestratorContext.reserved_node_ids`, `.reserved_supply`): never offered here.
 
 **Decisions along the way:**
 - The player accepts a plan and each revision; an answer never changes the plan on its own. Only a
