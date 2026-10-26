@@ -1,12 +1,8 @@
-"""Renders the `chat` field of a `ResponseArtifact` (implementation.md Stage 12) as HTML.
+"""Renders the `chat` field of a `ResponseArtifact` as HTML.
 
-Pure string templating — no LLM, no orchestrator, no other module, and no markdown dependency:
-just enough of the syntax (bold, italic, inline/fenced code, lists, headings, tables) that model
-answers tend to use. Everything that isn't markup is escaped, so this stays safe to drop into the
-page with `innerHTML`. `render_message` produces one chat-bubble; `render_page` wraps a sequence
-of them in a minimal standalone page so fixture chat payloads can be checked against a real
-interface (Stage 12's "done when"). Given icons by in-game name, `render_message` also puts each
-named item or building's icon in front of its name, outside code.
+No markdown dependency: just the syntax model answers use (bold, italic, inline and fenced code,
+lists, headings, tables). Everything that isn't markup is escaped, so the result is safe to insert
+with `innerHTML`. Given icons by in-game name, each named item or building gets its icon in front.
 """
 
 from __future__ import annotations
@@ -15,6 +11,8 @@ import html
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
+
+from pioneer.common import html_document, static_path
 
 Role = Literal["user", "assistant"]
 
@@ -94,18 +92,12 @@ def _inline(text: str, mark: Marker = _no_icons) -> str:
 
 
 def _render_blocks(text: str, mark: Marker = _no_icons) -> str:
-    """Walks `text` line by line rather than splitting on blank lines first: models routinely emit
-    a heading or a numbered item immediately followed by a run of `- ` sub-bullets with no blank
-    line in between (unindented, so not proper CommonMark nesting) -- a blank-line-delimited block
-    splitter never recognizes those as a heading/list at all and falls back to one flat paragraph.
-    Line-by-line, each line is classified on its own; consecutive lines of the same kind are
-    grouped (so `- `/`* ` runs still become one `<ul>`), and `- `/`* ` lines that directly follow
-    a numbered item are nested inside that item's `<li>` rather than closing the `<ol>`, since
-    that's what a numbered item with sub-bullets almost always means in practice.
+    """Classifies `text` line by line rather than splitting on blank lines: models often follow a
+    heading or numbered item directly with unindented `- ` sub-bullets, which then nest under that
+    item instead of closing the list. Consecutive lines of one kind are grouped.
 
-    A table is GitHub's: a row of cells, then a delimiter row of dashes with as many cells, then
-    rows until a blank line or a line with no `|`. A row with too few cells is padded and one with
-    too many cut, so every row has the header's columns."""
+    Tables are GitHub's: a header row, a delimiter row with as many cells, then rows until a blank
+    line or a line with no `|`; rows are padded or cut to the header's columns."""
     lines = text.split("\n")
     output: list[str] = []
     group_kind: str | None = None
@@ -227,89 +219,9 @@ def render_message(
 
 def render_page(messages: Sequence[tuple[Role, str | None]], *, title: str = "Pioneer") -> str:
     body = "\n".join(render_message(text, role=role) for role, text in messages)
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(title)}</title>
-<style>{STYLE}</style>
-</head>
-<body>
-<main class="chat">
-{body}
-</main>
-</body>
-</html>
-"""
+    head = f"<style>{STYLESHEET.read_text(encoding='utf-8')}</style>"
+    return html_document(title, f'<main class="chat">\n{body}\n</main>', head=head)
 
 
-# Satisfactory's palette: graphite panels, the steel blue-grey of its logo plate for Pioneer's
-# bubbles, FICSIT orange for the player's own, and a DIN-style face for headings where one exists.
-STYLE = """
-:root {
-  color-scheme: dark;
-  --bg: #16191b; --surface: #1f2427; --steel: #2b3840; --line: #37434a;
-  --text: #edf1f3; --muted: #9fabb3;
-  --ficsit: #f2a344; --ficsit-hover: #ffb65e; --on-ficsit: #1d1710;
-  --display: Bahnschrift, "DIN Alternate", "Roboto Condensed", "Arial Narrow", system-ui,
-    sans-serif;
-}
-body {
-  margin:0; font-family: system-ui, -apple-system, sans-serif;
-  background: var(--bg); color: var(--text);
-}
-.chat {
-  max-width: 760px; margin: 0 auto; padding: 32px 20px;
-  display:flex; flex-direction:column; gap:14px;
-}
-.message {
-  padding: 12px 16px; border-radius: 16px; max-width: 82%;
-  line-height:1.5; font-size: 15px;
-}
-.message > *:first-child { margin-top: 0; }
-.message > *:last-child { margin-bottom: 0; }
-.message p, .message ul, .message ol, .message pre, .message h1, .message h2,
-.message h3, .message h4, .message h5, .message h6 { margin: 0 0 8px; }
-.message ul, .message ol { padding-left: 22px; }
-.message li { margin: 2px 0; }
-.message li > ul { margin: 2px 0 0; }
-.message h1, .message h2, .message h3, .message h4, .message h5, .message h6 {
-  line-height: 1.3;
-}
-.message code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;
-  background: rgba(255,255,255,0.12); border-radius: 4px; padding: 1px 5px;
-}
-.message pre {
-  background: rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 12px;
-  overflow-x: auto;
-}
-.message pre code { background: none; padding: 0; }
-.message .table { overflow-x: auto; margin: 0 0 8px; }
-.message table { border-collapse: collapse; font-size: 0.92em; }
-.message th, .message td {
-  padding: 5px 10px; text-align: left; vertical-align: top;
-  border-bottom: 1px solid rgba(255,255,255,0.12);
-}
-.message th {
-  font-family: var(--display); letter-spacing: 0.02em; white-space: nowrap;
-  border-bottom-color: rgba(255,255,255,0.28);
-}
-.message-assistant th { color: var(--ficsit); }
-.message tbody tr:last-child td { border-bottom: 0; }
-.message .ref { white-space: nowrap; }
-.message .icon { width: 1.3em; height: 1.3em; margin-right: 0.15em; vertical-align: -0.3em; }
-.message-assistant {
-  background: var(--steel); border: 1px solid #3a4a53;
-  align-self:flex-start; border-bottom-left-radius:4px;
-}
-.message-assistant :is(h1, h2, h3, h4, h5, h6) {
-  color: var(--ficsit); font-family: var(--display); letter-spacing: 0.02em;
-}
-.message-user {
-  background: var(--ficsit); color: var(--on-ficsit);
-  align-self:flex-end; border-bottom-right-radius:4px;
-}
-.message-user code, .message-user pre { background: rgba(0,0,0,0.12); }
-"""
+STYLESHEET = static_path(__file__, "chat.css")
+"""The chat's styles, Satisfactory's palette among them: the web UI's page uses them too."""

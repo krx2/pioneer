@@ -1,8 +1,4 @@
-"""Player-intent classification shape, used internally by the Orchestrator (Stage 16).
-
-Sketched now, alongside the other contracts, even though nothing before Stage 16 produces or
-consumes it.
-"""
+"""Player-intent classification shape."""
 
 from __future__ import annotations
 

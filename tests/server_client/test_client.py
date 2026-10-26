@@ -1,6 +1,5 @@
-"""Tests for query_server_state, against fake `PostJson` transports — no real networking, per
-implementation.md Stage 6: mocked HTTP responses, including the unreachable-server case, which
-must come back as a typed `ServerUnavailable`, never a raised exception."""
+"""Tests for query_server_state, against fake `PostJson` transports: mocked HTTP responses,
+including the unreachable-server case, which must come back as a typed `ServerUnavailable`."""
 
 from typing import Any
 

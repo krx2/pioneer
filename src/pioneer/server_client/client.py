@@ -1,20 +1,8 @@
 """Client for the Dedicated Server HTTPS API's `QueryServerState` function.
 
-API shape confirmed against `CommunityResources/DedicatedServerAPIDocs.md`, shipped with the game
-itself: every function is a POST to `<base_url>/api/v1` with a JSON body `{"function": "...",
-"data": {...}}`, wrapped in TLS (often a self-signed certificate — the docs explicitly call out
-that clients must tolerate this), and a successful response is `{"data": {...}}`.
-`QueryServerState`'s response nests further under a `ServerGameState` key, with fields
-`GamePhase`, `TechTier`, `ActiveSessionName` among others — see `contracts/game_state.py` for which
-of those this project keeps.
-
-This module deliberately never imports an HTTP library itself. The actual wire transport (TLS,
-self-signed certificate handling, retries, ...) is supplied by the caller as a `PostJson` callable
-— the same pattern architecture.md uses for the LLM backend (`pioneer.config.Settings` names the
-endpoint; the concrete client library is chosen where it's first needed). Here, that "first needed"
-point is Stage 16's integration, not this module — so `query_server_state` stays fully testable
-against fake transports with zero real networking, per implementation.md Stage 6's own fixture
-philosophy (mocked HTTP responses, including the unreachable-server case).
+Per `CommunityResources/DedicatedServerAPIDocs.md`, shipped with the game: every function is a
+POST to `<base_url>/api/v1` with `{"function": "...", "data": {...}}`, and a successful response
+is `{"data": {...}}`, here nested under `ServerGameState`. The transport is injected (`PostJson`).
 """
 
 from __future__ import annotations
@@ -29,9 +17,8 @@ _FUNCTION_NAME = "QueryServerState"
 
 @dataclass(frozen=True)
 class ServerUnavailable:
-    """Typed "the dedicated server couldn't be reached or gave a response we can't use" result —
-    per architecture.md's graceful-degradation invariant (§7.5), this is what `query_server_state`
-    returns instead of raising, so callers can degrade gracefully rather than crash."""
+    """Typed "the dedicated server couldn't be reached or gave a response we can't use" result,
+    returned instead of raising."""
 
     reason: str
 

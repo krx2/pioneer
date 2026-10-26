@@ -1,9 +1,7 @@
 """The production graph shape: the central contract most modules read or write.
 
-Nodes are machines running a recipe; flows are material moving between nodes (or in/out of the
-graph at its raw-input and final-output edges). Produced by the Production Planner (Stage 7) and
-the Save Parser (Stage 5); consumed by the Verifier (Stage 4), Expansion Advisor (Stage 8),
-Anomaly Detector (Stage 10), and Graph presentation (Stage 13).
+Nodes are machines running a recipe; flows are material moving between nodes, or in and out of the
+graph at its raw-input and final-output edges.
 """
 
 from __future__ import annotations
@@ -18,11 +16,7 @@ class ProductionNode:
     building_id: str
     machine_count: float
     is_existing: bool = False
-    """True when this node comes from a real save file rather than a freshly-planned addition.
-
-    Lets Graph presentation (Stage 13) distinguish "already built" from "new" nodes, per the
-    worked example in architecture.md §5.
-    """
+    """True when this node comes from a real save file rather than a freshly-planned addition."""
     existing_machine_count: float = 0.0
     """How many of `machine_count` already stand; the rest are to be built. All of them for a node
     straight from a save; some for an existing node an expansion extends; none for a new node."""

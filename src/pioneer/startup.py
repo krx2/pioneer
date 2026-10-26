@@ -11,7 +11,7 @@ Paths and ports come from the environment (see `.env.example`): `PIONEER_LLM_BAS
 the model is, `PIONEER_SERVER_HOST`/`PIONEER_SERVER_PORT` where the game server is, and
 `PIONEER_SERVER_EXE` where its executable lives — `_DEFAULT_SERVER_EXE` is the usual Steam
 location. A piece that isn't installed is reported and skipped: the assistant degrades to
-whatever data it has (architecture.md invariant #5), so it's still worth serving the UI.
+whatever data it has, so it's still worth serving the UI.
 
 An Ollama started here gets the context window a conversation needs (`OLLAMA_CONTEXT_LENGTH`,
 unless that's set already); one that was already running keeps its own setting -- see README.

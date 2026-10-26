@@ -1,8 +1,4 @@
-"""Save-file building placement shape, and how the save's belts and pipes join buildings.
-
-Produced by the Save Parser (Stage 5); consumed by the Location Advisor (Stage 9) and Anomaly
-Detector (Stage 10).
-"""
+"""Save-file building placement shape, and how the save's belts and pipes join buildings."""
 
 from __future__ import annotations
 

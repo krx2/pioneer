@@ -1,16 +1,14 @@
 """`python -m pioneer.web [--host HOST] [--port PORT]` — the Pioneer web UI on a local port.
 
-Loads the same data the CLI does, kept current while it runs (`app.LiveContext`: a newer save or
-a stale server answer is picked up on the next question, and the header's panels pick which save
-and server to read), answers through the same `app.ask`,
-verifies every answer with `orchestrator.verify_response` — with LLM-as-a-judge verdicts when
-`PIONEER_LLM_JUDGE` is on — and keeps player feedback, a response log and the conversations under
-`data/`.
+Answers from the same data the CLI does, kept current while it runs, verifies every answer (with
+LLM-as-a-judge verdicts when `PIONEER_LLM_JUDGE` is on), and keeps player feedback, a response log
+and the conversations under `data/`.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Sequence
 from typing import Any
@@ -30,6 +28,7 @@ from pioneer.web.server import create_app
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    logging.basicConfig(format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(prog="python -m pioneer.web", description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)

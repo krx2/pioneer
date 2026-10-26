@@ -1,30 +1,21 @@
-"""Renders resource nodes, existing buildings, and recommended locations on the map
-(implementation.md Stage 14).
+"""Renders resource nodes, existing buildings and recommended locations on the map.
 
-Split the same way as `graph_presentation`: `build_markers` is a pure, unit-testable transform
-(contracts in, marker specs out); `render_page` lays those markers out as an SVG, panned and
-zoomed by `MAP_SCRIPT` moving the SVG's own `viewBox` -- no D3 needed, since it's just a fixed
-set of markers rather than a force simulation. The SVG works in the game's own coordinates, so a
-picture of the game's map (`MapBackground`) goes under the markers spanning the world it shows: as
-tiles, when it's been cut into them (`MapTileSet`), the script drawing those of the part on screen
-at the level sharp at its zoom; else as one `<image>`. Without a picture, a grid stands in for it.
-
-Markers are drawn in the game's coordinates too, sized for the first view, and the script resizes
-them as the view changes: on the game's map by how long a kilometre is on screen -- the square root
-of it, within bounds, as the header's map does -- and on a grid by the square root of the zoom. So
-up close they don't cover what they mark, and the whole map isn't buried under them.
+`build_markers` is a pure transform to marker specs; `render_page` lays them out as an SVG in the
+game's own coordinates, panned and zoomed by `MAP_SCRIPT` through its `viewBox`. Under the markers
+lies the game's map (`MapBackground`), as tiles when it's been cut into them, else a grid.
+Markers are resized with the zoom, so up close they don't cover what they mark.
 """
 
 from __future__ import annotations
 
 import html
 import json
-import re
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+from pioneer.common import html_document, readable_id, static_path, static_text
 from pioneer.contracts import (
     FactorySite,
     NodeAssignment,
@@ -36,20 +27,6 @@ from pioneer.contracts import (
 )
 
 MarkerKind = Literal["resource", "existing_building", "recommended", "factory", "new_site"]
-
-_CLASS_ID_AFFIX = re.compile(r"^(?:Desc|Recipe|Build|BP|Schematic|Research)_|_C$")
-_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
-
-
-def readable_id(class_id: str) -> str:
-    """`Desc_IronPlate_C` -> `Iron Plate`. What a label falls back to for an id the knowledge base
-    has no name for -- the made-up geyser id the resource data carries, a modded save, or no
-    knowledge base at all. A pin on the player's map should name the thing, not its class id.
-    Deliberately a copy of `graph_presentation`'s: a module imports `contracts` and nothing else of
-    this project's (tests/test_architecture.py), and five lines is a cheap price for that."""
-    words = _CAMEL_BOUNDARY.sub(" ", _CLASS_ID_AFFIX.sub("", class_id)).replace("_", " ")
-    return " ".join(words.split()) or class_id
-
 
 _PURITY_COLOR = {
     Purity.IMPURE: "#a9702f",
@@ -267,9 +244,7 @@ _MARKER_RADIUS_FACTOR = {
     "factory": 1.1,
     "new_site": 1.3,
 }
-"""Marker radius as a fraction of `unit` (see `render_page`) — sized relative to the view box
-rather than a fixed pixel count, since game coordinates can range from small fixture numbers up
-to the real map's much larger scale."""
+"""Marker radius as a fraction of `unit` (see `render_page`), so markers scale with the view box."""
 
 
 def _svg_marker(marker: MapMarker, *, unit: float, show_label: bool) -> str:
@@ -372,16 +347,9 @@ def render_page(
         for m in markers
     )
     links = _svg_links(site_plan, unit, names) if site_plan else ""
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(title)}</title>
-<style>{STYLE}</style>
-</head>
-<body>
-<svg id="map" viewBox="{min_x} {min_y} {w} {h}" preserveAspectRatio="xMidYMid meet">
+    map_view = MAP_VIEW_SCRIPT.read_text(encoding="utf-8")
+    view_box = f"{min_x} {min_y} {w} {h}"
+    body = f"""<svg id="map" viewBox="{view_box}" preserveAspectRatio="xMidYMid meet">
 {grid}
 {links}
 {markers_svg}
@@ -400,16 +368,15 @@ def render_page(
     }
 </div>
 <script>
+{map_view}
 const initialView = {{x: {min_x}, y: {min_y}, w: {w}, h: {h}}};
 const worldWidth = {world_width};
 const markerUnit = {unit};
 const world = {json.dumps(world)};
 const tiles = {json.dumps(tiles)};
 {MAP_SCRIPT}
-</script>
-</body>
-</html>
-"""
+</script>"""
+    return html_document(title, body, head=f"<style>{STYLE}</style>")
 
 
 def _svg_links(site_plan: SitePlan, unit: float, names: Mapping[str, str] | None = None) -> str:
@@ -456,170 +423,9 @@ def _svg_grid(min_x: float, min_y: float, w: float, h: float, *, unit: float) ->
     return f'<g style="stroke-width:{stroke_width:g}">{"".join(lines)}</g>'
 
 
-STYLE = """
-:root { color-scheme: dark; }
-html, body { margin:0; height:100%; background:#1f2427; font-family: system-ui, sans-serif; }
-svg { width:100%; height:100%; display:block; cursor:grab; touch-action:none; user-select:none; }
-svg image { -webkit-user-drag:none; user-drag:none; }
-svg.dragging { cursor:grabbing; }
-.grid-line { stroke:#2c3439; }
-.label { fill:#d3dade; paint-order: stroke; stroke:#1f2427; }
-.badge { fill:#1f2427; font-weight:bold; }
-.haul { stroke:#33c17a; stroke-width:2px; vector-effect:non-scaling-stroke; opacity:0.85; }
-.sends { stroke:#f2a344; stroke-width:4px; vector-effect:non-scaling-stroke; opacity:0.9; }
-.sends-label { fill:#f2c98f; }
-#legend {
-  position:fixed; top:12px; left:12px; display:flex; flex-wrap:wrap; gap:14px;
-  color:#d3dade; font-size:12px; background:#16191bcc; padding:8px 12px;
-  border-radius:8px; max-width: 90vw;
-}
-#legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
-#legend .sq { display:inline-block; width:10px; height:10px; margin-right:6px; }
-"""
+STYLE = static_text(__file__, "map.css")
 
-MAP_SCRIPT = """
-const SVG_NS = "http://www.w3.org/2000/svg";
-const svg = document.getElementById("map");
-let view = {...initialView};
-const maxWidth = Math.max(initialView.w * 6, worldWidth * 1.2);
-const MAX_MAGNIFICATION = 4;  // screen pixels a pixel of the sharpest tiles may be stretched over
-const markers = [...svg.querySelectorAll(".marker")].map(
-  (group) => [group, Number(group.dataset.x), Number(group.dataset.y)]);
-const tileLayer = tiles && world ? svg.querySelector(".world-tiles") : null;
-const tileLevels = [];  // a group of images a level, the coarsest first: the sharper over it
-const tileImages = new Map();  // "level/column_row" -> its image, on screen or not
+MAP_SCRIPT = static_text(__file__, "map.js")
 
-function minWidth() {
-  // As far in as the markers allow, but not past where the map picture stays sharp.
-  const rect = svg.getBoundingClientRect();
-  if (!tileLayer || !rect.width) return initialView.w * 0.04;
-  const sharpest = world.w / tiles.levels[tiles.levels.length - 1][0];
-  return Math.max(initialView.w * 0.04,
-    Math.min(sharpest * rect.width / MAX_MAGNIFICATION, initialView.w));
-}
-
-function onScreen() {
-  // The view box is fitted into the window ("meet"): one way, the screen shows more than it.
-  const rect = svg.getBoundingClientRect();
-  const scale = Math.max(view.w / rect.width, view.h / rect.height);
-  const w = rect.width * scale;
-  const h = rect.height * scale;
-  return {x: view.x - (w - view.w) / 2, y: view.y - (h - view.h) / 2, w, h, pixels: rect.width};
-}
-
-function drawTiles() {
-  // Every level up to the one sharp at this zoom, for the part of the world on screen.
-  const shown = onScreen();
-  const wanted = (world.w / shown.w) * shown.pixels * (window.devicePixelRatio || 1);
-  let sharp = tiles.levels.findIndex(([width]) => width >= wanted);
-  if (sharp < 0) sharp = tiles.levels.length - 1;
-  const keep = new Set();
-  for (let level = 0; level <= sharp; level++) {
-    if (!tileLevels[level]) {
-      tileLevels[level] = document.createElementNS(SVG_NS, "g");
-      tileLayer.append(tileLevels[level]);
-    }
-    const [width, height] = tiles.levels[level];
-    const perX = world.w / width;  // world units a pixel of this level
-    const perY = world.h / height;
-    const span = (from, to, origin, per, count) => [
-      Math.max(0, Math.floor((from - origin) / (per * tiles.size))),
-      Math.min(count - 1, Math.floor((to - origin) / (per * tiles.size))),
-    ];
-    const [left, right] = span(shown.x, shown.x + shown.w, world.x, perX,
-      Math.ceil(width / tiles.size));
-    const [top, bottom] = span(shown.y, shown.y + shown.h, world.y, perY,
-      Math.ceil(height / tiles.size));
-    for (let column = left; column <= right; column++) {
-      for (let row = top; row <= bottom; row++) {
-        const key = `${level}/${column}_${row}`;
-        keep.add(key);
-        if (tileImages.has(key)) continue;
-        const image = document.createElementNS(SVG_NS, "image");
-        const across = Math.min(tiles.size + tiles.overlap, width - column * tiles.size);
-        const down = Math.min(tiles.size + tiles.overlap, height - row * tiles.size);
-        image.setAttribute("href", `${tiles.url}/${key}.webp`);
-        image.setAttribute("x", world.x + column * tiles.size * perX);
-        image.setAttribute("y", world.y + row * tiles.size * perY);
-        image.setAttribute("width", across * perX);
-        image.setAttribute("height", down * perY);
-        image.setAttribute("preserveAspectRatio", "none");
-        image.dataset.level = level;
-        tileImages.set(key, image);
-      }
-    }
-  }
-  for (const [key, image] of tileImages) {
-    if (!keep.has(key)) image.remove();
-    else if (!image.isConnected) tileLevels[image.dataset.level].append(image);
-  }
-}
-
-function markerScale() {
-  // On the game's map, markers are as big as a kilometre is long on screen allows -- the square
-  // root of it, within bounds, as on the header's map; on a grid, they're sized for the first
-  // view and grow by the square root of the zoom. Either way, close up they don't cover the map.
-  const perPixel = onScreen().w / onScreen().pixels;  // world units a screen pixel
-  if (world) {
-    const pixelsPerKm = 100000 / perPixel;
-    const size = Math.min(Math.max(Math.sqrt(pixelsPerKm / 400), 0.6), 1.2);
-    return (16 * size * perPixel) / markerUnit;  // a marker unit 16 screen pixels at full size
-  }
-  const zoom = initialView.w / view.w;
-  return Math.min(Math.max(Math.sqrt(zoom), 0.5), 1.6) / zoom;
-}
-
-function applyView() {
-  svg.setAttribute("viewBox", `${view.x} ${view.y} ${view.w} ${view.h}`);
-  const scale = markerScale();
-  for (const [group, x, y] of markers) {
-    group.setAttribute("transform", `translate(${x} ${y}) scale(${scale}) translate(${-x} ${-y})`);
-  }
-  if (tileLayer) drawTiles();
-}
-
-function toSvgPoint(clientX, clientY) {
-  const rect = svg.getBoundingClientRect();
-  return {
-    x: view.x + (clientX - rect.left) * (view.w / rect.width),
-    y: view.y + (clientY - rect.top) * (view.h / rect.height),
-  };
-}
-
-svg.addEventListener("wheel", (event) => {
-  event.preventDefault();
-  const point = toSvgPoint(event.clientX, event.clientY);
-  const factor = event.deltaY > 0 ? 1.15 : 1 / 1.15;
-  const newWidth = Math.min(Math.max(view.w * factor, minWidth()), maxWidth);
-  const newHeight = newWidth * (initialView.h / initialView.w);
-  view.x = point.x - (point.x - view.x) * (newWidth / view.w);
-  view.y = point.y - (point.y - view.y) * (newHeight / view.h);
-  view.w = newWidth;
-  view.h = newHeight;
-  applyView();
-}, {passive: false});
-
-let drag = null;
-// The browser's own dragging of an image (a tile, an icon) or selecting of text would take the
-// press over from the map's drag.
-svg.addEventListener("dragstart", (event) => event.preventDefault());
-svg.addEventListener("mousedown", (event) => { if (event.button === 0) event.preventDefault(); });
-svg.addEventListener("pointerdown", (event) => {
-  drag = {startX: event.clientX, startY: event.clientY, viewX: view.x, viewY: view.y};
-  svg.setPointerCapture(event.pointerId);
-  svg.classList.add("dragging");
-});
-svg.addEventListener("pointermove", (event) => {
-  if (!drag) return;
-  const rect = svg.getBoundingClientRect();
-  view.x = drag.viewX - (event.clientX - drag.startX) * (view.w / rect.width);
-  view.y = drag.viewY - (event.clientY - drag.startY) * (view.h / rect.height);
-  applyView();
-});
-function endDrag() { drag = null; svg.classList.remove("dragging"); }
-svg.addEventListener("pointerup", endDrag);
-svg.addEventListener("pointercancel", endDrag);
-svg.addEventListener("pointerleave", endDrag);
-svg.addEventListener("dblclick", () => { view = {...initialView}; applyView(); });
-new ResizeObserver(() => applyView()).observe(svg);
-"""
+MAP_VIEW_SCRIPT = static_path(__file__, "map-view.js")
+"""Panning, zooming and the map's tiles, which the web UI's Map panel uses too."""

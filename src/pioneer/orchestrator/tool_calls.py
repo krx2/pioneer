@@ -9,8 +9,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from pioneer.orchestrator.base import _Tool, _ToolError
-from pioneer.orchestrator.items import _names_mentioned
+from pioneer.orchestrator.base import Tool, ToolError
+from pioneer.orchestrator.items import names_mentioned
 
 _JSON_START = re.compile(r"[\[{]")
 
@@ -19,7 +19,7 @@ _NAME_MATCH_CUTOFF = 0.6
 _ARGUMENT_MATCH_CUTOFF = 0.5
 
 
-def _resolve_tool_name(name: object, tools_by_name: Mapping[str, _Tool]) -> str | None:
+def resolve_tool_name(name: object, tools_by_name: Mapping[str, Tool]) -> str | None:
     """`name` if it's a real tool, else the closest real tool name it's a near-miss of --
     'expand_factory' for `expand_existing_factory`, say. A model that gets the call itself right
     but fumbles the exact registered spelling still shouldn't lose the whole tool call."""
@@ -31,7 +31,7 @@ def _resolve_tool_name(name: object, tools_by_name: Mapping[str, _Tool]) -> str 
     return matches[0] if matches else None
 
 
-def _normalize_arguments(arguments: dict[str, Any], tool: _Tool) -> dict[str, Any]:
+def _normalize_arguments(arguments: dict[str, Any], tool: Tool) -> dict[str, Any]:
     """Remaps an argument key a model wrote under a plausible-but-wrong name ('item_id' for
     `target_item_id`, 'target_amount_per_minute' for `target_rate_per_minute', ...) onto the
     tool's actual parameter name, so a close-but-not-exact call still runs instead of failing on a
@@ -50,12 +50,12 @@ def _normalize_arguments(arguments: dict[str, Any], tool: _Tool) -> dict[str, An
     return normalized
 
 
-def _tool_calls_written_as_text(
-    content: str | None, tools_by_name: Mapping[str, _Tool]
+def tool_calls_written_as_text(
+    content: str | None, tools_by_name: Mapping[str, Tool]
 ) -> list[dict[str, Any]]:
     """Tool calls a model wrote into its answer instead of the API's `tool_calls` field -- local
     models do that often enough to be worth reading, rather than handing the player a line of JSON
-    as their answer. Only a call naming (or near-naming, see `_resolve_tool_name`) a real tool
+    as their answer. Only a call naming (or near-naming, see `resolve_tool_name`) a real tool
     counts; anything else is just an answer that happens to contain braces.
 
     Every JSON value in the text is read, one after another, whatever stands between them: prose,
@@ -71,7 +71,7 @@ def _tool_calls_written_as_text(
         if not isinstance(call, dict):
             continue
         call = call.get("function", call)
-        resolved_name = _resolve_tool_name(call.get("name"), tools_by_name)
+        resolved_name = resolve_tool_name(call.get("name"), tools_by_name)
         arguments = call.get("arguments", call.get("parameters", {}))
         if resolved_name is not None and isinstance(arguments, dict):
             calls.append(
@@ -95,7 +95,7 @@ def _json_values(text: str) -> list[Any]:
     return values
 
 
-def _assistant_message(message: dict[str, Any], tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
+def assistant_message(message: dict[str, Any], tool_calls: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "role": "assistant",
         "content": message.get("content"),
@@ -113,19 +113,19 @@ def _assistant_message(message: dict[str, Any], tool_calls: list[dict[str, Any]]
     }
 
 
-def _execute_tool(
-    call: dict[str, Any], tools_by_name: dict[str, _Tool], names: Mapping[str, str]
+def execute_tool(
+    call: dict[str, Any], tools_by_name: dict[str, Tool], names: Mapping[str, str]
 ) -> dict[str, Any]:
     """Runs one call and packages its result, with a `names` map for its ids, for the model. The
-    name is resolved leniently (see `_resolve_tool_name`) because even the API's own `tool_calls`
+    name is resolved leniently (see `resolve_tool_name`) because even the API's own `tool_calls`
     field isn't always the exact registered name with every local backend."""
-    tool_name = _resolve_tool_name(call["name"], tools_by_name)
+    tool_name = resolve_tool_name(call["name"], tools_by_name)
     tool = tools_by_name.get(tool_name) if tool_name else None
     if tool is None:
         result: dict[str, Any] = {"error": f"unknown tool {call['name']!r}"}
     else:
         result = _run_tool(tool, _normalize_arguments(call.get("arguments") or {}, tool))
-    mentioned = _names_mentioned(json.dumps(result), names)
+    mentioned = names_mentioned(json.dumps(result), names)
     if mentioned:
         result = {**result, "names": mentioned}
     return {
@@ -136,14 +136,14 @@ def _execute_tool(
     }
 
 
-def _run_tool(tool: _Tool, arguments: dict[str, Any]) -> dict[str, Any]:
+def _run_tool(tool: Tool, arguments: dict[str, Any]) -> dict[str, Any]:
     """Runs one tool, turning any failure into an error result for the model rather than letting
     it escape `handle_query`. Deliberately catches everything: a bug in a module, or real data it
     didn't anticipate, should cost the player one tool call's worth of answer -- explained to them
     by the model -- not the whole response."""
     try:
         return tool.handler(arguments)
-    except _ToolError as error:
+    except ToolError as error:
         return {"error": str(error), **error.details}
     except Exception as error:
         return {"error": f"{tool.name} failed: {type(error).__name__}: {error}"}

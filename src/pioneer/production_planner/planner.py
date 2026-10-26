@@ -1,71 +1,29 @@
-"""Graph-search production planner: given a target item + rate, builds a `ProductionGraph` from
-raw resources up to the target, over a supplied `Recipe` list.
+"""Graph-search production planner: builds a `ProductionGraph` from raw resources up to target
+items and rates, over a supplied `Recipe` list.
 
-**Demand aggregation.** Real crafting trees converge — e.g. Reinforced Iron Plate needs both Iron
-Plate and Screw, and both of *those* need Iron Ingot. A naive recursive expansion would either
-double-count Iron Ingot demand or build two separate Iron Ingot nodes; this planner instead runs
-two passes: first picks one recipe per item and a valid processing order (via Kahn's algorithm —
-an item's total demand can only be finalized once every recipe that consumes it has already
-contributed its share), then walks that order once, accumulating demand and computing exactly one
-node per item.
+- Converging trees (Iron Ingot for both Plate and Screw) get one node per item: recipes are chosen
+  first, then demand is summed in Kahn's order, each item after everything consuming it. Several
+  targets (`plan_targets`) are summed the same way.
+- Expansion stops at `raw_item_ids` and at items no recipe makes. The game has recipes producing
+  most raw resources (the Converter), which would otherwise loop.
+- `available_supply` (an existing factory's spare output) covers demand before any machine is
+  planned; what's drawn from it enters as boundary inflows, split proportionally.
+- Recipe preference, unless `recipe_choices` picks one: standard over alternates (alternates only
+  for an item with no standard recipe, or one whose standard recipes all loop, like Compacted Coal
+  for Turbofuel); primary output over byproduct; fewer crafted ingredients; list order. A candidate
+  looping back to an item being resolved above it is skipped.
+- With `game_recipes`, an item only a left-out recipe makes is a dead end, not a raw input;
+  `find_missing_recipes` says which left-out recipes the plan would take.
 
-**Where expansion stops.** At `raw_item_ids` (the caller's list of extracted resources — ores,
-water, crude oil, ...) and at any item no recipe produces. The first matters on real data: the
-game has recipes *producing* most raw resources (1.0's Converter turns one ore into another,
-unpackaging yields crude oil), and following them walks ore -> ore -> ore in a circle.
-
-**Several targets at once.** `plan_targets` plans a chain making every one of several items, each
-at its own rate -- the player's plan, once it has more than one target. Demand from all of them is
-summed before any machine is counted, so a stage two targets share is planned once, its machines
-rounded up once, and a target another target consumes gets that demand on top of its own rate.
-`plan_production` is the one-target case.
-
-**Planning on top of what's already there.** `available_supply` is per-minute supply of items on
-hand outside the plan — when expanding a factory, its spare output (the Verifier's positive
-balance). Each item's demand draws on that supply before any machine is planned for it, so a
-covered item gets no new machines, and neither does anything upstream of it. What the plan draws
-from supply shows up as boundary inflows (`source_node_id=None`), like a raw input; where supply
-covers only part of an item, each consumer's flow of it is split between the two sources in the
-same proportion.
-
-**Recipe choice.** `recipes_for_output` is the "expose the choice" half of this module's job —
-nothing about which recipe gets used is hidden. `plan_production` takes an optional
-`recipe_choices` mapping (item_id -> recipe_id) so a caller can pick among alternates explicitly.
-Left unspecified, an item's recipe is picked by a documented preference, best first:
-
-1. standard recipes over alternates (`Recipe.is_alternate`) — the player may not have researched
-   the alternates. They're used only for an item with no standard recipe at all, or, when *no*
-   plan exists without them, for an item whose standard recipes all loop: 1.0's Turbofuel needs
-   Compacted Coal, whose only standard sources are byproducts of Rocket Fuel and Ionized Fuel —
-   both made from Turbofuel — so only "Alternate: Compacted Coal" breaks the circle;
-2. recipes making the item as their primary (first) output over ones yielding it as a byproduct;
-3. fewer crafted (non-raw) ingredients, i.e. the shallower chain;
-4. the recipe list's own order.
-
-A candidate whose ingredients lead back to an item already being resolved further up the chain is
-skipped for the next one — so Fuel never gets planned as "unpackage Packaged Fuel, which is made
-from Fuel". Only when every candidate for the target loops is the plan refused.
-
-**Planning from some of the recipes.** The player may plan with fewer recipes than the game has:
-only the ones they've unlocked, or only the ones they ticked. Given every recipe in the game
-(`game_recipes`), an item no recipe in `recipes` makes but one of the game's does is a dead end,
-not a raw input: the plan can't just take it from outside, so a chain needing it is abandoned like
-a looping one, for the next candidate — and with none left, the plan is refused.
-`find_missing_recipes` then says which of the left-out recipes it would take: for each item the
-chain breaks at, every recipe that alone would make it — see its docstring.
-
-Doesn't import the Knowledge Base, the Verifier, or any other module — `recipes` arrives as a
-plain `Recipe` tuple from the caller, and machine-count arithmetic is duplicated locally in
-miniature (same pattern resource_db uses for `distance`) rather than reaching into `verifier`.
 """
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict, deque
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass
 
+from pioneer.common import machines_needed, recipes_for_output
 from pioneer.contracts import MaterialFlow, ProductionGraph, ProductionNode, Recipe
 
 _RATE_EPSILON = 1e-9
@@ -80,13 +38,6 @@ class MissingRecipe:
     any_of: tuple[str, ...]
 
 
-def recipes_for_output(item_id: str, recipes: tuple[Recipe, ...]) -> tuple[Recipe, ...]:
-    """Every recipe that produces `item_id` — the alternate-recipe choice set for that item, in
-    `recipes`' own order. Empty means `item_id` is a raw resource as far as this recipe list goes
-    (extracted, not crafted — outside this module's job)."""
-    return tuple(r for r in recipes if any(o.item_id == item_id for o in r.outputs))
-
-
 def plan_production(
     target_item_id: str,
     target_rate: float,
@@ -99,7 +50,7 @@ def plan_production(
 ) -> ProductionGraph:
     """Builds a `ProductionGraph` producing `target_rate` units/minute of `target_item_id`,
     expanding no further than `raw_item_ids` and planning machines only for demand
-    `available_supply` doesn't cover (see module docstring). Raises `ValueError` if
+    `available_supply` doesn't cover. Raises `ValueError` if
     `target_item_id` is a raw resource or has no recipe in `recipes`, if `recipe_choices` names a
     recipe that doesn't actually produce the item it's keyed to, or if every recipe chain for the
     target loops back on itself — or, given `game_recipes`, needs an item only a recipe left out
@@ -123,9 +74,9 @@ def plan_targets(
     available_supply: Mapping[str, float] | None = None,
     game_recipes: tuple[Recipe, ...] | None = None,
 ) -> ProductionGraph:
-    """`plan_production` for several targets at once, each item at its rate (see the module
-    docstring): one graph making all of them. Raises what `plan_production` raises, for any one of
-    the targets, and for none at all."""
+    """`plan_production` for several targets at once, each item at its rate: one graph making all
+    of them. Raises what `plan_production` raises, for any one of the targets, and for none at
+    all."""
     if not targets:
         raise ValueError("no target to plan for")
     raw = frozenset(raw_item_ids)
@@ -211,14 +162,9 @@ def find_missing_recipes(
     """Which of the recipes left out of `recipes` it would take to plan `target_item_id` — empty
     when `recipes` already do, `None` when not even `game_recipes` (every recipe) can.
 
-    One entry per item the chain breaks at, listing every left-out recipe that would make it;
-    entries are needed together, the options within one are alternatives. Worked out from the
-    target down: the item nearest the target that nothing in `recipes` makes comes first, its
-    options being the left-out recipes that alone make it from what's available — or, when no
-    single one does, every left-out recipe making it, the next entry then saying what that one
-    needs in turn. The best option is assumed taken before looking for the next break, so an item
-    that only one choice for another needed is never listed: a chain that Cast Screw makes from
-    ingots needs no Iron Rod entry."""
+    One entry per item the chain breaks at, nearest the target first: entries are needed together,
+    the options within one are alternatives. The best option is assumed taken before looking for
+    the next break, so a chain Cast Screw makes from ingots needs no Iron Rod entry."""
     raw = frozenset(raw_item_ids)
 
     def plans(target: str, with_recipes: tuple[Recipe, ...], supply: Mapping[str, float] | None):
@@ -318,8 +264,8 @@ def _first_break(
 
 
 def _preference(recipe: Recipe, item_id: str, raw: frozenset[str]) -> tuple[bool, bool, int]:
-    """The order an item's recipes are tried in (see the module docstring) — the sort being
-    stable, the list's own order breaks ties."""
+    """The order an item's recipes are tried in — the sort being stable, the list's own order
+    breaks ties."""
     byproduct = recipe.outputs[0].item_id != item_id
     crafted_inputs = sum(1 for i in recipe.inputs if i.item_id not in raw)
     return recipe.is_alternate, byproduct, crafted_inputs
@@ -337,8 +283,8 @@ def _ranked_candidates(
     *,
     alternates_as_fallback: bool,
 ) -> list[Recipe]:
-    """`item_id`'s recipes in the preference order from the module docstring — or just the one
-    `recipe_choices` names for it. Alternates come after every standard recipe, and only at all
+    """`item_id`'s recipes in preference order — or just the one `recipe_choices` names for it.
+    Alternates come after every standard recipe, and only at all
     when there's no standard recipe or `alternates_as_fallback` is set."""
     candidates = recipes_for_output(item_id, recipes)
     if not candidates:
@@ -376,10 +322,8 @@ def _choose_recipes(
     """One recipe per crafted item reachable from the targets, or `None` if every chain for one of
     them loops or runs into one of `dead_ends`.
 
-    Picked depth-first: each item tries its candidates best-first and settles on the first whose
-    whole ingredient chain resolves without looping back to an item still being resolved above
-    it. A chain that fails is rolled back before the next candidate is tried, so no half-explored
-    choice leaks into the plan."""
+    Depth-first: each item settles on its first candidate whose whole chain resolves without
+    looping back; a failed chain is rolled back before the next candidate is tried."""
     chosen: dict[str, Recipe] = {}
     in_progress: set[str] = set()
 
@@ -435,23 +379,6 @@ def _requirements(
     return all_items, requires
 
 
-def _output_rate(recipe: Recipe, item_id: str) -> float:
-    """The specific per-machine rate at which `recipe` produces `item_id` -- not just its first
-    output, since a multi-output recipe might list the item we care about second."""
-    for output in recipe.outputs:
-        if output.item_id == item_id:
-            return output.amount_per_minute
-    raise ValueError(f"recipe {recipe.recipe_id!r} doesn't actually produce {item_id!r}")
-
-
-def _machine_count(per_machine_rate: float, target_rate: float) -> int:
-    if target_rate <= 0:
-        return 0
-    if per_machine_rate <= 0:
-        raise ValueError("recipe has no positive output rate for the item being planned")
-    return math.ceil(target_rate / per_machine_rate)
-
-
 def _topological_order(all_items: set[str], requires: dict[str, set[str]]) -> list[str]:
     """Kahn's algorithm: targets first, an item only after every item that consumes it."""
     in_degree: dict[str, int] = dict.fromkeys(all_items, 0)
@@ -504,7 +431,8 @@ def _accumulate_demand(
         covered = min(demand.total[item], max(available_supply.get(item, 0.0), 0.0))
         if covered > 0:
             demand.supplied[item] = covered
-        machines = _machine_count(_output_rate(recipe, item), demand.total[item] - covered)
+        rate = recipe.output_rate(item) or 0.0  # chosen among the recipes making `item`
+        machines = machines_needed(rate, demand.total[item] - covered)
         demand.machines[item] = machines
         for ingredient in recipe.inputs:
             demand.total[ingredient.item_id] += ingredient.amount_per_minute * machines

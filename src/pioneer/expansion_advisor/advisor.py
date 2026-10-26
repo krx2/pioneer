@@ -1,27 +1,14 @@
 """Turns a plan of *additional* machines into the `ChangeSet` an existing factory needs: extend the
 factories that already run a recipe, add new stages only where none does.
 
-**The input is a delta plan, not a from-scratch one.** `additions` is what the Production Planner
-returns when run with the existing factory's spare output as `available_supply` (the Verifier's
-positive balance over the existing graph): it already holds only machines that have to be built —
-demand the existing surplus covers is gone from it, along with everything upstream of that
-demand. That's what makes the answer right. Comparing a from-scratch plan against the existing
-factory's *gross* machine counts instead counts machines already busy feeding the existing factory
-as free, and tells a player who is already short of Iron Ingot that their smelters cover a new
-Reinforced Iron Plate line.
+`additions` must be a delta plan: planned with the existing factory's spare output as
+`available_supply`, so it holds only machines still to be built. Comparing a from-scratch plan
+with the factory's gross machine counts would count machines already busy as free.
 
-**Matching is by `recipe_id`.** An addition running a recipe some existing node already runs is an
-`EXTEND` of that node (the first one, if several run it): more of the same machine, where it
-already stands. Anything else is an `ADD`. Producing the same *item* via a different recipe (an
-alternate) does not match — feed Stage 7 the right `recipe_choices` if you want an
-alternate-recipe factory extended.
-
-`resulting_graph` is the production chain for the request after the change: every extended node
-(`is_existing=True`, `machine_count` bumped by the addition, `existing_machine_count` what already
-stood) and every added node (`is_existing=False`, nothing standing yet), with the plan's flows
-rewired onto those node ids — so every flow endpoint is a node in the graph, or `None` for material
-entering from outside (raw resources, or the existing factory's surplus). Existing nodes the change
-doesn't touch are left out: they're the rest of the factory, not part of this chain.
+Matching is by `recipe_id`: an addition running a recipe an existing node runs `EXTEND`s that node
+(the first, if several do); anything else is an `ADD`. An alternate recipe for the same item does
+not match. `resulting_graph` holds the extended and added nodes, with the plan's flows rewired onto
+them; untouched existing nodes are left out.
 """
 
 from __future__ import annotations

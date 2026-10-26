@@ -1,12 +1,6 @@
 """The belts and pipes of the real fixture saves, traced end to end (see connections.py)."""
 
-from pathlib import Path
-
 import pytest
-
-from pioneer.save_parser.loader import load_save_state
-
-_FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 @pytest.mark.parametrize(
@@ -19,9 +13,9 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
     ],
 )
 def test_every_link_joins_buildings_of_the_save_along_its_belts(
-    filename: str, belt_links: int, pipe_links: int
+    filename: str, belt_links: int, pipe_links: int, real_save
 ) -> None:
-    state = load_save_state(_FIXTURES_DIR / filename)
+    state = real_save(filename.removesuffix(".sav"))
     placed = {placement.object_id: placement for placement in state.placements}
 
     assert sum(link.carrier == "belt" for link in state.links) == belt_links
@@ -34,8 +28,8 @@ def test_every_link_joins_buildings_of_the_save_along_its_belts(
         )
 
 
-def test_a_screw_constructor_takes_rods_and_feeds_reinforced_plates() -> None:
-    state = load_save_state(_FIXTURES_DIR / "stal_mielec.sav")
+def test_a_screw_constructor_takes_rods_and_feeds_reinforced_plates(real_save) -> None:
+    state = real_save("stal_mielec")
     placed = {placement.object_id: placement for placement in state.placements}
     screws = "Persistent_Level:PersistentLevel.Build_ConstructorMk1_C_2146791074"
 

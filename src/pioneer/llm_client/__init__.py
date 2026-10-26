@@ -1,12 +1,6 @@
-"""Real LLM transport module (implementation.md Stage 16's concrete-backend choice).
-
-The only module in the project that imports an HTTP-capable standard-library module to actually
-talk to the LLM. Speaks the OpenAI-compatible chat/completions wire format that architecture.md
-§3.1 fixes as the interface, against whatever local backend (Ollama, llama.cpp, vLLM, ...) is named
-by `pioneer.config.Settings`. Exposes one adapter per Protocol a caller needs: `chat_completion` for
-`qa_engine.engine.ChatCompletion`, `tool_calling_chat_completion` for
-`orchestrator.base.ToolCallingLLM` -- both hit the same endpoint, so wiring both from the
-same `Settings` reuses one logical connection rather than standing up two.
+"""The real LLM transport: OpenAI-compatible chat/completions against the local backend
+`pioneer.config.Settings` names. `chat_completion` serves `qa_engine.engine.ChatCompletion`,
+`tool_calling_chat_completion` serves `orchestrator.base.ToolCallingLLM`.
 """
 
 from pioneer.llm_client.transport import (

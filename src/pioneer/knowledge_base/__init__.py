@@ -1,12 +1,5 @@
-"""Knowledge base module (implementation.md Stage 2).
-
-Static, queryable data set of items, recipes, buildings, and technologies. Depends only on
-`pioneer.contracts`; tested against its own `fixtures/`, never against the real game data files.
-
-The real data source is a Satisfactory `Docs.json`-style export, committed at `docs/en-US.json`
-(named `en-US.json` by the game's own export tooling — it's the full game data dump, not just
-localized strings). See `loader.py`'s module docstring for the parsing details and known
-limitations of that source.
+"""Knowledge base: items, recipes, buildings and technologies from the game's `Docs.json` export
+(`assets/en-US.json` — the full data dump, despite its name). See `loader` for its quirks.
 """
 
 from pioneer.knowledge_base.loader import load_from_dict, load_from_file
@@ -20,10 +13,8 @@ from pioneer.knowledge_base.queries import (
     item_by_id,
     milestone_progress,
     prerequisites_for_technology,
-    raw_resource_ids,
     recipe_by_id,
     recipe_is_unlocked,
-    recipes_for_output,
     research_trees,
     resolve_item,
     technology_by_id,
@@ -43,10 +34,8 @@ __all__ = [
     "load_from_file",
     "milestone_progress",
     "prerequisites_for_technology",
-    "raw_resource_ids",
     "recipe_by_id",
     "recipe_is_unlocked",
-    "recipes_for_output",
     "research_trees",
     "resolve_item",
     "technology_by_id",

@@ -3,6 +3,7 @@ terminal, answered from the same data and choices the web UI uses."""
 
 from __future__ import annotations
 
+import logging
 import sys
 
 from pioneer.app.runtime import ask, load_context
@@ -10,6 +11,7 @@ from pioneer.orchestrator import OrchestratorUnavailable
 
 
 def main() -> None:
+    logging.basicConfig(format="%(levelname)s %(name)s: %(message)s")
     if len(sys.argv) < 2:
         print('usage: python -m pioneer.app "your question"')
         raise SystemExit(1)

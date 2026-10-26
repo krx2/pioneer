@@ -1,23 +1,11 @@
 """What a revision changes in the player's plan: the machines to build, take down or switch over to
 go from one version of a production chain to the next.
 
-**Compared stage by stage, by recipe.** A stage is what a graph's node has still to be built --
-its machines less the ones that already stand (`existing_machine_count`), so a plan extending the
-factory is compared on what it adds to it. A recipe in both versions with more machines is an
-`EXTEND`, with fewer a `REMOVE` of the difference; a recipe only the new version runs is an `ADD`,
-one only the old version ran a `REMOVE` of all of it. Every change names its building.
-
-**A recipe swapped for another.** When the old version made an item with one recipe and the new
-one makes it with another, the two stages are one change, not two unrelated ones: in the same
-building, the machines are switched over (`RECONFIGURE`, as many as both have), and only the
-difference is built or taken down besides; in another building, the old ones come down and the new
-ones go up. Which item a stage makes is read off its graph's flows -- what flows out of its node.
-
-**What's built already.** Given how much of the old version the player has built, by recipe, each
-`REMOVE` and `RECONFIGURE` says how many of its machines stand (`already_built`): those have to
-come down or be switched over in the game, the rest just won't be built. Built machines of a
-recipe go first to what the new version still builds of it; only what's beyond that is taken down
-or switched -- switched first, where a change does both.
+Compared stage by stage, by recipe, on the machines still to be built: more machines is an
+`EXTEND`, fewer a `REMOVE`, a recipe only one version runs an `ADD` or a `REMOVE` of all of it.
+An item made with another recipe in the same building is a `RECONFIGURE` of as many machines as
+both have. Given what the player has built, each `REMOVE` and `RECONFIGURE` says how many of its
+machines already stand (`already_built`).
 """
 
 from __future__ import annotations

@@ -1,25 +1,10 @@
-"""Frames the *entity data* section: the per-object property blobs that follow the object table.
+"""Frames the entity data section: the per-object property blobs that follow the object table, in
+the same order, so `spans[i]` belongs to `table.headers[i]`.
 
-A save's level data is two parallel sections. `object_table.py` reads the first — the TOC, one
-header per object (class name, path, transform). This module reads the framing of the second: for
-every object, in the *same order*, a length-prefixed blob holding that object's serialized
-properties. `spans[i]` is therefore the data belonging to `table.headers[i]`, which is what makes
-attributing a property (e.g. `mCurrentRecipe`) to a specific building possible at all.
-
-**Framing only, deliberately.** Each entity is preceded by
-`[entitySaveVersion: uint32][shouldMigrateObjectRefsToPersistentFlag: uint32][length: int32]`, and
-`length` counts every byte after itself. So walking the whole section needs no understanding of
-what's *inside* a blob — no property-type dispatch, no per-class special cases. That matters,
-because the contents genuinely do need per-class handling (containers like `MapProperty` nest
-recursive type-name trees; conveyors, vehicles and power networks append class-specific data after
-their property list), which is exactly why the reference implementation this was derived from
-(SC-InteractiveMap, github.com/AnthorNet/SC-InteractiveMap, `src/SaveParser/Read.js: readEntity`)
-carries a file per building type. Framing sidesteps all of it: `properties.py` then searches inside
-one blob's bounded byte range for the one property this project needs.
-
-Verified against both real fixture saves: every entity frames cleanly (29211 and 55012 of them),
-the walk lands byte-exactly on the entity section's own declared end, and every `entitySaveVersion`
-reads back as the same value the save header declares.
+Framing only: each entity is preceded by `[entitySaveVersion: uint32]
+[shouldMigrateObjectRefsToPersistentFlag: uint32][length: int32]`, `length` counting every byte
+after itself, so the walk needs no per-class decoding of what's inside (cf. SC-InteractiveMap's
+`src/SaveParser/Read.js: readEntity`). `properties.py` then searches one blob's byte range.
 """
 
 from __future__ import annotations
@@ -44,12 +29,9 @@ class EntitySpan:
 
 def find_entity_spans(body: bytes, table: ObjectTable) -> tuple[EntitySpan, ...]:
     """One span per object in `table.headers`, in the same order. Raises `ValueError` if the
-    section's own entity count or declared length disagrees with what was walked — both are strong
-    integrity checks, in the same spirit as `loader._validate_total_size`."""
+    section's own entity count or declared length disagrees with what was walked."""
     # The objects section's trailing block (persistent-level flag, level name, collected-object
-    # references) is skipped wholesale via its declared length rather than parsed field-by-field --
-    # none of it feeds this project's contracts, and the declared end lands exactly on the entity
-    # section in both real fixture saves. See object_table.py's module docstring.
+    # references) is skipped via its declared length: none of it feeds this project's contracts.
     reader = ByteReader(body, table.section_end_offset)
 
     entities_length = reader.read_int64()

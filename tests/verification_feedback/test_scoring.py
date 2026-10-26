@@ -1,20 +1,18 @@
-"""Tests for the Stage 15 scoring functions, against hand-built `ResponseArtifact`-shaped fixtures
-per channel, with known-correct expected scores (implementation.md Stage 15) — no live
-orchestrator, no rendered UI."""
+"""Tests for the scoring functions, against hand-built `ResponseArtifact`-shaped fixtures per
+channel, with known-correct expected scores."""
 
 from dataclasses import replace
 
+from tests.game_data import CONSTRUCTOR, IRON_INGOT, IRON_PLATE, SMELTER
+
 from pioneer.contracts import (
-    Building,
     Coordinates,
     Feedback,
-    ItemAmount,
     PlacementRecord,
     ProductionGraph,
     ProductionNode,
     Purity,
     RankedLocation,
-    Recipe,
     ResourceNode,
     ResponseArtifact,
 )
@@ -115,37 +113,9 @@ def test_qualitative_score_defaults_to_none() -> None:
 
 # --- Graph channel ---------------------------------------------------------------------------
 
-_IRON_INGOT = Recipe(
-    recipe_id="Recipe_IngotIron_C",
-    name="Iron Ingot",
-    building_ids=("Build_SmelterMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=30),),
-    outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
-)
-_IRON_PLATE = Recipe(
-    recipe_id="Recipe_IronPlate_C",
-    name="Iron Plate",
-    building_ids=("Build_ConstructorMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
-    outputs=(ItemAmount(item_id="Desc_IronPlate_C", amount_per_minute=20),),
-)
-_RECIPES = (_IRON_INGOT, _IRON_PLATE)
+_RECIPES = (IRON_INGOT, IRON_PLATE)
 
-_SMELTER = Building(
-    building_id="Build_SmelterMk1_C",
-    name="Smelter",
-    power_consumption_mw=4,
-    input_slots=1,
-    output_slots=1,
-)
-_CONSTRUCTOR = Building(
-    building_id="Build_ConstructorMk1_C",
-    name="Constructor",
-    power_consumption_mw=4,
-    input_slots=1,
-    output_slots=1,
-)
-_BUILDINGS = (_SMELTER, _CONSTRUCTOR)
+_BUILDINGS = (SMELTER, CONSTRUCTOR)
 
 
 def _node(node_id: str, recipe_id: str, machine_count: float, building_id: str) -> ProductionNode:

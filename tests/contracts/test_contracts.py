@@ -1,10 +1,36 @@
-"""Stage 1 smoke tests: every contract is importable and constructs with sane sample data.
+"""Smoke tests: every contract is importable and constructs with sane sample data.
 
-Not domain logic — contracts have none. This just proves the shapes are well-formed and that
-`pioneer.contracts` re-exports everything a module would need.
+Contracts hold next to no logic: these prove the shapes are well-formed, their few derived values
+right, and that `pioneer.contracts` re-exports everything a module would need.
 """
 
+import pytest
+
 from pioneer import contracts as c
+
+
+def test_distance_to_is_the_straight_line_distance() -> None:
+    origin = c.Coordinates(x=0, y=0)
+    assert origin.distance_to(c.Coordinates(x=3, y=4)) == pytest.approx(5.0)
+    assert origin.distance_to(c.Coordinates(x=0, y=0, z=5)) == pytest.approx(5.0)
+    assert origin.distance_to(origin) == 0.0
+
+
+def test_a_recipe_says_what_one_machine_makes_of_each_output() -> None:
+    recipe = c.Recipe(
+        recipe_id="Recipe_Alternate_HeavyOilResidue_C",
+        name="Alternate: Heavy Oil Residue",
+        building_ids=("Build_OilRefinery_C",),
+        inputs=(c.ItemAmount(item_id="Desc_LiquidOil_C", amount_per_minute=30),),
+        outputs=(
+            c.ItemAmount(item_id="Desc_HeavyOilResidue_C", amount_per_minute=40),
+            c.ItemAmount(item_id="Desc_PolymerResin_C", amount_per_minute=20),
+        ),
+    )
+    assert recipe.output_rate("Desc_PolymerResin_C") == 20
+    assert recipe.output_rate("Desc_LiquidOil_C") is None
+    assert recipe.produces("Desc_HeavyOilResidue_C")
+    assert not recipe.produces("Desc_LiquidOil_C")
 
 
 def test_recipe_and_friends() -> None:

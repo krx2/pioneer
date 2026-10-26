@@ -1,46 +1,19 @@
-"""Locates and parses the save's object table (TOC): a flat list of every actor/component header
-in the world — class name, level-relative path, and (for actors) world transform.
+"""Locates and parses the save's object table (TOC): every actor/component header in the world —
+class name, level-relative path, and (for actors) world transform.
 
-Getting here means walking past `FSaveObjectVersionData` and `FWorldPartitionValidationData`,
-neither of which is documented anywhere (community docs predate the game's UE5/World Partition
-rewrite; the closest reference implementation found, andraz/satisfactory-save-editor's
-`skipPartitions`, was reverse-engineered by hand against this repo's own fixture saves and gets
-*close* but not byte-exact — e.g. `HLOD*`-named partitions carry an extra field its per-partition
-shape doesn't account for, and per-cell entries within an HLOD partition don't reliably decode as
-plain `FString`, unlike every other partition type). None of that data matters to this project's
-contracts anyway, so rather than nail its exact layout, this module skips straight past it with
-the same resync philosophy as `header.py`: search forward for a structural signature that can
-only plausibly be the object table itself, instead of parsing everything leading up to it.
+The undocumented `FSaveObjectVersionData` and `FWorldPartitionValidationData` before it are
+skipped by resyncing, as in `header.py`: every table starts `[length: int64][numObjects: int32]`
+right before its first header, `[type: int32][ClassName: FString]`, and `ClassName` starts with
+`/Game/` or `/Script/`. A candidate is found from such a path and checked by walking back through
+those fields.
 
-**The anchor:** every object header starts `[type: int32][ClassName: FString]`, and every object
-table starts `[length: int64][numObjects: int32]` immediately before its first header. `ClassName`
-is a UE class path, always starting with `/Game/` or `/Script/`. So: find a `/Game/` or `/Script/`
-occurrence, walk backward through the fixed-width fields that must precede it if it's really a
-table's first `ClassName`, and check they're self-consistent (small `type` flag, a plausible
-object count, a plausible table byte length). Verified against the real saves committed at
-tests/save_parser/fixtures/: walking `numObjects` headers from the table found decodes cleanly
-with zero errors, and the recognizable results (starting buildings, vehicle classes, ...) match
-what's actually in each save — see test_real_saves_object_table.py.
+A save holds one table per level: many small ones for sublevels, then the persistent level's,
+which holds every building. That one is recognized by its object count matching the entity
+section after it, which runs up to a closing block naming `Persistent_Level`. The size thresholds
+are only a fallback for bodies without a closing block (hand-built fixtures).
 
-**Which table.** A save holds one object table per level: hundreds to thousands of small ones for
-the world's sublevels (foliage, rocks, creature spawners, pickups — nothing a player builds), then
-the persistent level's, which holds every building. So the anchor alone isn't enough: the table
-this module wants is the one whose object count matches the entity section right after it, and
-whose entity section runs up to the save's closing block — which names `Persistent_Level` within
-its first bytes. Verified against four real saves (the two fixtures, and two small early-game
-ones): exactly one table passes, and it's the last one in the body. That structural test is what's
-used; the size thresholds below are only the fallback for bodies without a closing block (the
-hand-built test fixtures), and they alone missed a real early-game save whose persistent table is
-only 411 kB.
-
-**The declared `length` covers more than the headers.** It doesn't land on the offset reached after
-reading `numObjects` headers (off by 29 bytes on one fixture, 177 on the other) because a trailing
-block follows them inside the same section: a persistent-level flag, the level name, and a list of
-"collected" object references. 29 bytes is exactly `int32` flag + `FString "Persistent_Level"` +
-`int32` zero collectables; the other fixture's 177 is the same plus its non-empty collectable list.
-`numObjects` drives header parsing, and `section_end_offset` (from that declared `length`) is what
-`entities.py` uses to skip the whole trailing block in one step — verified to land exactly on the
-entity section's own length prefix in both real saves.
+The declared `length` also covers a trailing block after the headers (a persistent-level flag, the
+level name, collected object references): `section_end_offset` skips it in one step.
 """
 
 from __future__ import annotations
@@ -51,13 +24,9 @@ from dataclasses import dataclass
 from pioneer.contracts import Coordinates
 from pioneer.save_parser.binary_reader import ByteReader
 
-# Production defaults, empirically tuned against both real saves committed at
-# tests/save_parser/fixtures/: real save bodies are littered with small, self-consistent-looking
-# (length, count, type) triples that aren't the object table at all (ordinary array-of-object-
-# reference properties elsewhere in the data) -- a real level's object table is enormous by
-# comparison (tens of thousands of objects, megabytes of header data), so requiring a minimum
-# object count and table length is what actually distinguishes it from those false leads. Tests
-# pass smaller thresholds to keep hand-built fixtures small; see test_object_table.py.
+# Fallback thresholds: real save bodies are littered with small, self-consistent-looking (length,
+# count, type) triples that aren't an object table, while the persistent level's is enormous (tens
+# of thousands of objects, megabytes of headers). Hand-built test bodies pass smaller ones.
 _DEFAULT_MIN_OBJECT_COUNT = 1_000
 _MAX_PLAUSIBLE_OBJECT_COUNT = 5_000_000
 _DEFAULT_MIN_TABLE_LENGTH = 500_000
@@ -70,9 +39,7 @@ at byte 4 or 8 in every save seen."""
 
 @dataclass(frozen=True)
 class RawObjectHeader:
-    """One TOC entry. Not a Stage 1 contract — this is the raw shape straight off the wire;
-    mapping it into `PlacementRecord`/`ProductionNode` (with class filtering, recipe lookup, ...)
-    is a later step in this module."""
+    """One TOC entry, raw off the wire."""
 
     is_actor: bool
     class_name: str
@@ -88,8 +55,7 @@ class RawObjectHeader:
 class ObjectTable:
     headers: tuple[RawObjectHeader, ...]
     headers_end_offset: int
-    """Byte offset just past the last header — the start of the section's trailing block (see
-    module docstring)."""
+    """Byte offset just past the last header — the start of the section's trailing block."""
     section_end_offset: int
     """Byte offset just past the whole objects section, from its own declared `length`. Where the
     entity data section begins — see `entities.find_entity_spans`."""
@@ -121,10 +87,8 @@ def find_object_table(
     """Locates the object table in `body` (searching from `search_from` onward) and parses every
     entry in it. Raises `ValueError` if no plausible table is found.
 
-    The persistent level's table is recognized by what follows it (see module docstring).
-    `min_object_count`/`min_table_length` only matter when nothing does — a body without a real
-    save's closing block — to tell a table apart from smaller, coincidentally
-    self-consistent-looking data. Lower them for small hand-built fixtures.
+    The persistent level's table is recognized by what follows it; `min_object_count` and
+    `min_table_length` only matter for a body without a real save's closing block.
     """
     table_start = _find_object_table_start(body, search_from, min_object_count, min_table_length)
     return _read_object_table(body, table_start)
@@ -153,7 +117,7 @@ def _find_object_table_start(
 
 
 def _find_persistent_level_table(body: bytes, search_from: int) -> int | None:
-    """The persistent level's table, recognized by what follows it — see module docstring."""
+    """The persistent level's table, recognized by what follows it."""
     for prefix in _CLASS_PATH_PREFIXES:
         offset = search_from
         while (offset := body.find(prefix, offset)) != -1:

@@ -27,14 +27,13 @@ from pioneer.contracts import (
 )
 from pioneer.qa_engine import Passage
 
-_CM_PER_M = 100.0
+CM_PER_M = 100.0
 """Save coordinates are centimetres; tool results speak metres, so the model never converts."""
 
 
 @dataclass(frozen=True)
 class OrchestratorUnavailable:
-    """Typed "couldn't produce a response" result -- architecture.md §7.5's graceful-degradation
-    invariant applied to the Orchestrator itself: an unreachable LLM or a runaway tool-call loop
+    """Typed "couldn't produce a response" result: an unreachable LLM or a runaway tool-call loop
     comes back as this, never a raised exception."""
 
     reason: str
@@ -67,10 +66,8 @@ the round ended in tool calls). The streaming transport adds `text` and `thinkin
 
 @dataclass(frozen=True)
 class OrchestratorContext:
-    """Everything the Orchestrator needs beyond the player's question -- plain data, no I/O, the
-    same dependency-injection pattern every other module uses. Every field defaults to empty/None
-    so a missing data source (no save loaded, no dedicated server reachable, no knowledge base
-    wired yet) degrades gracefully (architecture.md invariant #5) instead of crashing a tool call.
+    """Everything the Orchestrator needs beyond the player's question -- plain data, no I/O. Every
+    field defaults to empty/None, so a missing data source degrades a tool instead of crashing it.
     """
 
     recipes: tuple[Recipe, ...] = ()
@@ -100,8 +97,7 @@ class OrchestratorContext:
     treated as available."""
     enabled_recipe_ids: frozenset[str] | None = None
     """The recipes the player picked for plans to use -- unlocked or not -- by id; the rest are
-    off limits. `None`: they picked none, so plans use the unlocked ones (see
-    `planning_tools._plan`)."""
+    off limits. `None`: they picked none, so plans use the unlocked ones."""
     plan: Plan | None = None
     """The plan the player accepted in this conversation, if they have: the model is shown it, and
     can draw and revise it (see `plan_tools`). `None`: an answer that plans something offers its
@@ -115,7 +111,7 @@ class OrchestratorContext:
 
 
 @dataclass
-class _ArtifactAccumulator:
+class ArtifactAccumulator:
     """Collects the *real* structured output of whichever tool(s) actually ran this turn, so the
     final `ResponseArtifact` is built from module output, never re-derived from the LLM's text."""
 
@@ -130,7 +126,7 @@ class _ArtifactAccumulator:
     plan_proposal: Plan | None = None
 
 
-class _ToolError(Exception):
+class ToolError(Exception):
     """A tool's own, expected failure (unknown item, no knowledge base, ...), reported back to the
     model as `{"error": message, **details}` -- see `_run_tool`."""
 
@@ -140,7 +136,7 @@ class _ToolError(Exception):
 
 
 @dataclass(frozen=True)
-class _Tool:
+class Tool:
     name: str
     description: str
     parameters: dict[str, Any]

@@ -1,6 +1,7 @@
 """Tests for `app.preferences`: the store on a temporary file, and each section's shape."""
 
 import json
+import logging
 
 import pytest
 
@@ -34,12 +35,15 @@ def test_removing_a_choice_goes_back_to_the_default(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("content", ["{not json", "[1, 2]", "\x00\x01"])
-def test_a_mangled_file_is_ignored_and_then_written_over(tmp_path, content: str) -> None:
+def test_a_mangled_file_is_ignored_and_then_written_over(
+    tmp_path, caplog: pytest.LogCaptureFixture, content: str
+) -> None:
     path = tmp_path / "settings.json"
     path.write_text(content, encoding="utf-8")
 
-    with pytest.warns(UserWarning, match="ignoring"):
+    with caplog.at_level(logging.WARNING, logger="pioneer.app.preferences"):
         store = PreferencesStore(path)
+    assert "ignoring" in caplog.text
     assert store.get("save") is None
 
     store.put("save", {"mode": "auto"})

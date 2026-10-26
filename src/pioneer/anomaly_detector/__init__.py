@@ -1,8 +1,4 @@
-"""Anomaly Detector module (implementation.md Stage 10).
-
-Scans a production state for gaps, power blackouts, and congestion. Depends only on
-`pioneer.contracts`; tested against a deliberately-broken fixture production graph.
-"""
+"""Anomaly Detector: flags production gaps, power blackouts, congestion and miswired machines."""
 
 from pioneer.anomaly_detector.detector import (
     detect_anomalies,

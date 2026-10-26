@@ -1,0 +1,18 @@
+:root { color-scheme: dark; }
+html, body { margin:0; height:100%; background:#1f2427; font-family: system-ui, sans-serif; }
+svg { width:100%; height:100%; display:block; cursor:grab; touch-action:none; user-select:none; }
+svg image { -webkit-user-drag:none; user-drag:none; }
+svg.dragging { cursor:grabbing; }
+.grid-line { stroke:#2c3439; }
+.label { fill:#d3dade; paint-order: stroke; stroke:#1f2427; }
+.badge { fill:#1f2427; font-weight:bold; }
+.haul { stroke:#33c17a; stroke-width:2px; vector-effect:non-scaling-stroke; opacity:0.85; }
+.sends { stroke:#f2a344; stroke-width:4px; vector-effect:non-scaling-stroke; opacity:0.9; }
+.sends-label { fill:#f2c98f; }
+#legend {
+  position:fixed; top:12px; left:12px; display:flex; flex-wrap:wrap; gap:14px;
+  color:#d3dade; font-size:12px; background:#16191bcc; padding:8px 12px;
+  border-radius:8px; max-width: 90vw;
+}
+#legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+#legend .sq { display:inline-block; width:10px; height:10px; margin-right:6px; }

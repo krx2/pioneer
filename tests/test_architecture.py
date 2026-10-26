@@ -1,8 +1,8 @@
-"""The dependency rule from implementation.md, checked rather than trusted: a module may import
-`pioneer.contracts` and nothing else of this project's — that's what keeps each one independently
-testable. The exceptions below are the ones the plan names: the Orchestrator *is* the integration,
-Stage 15 scoring may call the finished Verifier, the transports implement other modules' Protocols,
-and the app, web UI and launcher wire everything together.
+"""The dependency rule (docs/architecture.md §8), checked rather than trusted: a module may import
+`pioneer.contracts` and `pioneer.common` and nothing else of this project's — that's what keeps
+each one independently testable. The exceptions: the Orchestrator *is* the integration, scoring
+may call the Verifier, the transports implement other modules' Protocols, and the app, web UI and
+launcher wire everything together.
 """
 
 import ast
@@ -23,7 +23,7 @@ _ALLOWED_IMPORTS: dict[str, set[str]] = {
         "verification_feedback",
         "verifier",
     },
-    # Stage 15 may call the finished Verifier, and it measures an answer against retrieved text
+    # Scoring may call the Verifier, and it measures an answer against retrieved text
     # with the same notion of a word that retrieval uses.
     "verification_feedback": {"qa_engine", "verifier"},
     "llm_client": {"orchestrator", "qa_engine", "verification_feedback"},
@@ -84,7 +84,7 @@ def _imported_modules(path: Path) -> set[str]:
 )
 def test_a_module_imports_only_contracts_and_what_the_plan_allows(source_file: Path) -> None:
     owner = _module_owner(source_file)
-    allowed = {"contracts", owner} | _ALLOWED_IMPORTS.get(owner, set())
+    allowed = {"contracts", "common", owner} | _ALLOWED_IMPORTS.get(owner, set())
 
     forbidden = _imported_modules(source_file) - allowed
 
@@ -96,11 +96,16 @@ def test_the_contracts_package_depends_on_nothing_else() -> None:
         assert _imported_modules(source_file) <= {"contracts"}
 
 
+def test_the_common_package_depends_on_contracts_alone() -> None:
+    for source_file in (_SOURCE_ROOT / "common").glob("*.py"):
+        assert _imported_modules(source_file) <= {"common", "contracts"}
+
+
 def test_every_module_is_covered_by_the_rule() -> None:
     """A new module package without tests of its own would slip past the parametrization above."""
     packages = {
         path.parent.name for path in _SOURCE_ROOT.rglob("*.py") if path.name != "__init__.py"
     }
     top_level = {path.stem for path in _SOURCE_ROOT.glob("*.py") if path.name != "__init__.py"}
-    assert "contracts" in packages
+    assert {"contracts", "common"} <= packages
     assert set(_ALLOWED_IMPORTS) <= packages | top_level

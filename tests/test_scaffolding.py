@@ -1,9 +1,10 @@
-"""Stage 0 smoke tests: every module package imports cleanly and config loads.
+"""Smoke tests: every module package imports cleanly and config loads.
 
 Not a domain test suite — just proof the scaffolding (package layout, config mechanism) works.
 """
 
 import importlib
+import logging
 
 import pytest
 
@@ -14,6 +15,7 @@ from pioneer.config import Settings, default_save_directory, default_save_root
 
 MODULE_NAMES = [
     "pioneer.contracts",
+    "pioneer.common",
     "pioneer.knowledge_base",
     "pioneer.resource_db",
     "pioneer.verifier",
@@ -95,11 +97,12 @@ def test_settings_read_values_from_env(clean_env: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parametrize("port", ["abc", "0", "70000", "77.7"])
 def test_a_server_port_that_is_not_one_is_ignored_with_a_warning(
-    clean_env: pytest.MonkeyPatch, port: str
+    clean_env: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, port: str
 ) -> None:
     clean_env.setenv("PIONEER_SERVER_PORT", port)
 
-    with pytest.warns(UserWarning, match="PIONEER_SERVER_PORT"):
+    with caplog.at_level(logging.WARNING, logger="pioneer.config"):
         settings = Settings.from_env()
+    assert "PIONEER_SERVER_PORT" in caplog.text
 
     assert settings.dedicated_server_port is None

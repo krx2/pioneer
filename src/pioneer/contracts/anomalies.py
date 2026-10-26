@@ -1,7 +1,4 @@
-"""Anomaly report shape.
-
-Produced by the Anomaly Detector (Stage 10).
-"""
+"""Anomaly report shape, produced by the Anomaly Detector."""
 
 from __future__ import annotations
 

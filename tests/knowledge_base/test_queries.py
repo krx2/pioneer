@@ -12,10 +12,8 @@ from pioneer.knowledge_base.queries import (
     item_by_id,
     milestone_progress,
     prerequisites_for_technology,
-    raw_resource_ids,
     recipe_by_id,
     recipe_is_unlocked,
-    recipes_for_output,
     research_trees,
     resolve_item,
     technology_for_recipe,
@@ -67,15 +65,6 @@ def test_recipe_by_id_found_and_missing() -> None:
     assert recipe_by_id(KB, "does_not_exist") is None
 
 
-def test_recipes_for_output_returns_all_alternates() -> None:
-    recipes = recipes_for_output(KB, "iron_ingot")
-    assert set(recipes) == {_RECIPE_INGOT, _RECIPE_INGOT_ALT}
-
-
-def test_recipes_for_output_unknown_item() -> None:
-    assert recipes_for_output(KB, "nonexistent_item") == ()
-
-
 def test_building_for_found_and_missing() -> None:
     assert building_for(KB, "smelter") is _SMELTER
     assert building_for(KB, "does_not_exist") is None
@@ -102,10 +91,6 @@ def test_prerequisites_for_unknown_technology() -> None:
 def test_item_by_id_found_and_missing() -> None:
     assert item_by_id(KB, "iron_plate") == Item(item_id="iron_plate", name="Iron Plate")
     assert item_by_id(KB, "does_not_exist") is None
-
-
-def test_raw_resource_ids() -> None:
-    assert raw_resource_ids(KB) == frozenset({"iron_ore", "water"})
 
 
 def test_find_items_exact_name_beats_a_longer_match() -> None:

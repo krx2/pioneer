@@ -1,0 +1,37 @@
+:root { color-scheme: dark; }
+html, body { margin:0; height:100%; background:#1f2427; font-family: system-ui, sans-serif; }
+svg { width:100%; height:100%; display:block; }
+/* Orange is what the player already has, blue is what this plan adds -- so an extended stage's
+   edge alternates orange and blue (existing machines, more of them added): blue dashes laid over
+   an orange edge. An input the plan takes in is grey if it comes out of the ground and orange if
+   it's a part, which the player already makes; what the plan produces is green. Raw resources and
+   output keep the dashed edge that marks a node as a boundary rather than a machine. */
+.node-existing circle { fill:#e0812f; stroke:#f5bc84; }
+.node-new circle { fill:#2f6fed; stroke:#9db8f7; }
+.node-extended circle { fill:#e0812f; stroke:#e0812f; stroke-width:4px; }
+.node.node-extended .dash { fill:none; stroke:#2f6fed; stroke-dasharray:1 1; }
+.node-raw circle { fill:#5b6b7c; stroke:#aab6c2; stroke-dasharray:3 2; }
+.node-output circle { fill:#33c17a; stroke:#8fe0b6; stroke-dasharray:3 2; }
+.node text { fill:#edf1f3; font-size:11px; paint-order: stroke; stroke:#1f2427; stroke-width:3px; }
+.node .line-0 { font-weight:600; }
+.node .line-1 { fill:#b9c3c9; }
+.node .line-2 { fill:#d3dade; }
+.link { fill:none; stroke:#56636c; stroke-width:1.6px; stroke-opacity:0.9; }
+.link.back { stroke-dasharray:5 4; }
+.arrow { fill:#56636c; }
+.link-label { fill:#9fabb3; font-size:9.5px; paint-order: stroke; stroke:#1f2427;
+  stroke-width:3px; }
+#legend { position:fixed; top:12px; left:12px; display:flex; gap:16px; color:#d3dade;
+  font-size:12px; background:#16191bcc; padding:8px 12px; border-radius:8px; }
+#legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:6px; }
+#legend .raw { background:#5b6b7c; border:1px dashed #aab6c2; }
+#legend .existing { background:#e0812f; }
+#legend .new { background:#2f6fed; }
+#legend .extended { background:repeating-conic-gradient(#e0812f 0 45deg, #2f6fed 0 90deg); }
+#legend .output { background:#33c17a; border:1px dashed #8fe0b6; }
+/* A node with an icon keeps its colour as a ring around the icon. */
+.node.has-icon circle { fill:#161a1d; stroke-width:3px; }
+.node-existing.has-icon circle, .node-extended.has-icon circle { stroke:#e0812f; }
+.node-new.has-icon circle { stroke:#2f6fed; }
+.node-raw.has-icon circle { stroke:#aab6c2; }
+.node-output.has-icon circle { stroke:#33c17a; }

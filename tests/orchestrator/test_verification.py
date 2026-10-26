@@ -3,40 +3,25 @@
 from dataclasses import replace
 
 import pytest
+from tests.game_data import CONSTRUCTOR, IRON_PLATE
 
 from pioneer.contracts import (
     Building,
     Coordinates,
     Feedback,
-    ItemAmount,
     MaterialFlow,
     PlacementRecord,
     ProductionGraph,
     ProductionNode,
     Purity,
     RankedLocation,
-    Recipe,
     ResourceNode,
     ResponseArtifact,
 )
 from pioneer.orchestrator import OrchestratorContext, verify_response
 from pioneer.verification_feedback import JudgeVerdict
 
-_PLATE = Recipe(
-    recipe_id="Recipe_IronPlate_C",
-    name="Iron Plate",
-    building_ids=("Build_ConstructorMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
-    outputs=(ItemAmount(item_id="Desc_IronPlate_C", amount_per_minute=20),),
-)
-_CONSTRUCTOR = Building(
-    building_id="Build_ConstructorMk1_C",
-    name="Constructor",
-    power_consumption_mw=4,
-    input_slots=1,
-    output_slots=1,
-)
-_CONTEXT = OrchestratorContext(recipes=(_PLATE,), buildings=(_CONSTRUCTOR,))
+_CONTEXT = OrchestratorContext(recipes=(IRON_PLATE,), buildings=(CONSTRUCTOR,))
 _PLAN = ProductionGraph(
     nodes=(
         ProductionNode(
@@ -96,7 +81,7 @@ def test_a_plans_inputs_from_outside_are_not_held_against_it() -> None:
 
 def test_a_graph_the_data_cannot_score_is_left_unscored_without_failing_the_rest() -> None:
     no_constructor = OrchestratorContext(
-        recipes=(_PLATE,),
+        recipes=(IRON_PLATE,),
         buildings=(
             Building(
                 building_id="Build_SmelterMk1_C",
@@ -215,8 +200,8 @@ def test_an_expansion_is_scored_on_the_machines_it_adds_against_spare_power() ->
         is_existing=True,
     )
     context = OrchestratorContext(
-        recipes=(_PLATE,),
-        buildings=(_CONSTRUCTOR, _BURNER),
+        recipes=(IRON_PLATE,),
+        buildings=(CONSTRUCTOR, _BURNER),
         existing_graph=ProductionGraph(nodes=(existing_node,), flows=()),
         existing_placements=(
             *(

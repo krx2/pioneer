@@ -1,8 +1,5 @@
-"""Expansion change-set shape.
-
-Produced by the Expansion Advisor (Stage 8); consumed by Graph presentation (Stage 13) via its
-`resulting_graph` field. Its `ChangeItem`s also say what a revision changes in the player's plan
-(see `contracts.plan`) -- which is where stages come to be removed or switched to another recipe.
+"""Expansion change-set shape. Its `ChangeItem`s also say what a revision changes in the player's
+plan -- which is where stages come to be removed or switched to another recipe.
 """
 
 from __future__ import annotations

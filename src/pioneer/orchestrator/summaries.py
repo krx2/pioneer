@@ -19,14 +19,14 @@ from pioneer.verifier import (
 )
 
 
-def _per_item(flows: Iterable[MaterialFlow]) -> dict[str, float]:
+def per_item(flows: Iterable[MaterialFlow]) -> dict[str, float]:
     totals: dict[str, float] = {}
     for flow in flows:
         totals[flow.item_id] = totals.get(flow.item_id, 0.0) + flow.amount_per_minute
     return totals
 
 
-def _graph_summary(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:
+def graph_summary(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:
     """Each stage of a plan -- recipe, the building it runs in, how many, and their draw -- with
     the plan's net item balance and power."""
     summary: dict[str, Any] = {
@@ -35,7 +35,7 @@ def _graph_summary(graph: ProductionGraph, context: OrchestratorContext) -> dict
                 "recipe_id": node.recipe_id,
                 "building_id": node.building_id,
                 "machines": node.machine_count,
-                **_stage_power(node.building_id, node.machine_count, context),
+                **stage_power(node.building_id, node.machine_count, context),
             }
             for node in graph.nodes
         ],
@@ -66,7 +66,7 @@ def _transport(graph: ProductionGraph, context: OrchestratorContext) -> list[dic
     ]
 
 
-def _stage_power(
+def stage_power(
     building_id: str, machines: float, context: OrchestratorContext
 ) -> dict[str, float]:
     """`{"power_mw": ...}` for `machines` of `building_id` -- empty when the knowledge base doesn't

@@ -1,8 +1,5 @@
-"""Real HTTPS transport for the Dedicated Server API — the concrete `PostJson` that
-`query_server_state` takes, picked at Stage 16 the way `llm_client` picks the LLM's.
-
-Standard library only (`urllib`), like `llm_client`, so talking to a server never needs a new
-dependency.
+"""Real HTTPS transport for the Dedicated Server API: the concrete `PostJson`, standard library
+only (`urllib`).
 
 **No certificate verification.** A dedicated server serves a self-signed certificate unless its
 owner installs a real one, and the API documentation shipped with the game

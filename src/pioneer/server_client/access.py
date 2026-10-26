@@ -81,7 +81,7 @@ def verify_token(post_json: PostJson, base_url: str, token: str) -> bool | Serve
 
 def log_in(post_json: PostJson, base_url: str, password: str) -> LoginToken | ServerUnavailable:
     """A token for the server whose admin password is `password` — a lasting application token
-    when the server makes one (see the module docstring)."""
+    when the server makes one."""
     answer = _call(
         post_json,
         base_url,

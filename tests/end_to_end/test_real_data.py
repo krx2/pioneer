@@ -1,6 +1,6 @@
-"""End-to-end checks over real data — implementation.md Stage 16's top-level confidence check.
+"""End-to-end checks over real data.
 
-The real Knowledge Base from `docs/en-US.json` and a real save from `tests/save_parser/fixtures/`,
+The real Knowledge Base from `assets/en-US.json` and a real save from `tests/save_parser/fixtures/`,
 wired through `app.build_context` exactly as the CLI wires them, driven by a scripted stand-in for
 the LLM. Only the model is faked: every module call underneath is the real one, on real data —
 which is what catches problems no fixture-based module test can, like the planner walking in
@@ -10,7 +10,6 @@ circles through 1.0's ore-conversion recipes.
 import json
 import re
 from dataclasses import replace
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,38 +18,31 @@ from pioneer.app import (
     DOCS_JSON,
     RESOURCE_NODES_JSON,
     build_context,
-    load_knowledge_base,
     load_resource_nodes,
 )
+from pioneer.common import raw_resource_ids
 from pioneer.contracts import ResponseArtifact
 from pioneer.knowledge_base import (
     KnowledgeBase,
     current_tier,
     milestone_progress,
-    raw_resource_ids,
     recipe_is_unlocked,
 )
 from pioneer.orchestrator import OrchestratorContext, handle_query
 from pioneer.production_planner.planner import plan_production
-from pioneer.save_parser import load_save_state
 from pioneer.verifier import power_balance
 
-_SAVES = Path(__file__).parent.parent / "save_parser" / "fixtures"
-_SAVE = _SAVES / "stal_mielec.sav"
-
-pytestmark = pytest.mark.skipif(not DOCS_JSON.exists(), reason="docs/en-US.json not present")
+pytestmark = pytest.mark.skipif(not DOCS_JSON.exists(), reason="assets/en-US.json not present")
 
 
 @pytest.fixture(scope="module")
-def kb() -> KnowledgeBase:
-    kb = load_knowledge_base()
-    assert kb is not None
-    return kb
+def kb(real_kb: KnowledgeBase) -> KnowledgeBase:
+    return real_kb
 
 
 @pytest.fixture(scope="module")
-def context(kb: KnowledgeBase) -> OrchestratorContext:
-    return build_context(kb, load_save_state(_SAVE))
+def context(kb: KnowledgeBase, real_save) -> OrchestratorContext:
+    return build_context(kb, real_save("stal_mielec"))
 
 
 def _ask(
@@ -165,7 +157,7 @@ def test_names_players_use_resolve_to_the_real_item(context, name, item_id) -> N
     ],
 )
 def test_real_targets_plan_with_standard_recipes_on_real_buildings(kb, item_id) -> None:
-    graph = plan_production(item_id, 10, kb.recipes, raw_item_ids=raw_resource_ids(kb))
+    graph = plan_production(item_id, 10, kb.recipes, raw_item_ids=raw_resource_ids(kb.items))
     recipes = {r.recipe_id: r for r in kb.recipes}
 
     assert graph.nodes
@@ -174,7 +166,7 @@ def test_real_targets_plan_with_standard_recipes_on_real_buildings(kb, item_id) 
 
 
 def test_every_item_with_a_recipe_can_be_planned(kb) -> None:
-    raw = raw_resource_ids(kb)
+    raw = raw_resource_ids(kb.items)
     craftable = sorted({o.item_id for r in kb.recipes for o in r.outputs} - raw)
     failures = {}
     for item_id in craftable:
@@ -216,10 +208,10 @@ def test_expansion_extends_what_the_save_already_runs(context) -> None:
         assert flow.target_node_id in node_ids | {None}
 
 
-def test_expansion_already_covered_by_surplus_builds_nothing(kb) -> None:
+def test_expansion_already_covered_by_surplus_builds_nothing(kb, real_save) -> None:
     """wielka_polska_niesmiertelna overproduces Reinforced Iron Plate: 5/min more is output it
     already has spare, not a reason to build anything."""
-    context = build_context(kb, load_save_state(_SAVES / "wielka_polska_niesmiertelna.sav"))
+    context = build_context(kb, real_save("wielka_polska_niesmiertelna"))
 
     _, [result] = _ask(
         context,
@@ -234,15 +226,15 @@ def test_expansion_already_covered_by_surplus_builds_nothing(kb) -> None:
 
 
 @pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna"])
-def test_diagnosis_of_a_real_save_flags_only_craftable_shortfalls(kb, save_name) -> None:
+def test_diagnosis_of_a_real_save_flags_only_craftable_shortfalls(kb, save_name, real_save) -> None:
     """Every extractor's ore and every hand-gathered item (Wood, Mycelia) is an input from outside
     the factory, not a shortfall; the placed generators out-produce the placed consumers, with the
     generators' own fuel counted as consumed."""
-    context = build_context(kb, load_save_state(_SAVES / f"{save_name}.sav"))
+    context = build_context(kb, real_save(save_name))
 
     _, [result] = _ask(context, ("diagnose_factory_problems", {}))
 
-    craftable = {o.item_id for r in kb.recipes for o in r.outputs} - raw_resource_ids(kb)
+    craftable = {o.item_id for r in kb.recipes for o in r.outputs} - raw_resource_ids(kb.items)
     deficits = {a["item_id"] for a in result["anomalies"] if a["kind"] == "resource_deficit"}
     assert deficits
     assert deficits <= craftable
@@ -252,15 +244,15 @@ def test_diagnosis_of_a_real_save_flags_only_craftable_shortfalls(kb, save_name)
 
 needs_node_data = pytest.mark.skipif(
     not RESOURCE_NODES_JSON.exists(),
-    reason="docs/resource_nodes.json not present",
+    reason="assets/resource_nodes.json not present",
 )
 
 
 @needs_node_data
 @pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna", "alfa", "tak"])
-def test_every_node_a_real_save_mines_is_in_the_node_data(save_name) -> None:
+def test_every_node_a_real_save_mines_is_in_the_node_data(save_name, real_save) -> None:
     known = {node.node_id for node in load_resource_nodes(RESOURCE_NODES_JSON)}
-    state = load_save_state(_SAVES / f"{save_name}.sav")
+    state = real_save(save_name)
 
     mined = {
         p.resource_node_id
@@ -273,8 +265,8 @@ def test_every_node_a_real_save_mines_is_in_the_node_data(save_name) -> None:
 
 
 @needs_node_data
-def test_location_ranking_on_a_real_save_skips_the_nodes_it_already_mines(kb) -> None:
-    state = load_save_state(_SAVE)
+def test_location_ranking_on_a_real_save_skips_the_nodes_it_already_mines(kb, real_save) -> None:
+    state = real_save("stal_mielec")
     context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
 
     artifact, [result] = _ask(
@@ -291,25 +283,26 @@ def test_location_ranking_on_a_real_save_skips_the_nodes_it_already_mines(kb) ->
 
 @needs_node_data
 @pytest.mark.parametrize("save_name", ["stal_mielec", "wielka_polska_niesmiertelna", "alfa", "tak"])
-def test_with_node_data_the_real_saves_power_and_ore_add_up(kb, save_name) -> None:
+def test_with_node_data_the_real_saves_power_and_ore_add_up(kb, save_name, real_save) -> None:
     """With extraction known, ore gets judged like everything else; hand-gathered items still
     don't, and neither save is in a blackout."""
-    state = load_save_state(_SAVES / f"{save_name}.sav")
+    state = real_save(save_name)
     context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
 
     _, [result] = _ask(context, ("diagnose_factory_problems", {}))
 
-    craftable_or_raw = {o.item_id for r in kb.recipes for o in r.outputs} | raw_resource_ids(kb)
+    craftable = {o.item_id for r in kb.recipes for o in r.outputs}
+    craftable_or_raw = craftable | raw_resource_ids(kb.items)
     deficits = {a["item_id"] for a in result["anomalies"] if a["kind"] == "resource_deficit"}
     assert deficits <= craftable_or_raw
     assert "power_blackout" not in {a["kind"] for a in result["anomalies"]}
 
 
 @needs_node_data
-def test_the_water_a_real_saves_coal_generators_drink_is_not_spare(kb) -> None:
+def test_the_water_a_real_saves_coal_generators_drink_is_not_spare(kb, real_save) -> None:
     """stal_mielec runs 36 coal generators, 45 m³ of water a minute each: counting only their coal
     left 1620 m³/min of water looking overproduced."""
-    state = load_save_state(_SAVE)
+    state = real_save("stal_mielec")
     context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
 
     _, [result] = _ask(context, ("diagnose_factory_problems", {}))
@@ -365,11 +358,11 @@ def test_a_game_question_is_answered_from_the_real_corpus(context) -> None:
 
 
 @needs_node_data
-def test_an_expansion_on_a_real_save_names_where_to_build(kb) -> None:
+def test_an_expansion_on_a_real_save_names_where_to_build(kb, real_save) -> None:
     """stal_mielec's screws and rods come from one belted-together factory and most of its ingots
     from another: each stage is extended where it already runs, and the ore for them comes from a
     free deposit."""
-    state = load_save_state(_SAVE)
+    state = real_save("stal_mielec")
     context = build_context(kb, state, load_resource_nodes(RESOURCE_NODES_JSON))
 
     artifact, [result] = _ask(
@@ -395,10 +388,10 @@ def test_an_expansion_on_a_real_save_names_where_to_build(kb) -> None:
     assert given == pytest.approx(result["raw_resources_needed_per_minute"]["Desc_OreIron_C"])
 
 
-def test_real_saves_group_into_factory_sites(kb) -> None:
+def test_real_saves_group_into_factory_sites(kb, real_save) -> None:
     """A factory is what the save's belts and pipes join: alfa's early base is all one."""
     for save_name, expected in (("alfa", 1), ("tak", 4), ("stal_mielec", 18)):
-        context = build_context(kb, load_save_state(_SAVES / f"{save_name}.sav"))
+        context = build_context(kb, real_save(save_name))
         assert len(context.factory_sites) == expected, save_name
 
 
@@ -439,8 +432,8 @@ def test_with_every_screw_recipe_turned_off_the_plan_names_them(context) -> None
         ("alfa", 4, (6, 3, 3, 2, 2, 0, 0, 0, 0, 0)),
     ],
 )
-def test_milestone_progress_from_real_saves(kb, save: str, tier: int, unlocked) -> None:
-    state = load_save_state(_SAVES / f"{save}.sav")
+def test_milestone_progress_from_real_saves(kb, save: str, tier: int, unlocked, real_save) -> None:
+    state = real_save(save)
 
     progress = milestone_progress(kb.technologies, state.unlocked_technology_ids)
 

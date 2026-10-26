@@ -1,27 +1,13 @@
 """The game's own map, drawn under the markers of every map page: the picture, the tiles it's cut
 into, and where in the world it lies.
 
-`docs/map/map.jpg` is the official map of the game's world from its wiki — the developers' own
-artwork, like the icons in `docs/icons/` — 5000 px square. Drawn whole, a page would load all of it
-to show the whole world on a few hundred pixels, and stretch it across the screen zoomed in. So the
-pages draw it from tiles: `python -m pioneer.map_image [picture]` cuts it into levels, each half the
-size of the one above, down to one no larger than 2 × 2 tiles, and every level into `TILE_SIZE` px
-tiles, written to `docs/map/tiles/<level>/<column>_<row>.webp` (level 0 the smallest) with a
-`tiles.json` saying what's there — committed like the icons. A page draws, for the part of the
-world on screen, the level that's sharp at its zoom over the coarser ones, which show while it
-loads. Every tile reaches `TILE_OVERLAP` px into its right and lower neighbours, so no seam shows
-between them.
+`assets/map/map.jpg` is the official 5000 px map from the game's wiki. `python -m pioneer.map_image
+[picture]` cuts it into levels, each half the size of the one above, and every level into
+`TILE_SIZE` px tiles reaching `TILE_OVERLAP` px into their neighbours, so no seam shows. Only that
+needs Pillow (a dev dependency).
 
-Only cutting the tiles needs Pillow (a dev dependency); at runtime the pages are served what's
-there. Without the tiles the map pages draw the picture whole, and without either the plain grid
-they always did.
-
-**Calibration.** Save and resource node positions are centimetres in the game's world, x growing
-east and y south — as on the picture, whose top left is the world's north-west corner. The picture
-spans the world's bounds as the community's map tools use them: x from -324 698.83 to 425 301.83
-and y from -375 000 to 375 000, 7.5 km each way. tests/test_map_image.py checks that against the
-shipped node data: deposits land on land, none off the map — and the picture flipped, or shifted by
-100 m, does markedly worse.
+Positions are centimetres in the game's world, x east and y south; the picture spans the bounds
+the community's map tools use, its top left the world's north-west corner.
 """
 
 from __future__ import annotations
@@ -35,7 +21,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-MAP_DIR = Path(__file__).parent.parent.parent / "docs" / "map"
+MAP_DIR = Path(__file__).parent.parent.parent / "assets" / "map"
 MAP_IMAGE = MAP_DIR / "map.jpg"
 TILE_DIR = MAP_DIR / "tiles"
 TILE_SIZE = 512

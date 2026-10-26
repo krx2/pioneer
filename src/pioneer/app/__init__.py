@@ -1,30 +1,13 @@
-"""Composition root — wires config, the real LLM transport, the game data and the Orchestrator into
-a runnable assistant. Everything below this package is transport-agnostic and independently
-testable; this is the one place a concrete LLM backend gets picked and real data gets loaded off
-disk (implementation.md Stage 16).
+"""Composition root: the one place the real LLM transport is picked and real data is loaded.
 
-Run as:
-
-    python -m pioneer.app "I want to produce 10/min of Iron Plate"
-
-Requires a local OpenAI-compatible LLM server (Ollama, llama.cpp, vLLM, ...) reachable at
-`PIONEER_LLM_BASE_URL` -- see `.env.example`.
-
-- `loading`: the knowledge base from the game's own `docs/en-US.json` export, the resource node
-  data shipped at `docs/resource_nodes.json`, live state from the dedicated server, and
-  `build_context`, which turns whatever loaded into the Orchestrator's context.
-- `live`: `LiveContext`, which keeps that context current while the assistant runs -- a newer
-  save is read as soon as one appears, the server is asked again once its answer is stale -- and
-  which the web UI's panels steer: which save to read, which server to ask.
-- `sources`: what the context is built from right now, source by source, for the page's header.
-- `preferences`: the choices made in those panels, kept in `data/settings.json` over `.env`.
+- `loading`: each data source off disk or the network, and `build_context`.
+- `live`: `LiveContext`, which keeps the context current while the assistant runs.
+- `sources`: what the context is built from right now, source by source.
+- `preferences`: the choices made in the web UI's panels, kept over `.env`.
 - `runtime`: the assistant as configured, and `ask`.
 
-Each source degrades independently, per architecture.md invariant #5: a missing save leaves
-`existing_graph` unset and the expansion/diagnosis tools say so rather than inventing a factory,
-missing node data leaves the location tool unavailable, and a missing knowledge base leaves
-planning unavailable rather than guessing recipes. Nothing here raises on missing data -- only on
-a missing LLM endpoint, without which there's no assistant at all.
+Each source degrades on its own: nothing here raises on missing data, only on a missing LLM
+endpoint.
 """
 
 from pioneer.app.live import SERVER_STATE_TTL_SECONDS, LiveContext

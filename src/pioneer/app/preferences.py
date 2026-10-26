@@ -1,29 +1,24 @@
-"""What the player picked in the web UI's panels — which save to read, the dedicated server's
-address and token, which recipes planning may use — kept in `data/settings.json` (gitignored), so
-the CLI and the web UI work from the same choices.
+"""What the player picked in the web UI's panels — which save to read, the dedicated server, which
+recipes planning may use — kept in `data/settings.json`, so the CLI and the web UI share them.
 
-They sit on top of `.env`: a section this file has wins, one it doesn't leaves the `.env` value (or
-the default) in force. Nothing here ever writes `.env`: it stays what a run starts from, and
-removing a section goes back to it.
-
-Written atomically — a temporary file next to it, then `replace` — so a crash mid-write leaves the
-old file whole. A file that can't be read, or isn't a JSON object, is ignored with a warning and
-the defaults apply, the way the feedback log skips a torn line: a mangled settings file shouldn't
-stop the assistant (architecture.md invariant #5), and the next choice made in the page writes a
-good one over it. A section whose shape this version doesn't understand is ignored the same way.
+A section this file has wins over `.env`, which is never written. Written atomically. A file that
+can't be read, or a section of a shape this version doesn't understand, is ignored with a warning:
+a mangled settings file shouldn't stop the assistant, and the next choice made overwrites it.
 """
 
 from __future__ import annotations
 
 import copy
 import json
-import os
-import tempfile
+import logging
 import threading
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, get_args
+
+from pioneer.common import write_text_atomic
+
+_log = logging.getLogger(__name__)
 
 SaveMode = Literal["auto", "session", "file"]
 """How the save to read is picked: the newest in a folder (the game rotates its autosaves through
@@ -68,27 +63,16 @@ class PreferencesStore:
         try:
             values = json.loads(self._path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
-            warnings.warn(f"ignoring {self._path}: {error}", stacklevel=3)
+            _log.warning("ignoring %s: %s", self._path, error)
             return {}
         if not isinstance(values, dict):
-            warnings.warn(f"ignoring {self._path}: not a JSON object", stacklevel=3)
+            _log.warning("ignoring %s: not a JSON object", self._path)
             return {}
         return values
 
     def _write(self) -> None:
-        if self._path is None:
-            return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        handle, temporary = tempfile.mkstemp(
-            dir=self._path.parent, prefix=f"{self._path.name}.", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(handle, "w", encoding="utf-8") as file:
-                json.dump(self._values, file, ensure_ascii=False, indent=2)
-            os.replace(temporary, self._path)
-        except BaseException:
-            Path(temporary).unlink(missing_ok=True)
-            raise
+        if self._path is not None:
+            write_text_atomic(self._path, json.dumps(self._values, ensure_ascii=False, indent=2))
 
 
 @dataclass(frozen=True)

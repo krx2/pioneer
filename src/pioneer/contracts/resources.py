@@ -1,8 +1,4 @@
-"""Static resource node shapes.
-
-Produced by the Resource/Map Database module (Stage 3); consumed by the Location Advisor
-(Stage 9) and Map presentation (Stage 14).
-"""
+"""Static resource node shapes."""
 
 from __future__ import annotations
 

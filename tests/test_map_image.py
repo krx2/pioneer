@@ -9,7 +9,7 @@ from pioneer.map_image import MAP_IMAGE, WORLD_BOUNDS
 
 Image = pytest.importorskip("PIL.Image")
 
-pytestmark = pytest.mark.skipif(not MAP_IMAGE.is_file(), reason="docs/map/map.jpg not present")
+pytestmark = pytest.mark.skipif(not MAP_IMAGE.is_file(), reason="assets/map/map.jpg not present")
 
 
 def _where(picture, x: float, y: float, bounds=WORLD_BOUNDS, *, flip: bool = False) -> str:

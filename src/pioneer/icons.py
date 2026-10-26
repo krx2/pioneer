@@ -4,8 +4,8 @@ the chat show next to an item or building.
 The game keeps its icons inside its UE5 IoStore archives, which FModel reads and umodel doesn't
 (see README for the export). `python -m pioneer.icons <FModel export folder>` then picks out the
 icon of every item, building and belt/pipe tier the knowledge base knows, scales it down to
-`ICON_SIZE` px and writes it to `docs/icons/<class id>.png`, committed with the rest of the game
-data. Which texture is a class's icon comes from its `mSmallIcon` in `docs/en-US.json`; a placed
+`ICON_SIZE` px and writes it to `assets/icons/<class id>.png`, committed with the rest of the game
+data. Which texture is a class's icon comes from its `mSmallIcon` in `assets/en-US.json`; a placed
 building (`Build_X_C`) has none of its own, so it takes its build-menu descriptor's (`Desc_X_C`).
 
 Only that import needs Pillow (a dev dependency). At runtime nothing here is used but `ICON_DIR`:
@@ -27,8 +27,8 @@ from typing import Any
 from pioneer.knowledge_base import KnowledgeBase, load_from_dict
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
-ICON_DIR = _PROJECT_ROOT / "docs" / "icons"
-_DOCS_JSON = _PROJECT_ROOT / "docs" / "en-US.json"
+ICON_DIR = _PROJECT_ROOT / "assets" / "icons"
+_DOCS_JSON = _PROJECT_ROOT / "assets" / "en-US.json"
 ICON_SIZE = 96
 """Pixels a side: sharp at the sizes the pages draw icons, on a high-density screen or zoomed in."""
 

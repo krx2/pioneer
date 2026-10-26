@@ -1,28 +1,12 @@
 """Maps the raw object table into `PlacementRecord`s: every placed building, with its class and
 world position.
 
-A "building" is any actor whose class lives under the game's own `/Game/FactoryGame/Buildable/`
-asset path — the same convention the game itself uses to distinguish buildable structures from
-everything else in the world (foliage, resource nodes, creatures, pickups, vehicles, ...). This
-mirrors how knowledge_base's loader filters recipes/buildings by `NativeClass`, just via asset
-path instead, since the object table carries no equivalent field.
-
-`building_id` is the short class name (e.g. `Build_SmelterMk1_C`, taken from
-`/Game/.../Build_SmelterMk1.Build_SmelterMk1_C`) — the same convention knowledge_base's loader
-uses for `Building.building_id`, so a `PlacementRecord` here and a `Building` from the Knowledge
-Base are keyed identically.
-
-`recipe_id`, `clock_speed`, `fuel_item_id`, `resource_node_id`, `is_paused` and
-`production_boost` are filled in by `to_placement_records_with_recipes`, which reads each
-building's own `mCurrentRecipe`, `mCurrentPotential`, `mCurrentFuelClass`, `mExtractableResource`,
-`mIsProductionPaused` and `mCurrentProductionBoost` out of its entity span (see entities.py for the
-framing and properties.py for the extraction). No fixture save has a Somersloop in a machine, so
-the boost's property name is inferred from its siblings (`mCurrentPotential`/`mPendingPotential`,
-and the export's `mOnPendingProductionBoostChanged`) rather than seen in a save.
-`object_id` is the building's path name in the save, which the save's belts and pipes point at
-(see connections.py). `to_placement_records` is the headers-only version, for callers that have
-no decompressed body to search — it leaves `recipe_id` as `None`, which is a real "not known",
-not "not running a recipe", and the clock speed at its 100% default.
+A building is any actor whose class lives under `/Game/FactoryGame/Buildable/`; its `building_id`
+is the short class name (`Build_SmelterMk1_C`), keyed like the Knowledge Base's `Building`s.
+`to_placement_records_with_recipes` reads each building's recipe, clock speed, fuel, extracted
+node, paused flag and Somersloop boost out of its entity span. No save seen has a Somersloop in a
+machine, so `mCurrentProductionBoost` is inferred from its sibling properties' names.
+`to_placement_records` is the headers-only version: its `recipe_id` is `None` for "not known".
 """
 
 from __future__ import annotations
@@ -83,12 +67,9 @@ def to_placement_records_with_recipes(
     entity span. `spans[i]` must be the span for `headers[i]` — the pairing
     `entities.find_entity_spans` guarantees.
 
-    A building with no `mCurrentRecipe` keeps `recipe_id=None`: most buildings genuinely have no
-    recipe (belts, storage, poles, miners), and a manufacturer the player never configured hasn't
-    got one either. Where a span somehow holds more than one, the first is used — no such case
-    occurs in either real fixture save. No `mCurrentPotential` means the default 100% clock (the
-    game doesn't save defaults), and `mCurrentFuelClass` is an object reference shaped exactly like
-    `mCurrentRecipe`, so the same reader resolves it to the fuel's item id.
+    A building with no `mCurrentRecipe` keeps `recipe_id=None`; where a span holds more than one,
+    the first is used. No `mCurrentPotential` means the default 100% clock: the game doesn't save
+    defaults.
     """
     if len(spans) != len(headers):
         raise ValueError(

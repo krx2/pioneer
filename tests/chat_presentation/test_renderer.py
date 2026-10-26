@@ -1,5 +1,4 @@
-"""Tests for the chat renderer, against hand-written `ResponseArtifact.chat` samples — no
-orchestrator, per implementation.md Stage 12."""
+"""Tests for the chat renderer, against hand-written `ResponseArtifact.chat` samples."""
 
 from pioneer.chat_presentation.renderer import render_message, render_page
 

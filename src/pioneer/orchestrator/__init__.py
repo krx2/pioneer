@@ -1,10 +1,6 @@
-"""LLM Orchestrator — final integration layer (implementation.md Stage 16).
-
-The only piece of the system allowed to depend on every other module. Routes tool calls from a
-local, OpenAI-compatible LLM to the deterministic Stage 2-11 modules, runs the Verifier where a
-tool needs it, and composes the final `ResponseArtifact`; `verify_response` then scores that
-artifact (architecture.md §6). The concrete LLM transport is injected (`pioneer.llm_client`
-supplies the real one) -- this module never imports an HTTP library itself.
+"""LLM Orchestrator: the integration layer, the one package allowed to depend on every module.
+Routes the model's tool calls to the deterministic modules, composes the `ResponseArtifact`, and
+`verify_response` scores it. The LLM transport is injected.
 
 Layout, each module importing only the ones above it:
 - `base`: the context, the typed failure, the tool shape and the artifact accumulator.

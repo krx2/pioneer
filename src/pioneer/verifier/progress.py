@@ -1,19 +1,10 @@
 """How far the player has built their plan, by the save: what stands of each stage's recipe beyond
 what stood when the recipe came into the plan.
 
-**Buildings, not effective machines.** The save's production graph counts machines clock-scaled
--- three constructors at 50% are 1.5 -- because that's what rates scale with. Progress counts the
-buildings themselves, whatever their clock, paused ones too: a player who underclocks the
-machines a plan rounded up, as the page suggests, has still built every one of them.
-
-**Shared out in stage order.** What stands beyond the baseline of a recipe goes to the plan's
-stages running it, the first first, each taking no more than it builds. It counts every building
-of the recipe the player put up since -- also one meant for something else: the save doesn't say
-what a building is for.
-
-**Marked by hand.** What the player marked built (`Plan.marked_built`) is shared out the same way,
-and a stage counts whichever is more, the save's or the marks: the two count the same machines,
-the marks just ahead of a save that hasn't caught up, or of one there isn't.
+Progress counts buildings, whatever their clock, paused ones too: underclocking the machines a plan
+rounded up still builds every one of them. What stands is shared out among the stages running the
+recipe in order, each taking no more than it builds. What the player marked built is shared out the
+same way, and a stage counts whichever is more, the save's or the marks.
 """
 
 from __future__ import annotations

@@ -1,8 +1,4 @@
-"""The response artifact shape: one assistant turn's Chat + Graph + Map payload, plus feedback.
-
-Produced by the Orchestrator (Stage 16); consumed by all three Presentation modules (Stages
-12-14) and by the Verification & Feedback module (Stage 15).
-"""
+"""The response artifact shape: one assistant turn's Chat + Graph + Map payload, plus feedback."""
 
 from __future__ import annotations
 
@@ -17,13 +13,13 @@ from pioneer.contracts.production_graph import ProductionGraph
 @dataclass(frozen=True)
 class Feedback:
     thumbs_up: bool | None = None
-    """Chat channel: architecture.md §6 "thumbs up / down"."""
+    """Chat channel: did the player like the answer."""
     applied_plan: bool | None = None
-    """Graph channel: architecture.md §6 "did they apply the plan"."""
+    """Graph channel: did they apply the plan."""
     built_at_location: bool | None = None
-    """Map channel: architecture.md §6 "did they build there"."""
+    """Map channel: did they build there."""
     qualitative_score: int | None = None
-    """1-5, per architecture.md §6's "ocena jakościowa"/"ocena mieszana" scoring."""
+    """1-5."""
 
 
 @dataclass(frozen=True)
@@ -33,8 +29,7 @@ class ResponseArtifact:
     graph: ProductionGraph | None = None
     map_locations: tuple[RankedLocation, ...] | None = None
     map_reference: Coordinates | None = None
-    """The point `map_locations`' `distance_to_reference` is measured from — what the Map channel's
-    distances are checked against (architecture.md §6)."""
+    """The point `map_locations`' `distance_to_reference` is measured from."""
     factory_sites: tuple[FactorySite, ...] | None = None
     """The player's existing factories the answer points at — where an expansion extends."""
     build_sites: SitePlan | None = None
@@ -44,10 +39,9 @@ class ResponseArtifact:
     question: str | None = None
     """The player's message this answers."""
     grounding: tuple[str, ...] = ()
-    """What the chat answer was built from: the question, every tool result the model saw (with the
-    game's names for the ids in it), and the text of every knowledge passage it retrieved. The
-    answer is checked against this (architecture.md §6), and it's what makes the answer's claims
-    attributable (invariant #6)."""
+    """What the chat answer was built from, and is checked against: the question, every tool
+    result the model saw (with the game's names for the ids in it), and the text of every
+    knowledge passage it retrieved."""
     missing_recipes: tuple[str, ...] = ()
     """Recipes the player turned off that a plan in this answer would need — any of them, for the
     page to offer turning on."""

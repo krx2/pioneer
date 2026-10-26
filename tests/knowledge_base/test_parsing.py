@@ -1,25 +1,7 @@
 """Tests for the UE-struct-string parsers, against hand-written sample strings — no real game
 data needed."""
 
-from pioneer.knowledge_base.parsing import (
-    class_name_from_path,
-    parse_item_amounts,
-    parse_quoted_class_list,
-)
-
-
-def test_class_name_from_path_with_quote_wrapper() -> None:
-    path = (
-        "/Script/Engine.BlueprintGeneratedClass'/Game/FactoryGame/Resource/Parts/IronIngot/"
-        "Desc_IronIngot.Desc_IronIngot_C'"
-    )
-    assert class_name_from_path(path) == "Desc_IronIngot_C"
-
-
-def test_class_name_from_path_without_quote_wrapper() -> None:
-    assert class_name_from_path("/Script/FactoryGame.FGBuildableAutomatedWorkBench") == (
-        "FGBuildableAutomatedWorkBench"
-    )
+from pioneer.knowledge_base.parsing import parse_item_amounts, parse_quoted_class_list
 
 
 def test_parse_item_amounts_single() -> None:

@@ -1,20 +1,9 @@
 """The player's plan: the production chain one conversation works towards.
 
-Proposed by the Orchestrator (Stage 16) in an answer that planned something, and kept with the
-conversation once the player accepts it. Asked for a change, the Orchestrator revises it rather
-than planning anew: each revision is planned again from the same parameters -- its targets, the
-recipe each stage runs, the factory surplus it draws on -- with only what the player asked for
-changed, so every stage they didn't touch stays exactly as it was.
-
-How far the player has built it is told by the Verifier from the save (`StageProgress`): what
-stands of each stage's recipe beyond what stood when it came into the plan -- or what the player
-marked built by hand, where that's more.
-
-Where it's built comes with it (`Plan.sites`): its deposits and sites, kept as they were accepted
--- a revision adds deposits for more or drops what's no longer needed, but moves none -- and what
-it reserves of the spare output of the player's factories (`Plan.reservations`).
-
-Mappings are tuples of pairs, so a plan stays a plain frozen value like every other contract.
+A revision is planned again from the same parameters -- targets, each stage's recipe, the factory
+surplus it draws on -- with only what the player asked for changed, so untouched stages stay
+exactly as they were. Its sites are kept as accepted: a revision adds or drops deposits but moves
+none. Mappings are tuples of pairs, so a plan stays a plain frozen value.
 """
 
 from __future__ import annotations

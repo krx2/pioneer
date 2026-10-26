@@ -1,20 +1,10 @@
 """What a plan extending the player's factory takes of their factories' spare output, factory by
-factory: only what it uses. A megafactory making far more of an item than the plan needs gives the
-plan just that much — the rest stays spare, for the player and for other plans.
+factory: only what it uses, the rest left spare for the player and for other plans.
 
-**Each factory's spare.** A factory (`FactorySite`) has some of an item to spare when it makes
-more of it than it uses (`site_balance`). The whole factory may have less to spare than its
-factories add up to — one's output can be another's input — so each one's spare is scaled down in
-proportion to come to no more than the whole's.
-
-**Others' reservations aren't spare.** What the plans of the player's other conversations reserved
-(`OrchestratorContext.reserved_supply`) is taken off the whole factory's spare, and off the
-factory it was reserved from — found again by where it stands, as factory ids follow their sizes
-and change from save to save.
-
-**Who gives what.** A plan's draw of an item comes first from the factories it took it from
-before — a revision keeps its reservations where they were — then from the one nearest where it's
-used, then from those with the most to spare.
+Each factory's spare (`site_balance`) is scaled down so they add up to no more than the whole
+factory's, and other conversations' reservations are taken off it — their factory found again by
+position, as site ids change from save to save. A plan draws first from the factories it drew
+from before, then from the one nearest where it's used, then from those with the most to spare.
 """
 
 from __future__ import annotations
@@ -25,7 +15,6 @@ from collections.abc import Mapping, Sequence
 from pioneer.contracts import Coordinates, FactorySite, SupplyReservation
 from pioneer.orchestrator.base import OrchestratorContext
 from pioneer.orchestrator.existing_factory import site_balance
-from pioneer.verifier import distance
 
 _SAME_FACTORY = 50_000.0
 """500 m: how far a factory's middle may have moved since a reservation was made from it."""
@@ -44,9 +33,9 @@ def factory_of(reservation: SupplyReservation, sites: Sequence[FactorySite]) -> 
     """The factory a reservation was made from, as the save now has it: the one standing nearest
     where it stood, if near enough."""
     nearest = min(
-        sites, key=lambda site: distance(site.position, reservation.position), default=None
+        sites, key=lambda site: site.position.distance_to(reservation.position), default=None
     )
-    if nearest is None or distance(nearest.position, reservation.position) > _SAME_FACTORY:
+    if nearest is None or nearest.position.distance_to(reservation.position) > _SAME_FACTORY:
         return None
     return nearest
 
@@ -101,7 +90,7 @@ def reserve(
     kept: Sequence[SupplyReservation] = (),
 ) -> tuple[SupplyReservation, ...]:
     """What of `draws` (item -> per minute the plan takes of the factory's spare) to reserve from
-    which factory — see the module docstring. `whole`: the factory's spare, less others'."""
+    which factory. `whole`: the factory's spare, less others'."""
     spare = spare_by_factory(context, whole)
     sites = {site.site_id: site for site in context.factory_sites}
     reservations: list[SupplyReservation] = []
@@ -121,7 +110,7 @@ def reserve(
         givers = sorted(
             (site_id for site_id, rates in spare.items() if rates.get(item_id, 0.0) > _EPSILON),
             key=lambda site_id: (
-                distance(sites[site_id].position, near) if near is not None else 0.0,
+                sites[site_id].position.distance_to(near) if near is not None else 0.0,
                 -spare[site_id][item_id],
                 site_id,
             ),

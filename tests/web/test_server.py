@@ -1,6 +1,7 @@
 """Tests for the web app through FastAPI's TestClient and a fake `answer`: no model, no socket."""
 
 import json
+import re
 
 from fastapi.testclient import TestClient
 
@@ -100,7 +101,36 @@ def test_the_chat_page_says_what_data_is_loaded() -> None:
     assert page.status_code == 200
     assert "text/html" in page.headers["content-type"]
     assert "291 recipes | no save loaded" in page.text
-    assert "/api/ask" in page.text
+
+
+def test_the_chat_page_loads_its_styles_and_scripts_from_static() -> None:
+    client, _ = _client(_artifact())
+
+    page = client.get("/").text
+    urls = re.findall(r'(?:href|src)="(/static/[^"]+)"', page)
+    served = {url.split("?")[0].removeprefix("/static/"): client.get(url) for url in urls}
+
+    assert set(served) == {
+        "chat.css",
+        "page.css",
+        "panels.css",
+        "map-view.js",
+        "page.js",
+        "panels.js",
+    }
+    assert all("?v=" in url for url in urls)  # a new version is a new URL
+    assert all(reply.status_code == 200 for reply in served.values())
+    assert served["page.css"].headers["content-type"].startswith("text/css")
+    assert served["page.js"].headers["content-type"].startswith("text/javascript")
+    assert "immutable" in served["page.js"].headers["cache-control"]
+    assert "/api/ask" in served["page.js"].text
+
+
+def test_static_serves_nothing_but_the_pages_own_files() -> None:
+    client, _ = _client(_artifact())
+
+    for name in ("server.py", "..%2Fserver.py", "missing.js"):
+        assert client.get(f"/static/{name}").status_code == 404
 
 
 def test_asking_returns_the_answer_rendered_and_escaped() -> None:

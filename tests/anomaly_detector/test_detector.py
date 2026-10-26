@@ -1,6 +1,6 @@
 """Tests for the anomaly classifier, against hand-built graphs + hand-supplied balance/power
 numbers (as if from the Verifier). The core fixture is a deliberately under-provisioned smelter
-stage, per implementation.md Stage 10."""
+stage."""
 
 from pioneer.anomaly_detector.detector import (
     detect_anomalies,

@@ -1,9 +1,4 @@
-"""Static game knowledge shapes: items, recipes, buildings, technologies.
-
-Produced by the Knowledge Base module (Stage 2); consumed by the Production Planner (Stage 7),
-Verifier (Stage 4), Q&A Engine (Stage 11), and the Orchestrator (Stage 16), which resolves the
-item names a player uses into ids.
-"""
+"""Static game knowledge shapes: items, recipes, buildings, technologies."""
 
 from __future__ import annotations
 
@@ -32,8 +27,7 @@ class ItemAmount:
     item_id: str
     amount_per_minute: float
     """Units per minute for solid items, m³ per minute for liquids and gases — the same numbers
-    the game's own UI shows. (The `Docs.json` export stores fluids in litres; normalizing that is
-    the Knowledge Base loader's job, see its module docstring.)"""
+    the game's own UI shows."""
 
 
 @dataclass(frozen=True)
@@ -142,6 +136,13 @@ class Recipe:
     mostly hard drives, a few MAM nodes. The Production Planner only falls back to alternates for
     an item with no standard recipe, unless a caller explicitly picks one: the player may not have
     researched them."""
+
+    def output_rate(self, item_id: str) -> float | None:
+        """What one machine makes of `item_id` a minute; `None` when it's no output of this."""
+        return next((o.amount_per_minute for o in self.outputs if o.item_id == item_id), None)
+
+    def produces(self, item_id: str) -> bool:
+        return any(output.item_id == item_id for output in self.outputs)
 
 
 @dataclass(frozen=True)

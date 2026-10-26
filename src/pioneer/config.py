@@ -1,25 +1,23 @@
-"""Runtime configuration, loaded from environment variables.
+"""Runtime configuration from environment variables, optionally via a gitignored `.env` file (see
+`.env.example`). Never hardcode a secret or a machine-specific path, here or anywhere else.
 
-Environment-specific values (LLM endpoint, dedicated server address, save location) live only in
-environment variables — optionally via a local `.env` file, which is gitignored. Never hardcode a
-secret, or a machine-specific path, here or anywhere else. See `.env.example` for the full list of
-variables.
-
-The LLM is expected to run locally (e.g. Ollama, llama.cpp, vLLM) behind an OpenAI-compatible
-endpoint, so `llm_base_url` / `llm_model` are the primary settings. `llm_api_key` is optional and
-only needed if the local server is configured to require one — most local setups leave it unset.
+The LLM runs locally behind an OpenAI-compatible endpoint (`llm_base_url`, `llm_model`);
+`llm_api_key` is only for servers configured to require one.
 """
 
 from __future__ import annotations
 
+import logging
 import os
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -30,7 +28,7 @@ class Settings:
     dedicated_server_host: str | None
     dedicated_server_port: int | None
     dedicated_server_api_token: str | None
-    """Bearer token for the Dedicated Server HTTPS API (see server_client's module docstring): an
+    """Bearer token for the Dedicated Server HTTPS API (see `server_client.access`): an
     application token from the server console's `server.GenerateAPIToken`. The web UI's Server
     panel can get one with the admin password instead, and keeps it in `data/settings.json`."""
     dedicated_server_exe: str | None
@@ -46,8 +44,8 @@ class Settings:
     Epic saves and the ones pulled from a dedicated server, each in a folder of its own. Defaults
     to the parent of the default `save_directory`."""
     llm_judge: bool = False
-    """Whether the web UI asks the model for LLM-as-a-judge verdicts on its own answers
-    (architecture.md §6) — one extra model call per answer and per suggested build site."""
+    """Whether the web UI asks the model for LLM-as-a-judge verdicts on its own answers — one
+    extra model call per answer and per suggested build site."""
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -70,9 +68,8 @@ def _flag(value: str | None) -> bool:
 
 
 def _port(value: str | None) -> int | None:
-    """A TCP port, or `None` when unset — or set to something that isn't one, which is warned
-    about rather than raised: this runs at import time, and a typo in `.env` shouldn't stop the
-    assistant from answering without the server (architecture.md invariant #5)."""
+    """A TCP port, or `None` when unset or invalid — warned about rather than raised: this runs at
+    import time, and a typo in `.env` shouldn't stop the assistant."""
     if not value or not value.strip():
         return None
     try:
@@ -80,17 +77,15 @@ def _port(value: str | None) -> int | None:
     except ValueError:
         port = 0
     if not 0 < port < 65536:
-        warnings.warn(
-            f"PIONEER_SERVER_PORT={value!r} is not a port number -- ignoring it", stacklevel=2
-        )
+        _log.warning("PIONEER_SERVER_PORT=%r is not a port number -- ignoring it", value)
         return None
     return port
 
 
 def default_save_directory() -> str | None:
-    """`%LOCALAPPDATA%/FactoryGame/Saved/SaveGames/server` — where the game itself stores saves
-    pulled from a dedicated server (the only play mode this project supports, per architecture.md
-    §2). `None` off Windows, or if `LOCALAPPDATA` isn't set; set `PIONEER_SAVE_DIR` then."""
+    """`%LOCALAPPDATA%/FactoryGame/Saved/SaveGames/server` — where the game stores saves pulled
+    from a dedicated server. `None` off Windows, or if `LOCALAPPDATA` isn't set; set
+    `PIONEER_SAVE_DIR` then."""
     root = default_save_root()
     return str(Path(root) / "server") if root else None
 

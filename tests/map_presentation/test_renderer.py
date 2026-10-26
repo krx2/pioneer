@@ -1,5 +1,4 @@
-"""Tests for build_markers/render_page, against resource-node and placement fixtures copied in
-the same style as Stage 3/9 example outputs, per implementation.md Stage 14."""
+"""Tests for build_markers/render_page, against hand-built resource-node and placement fixtures."""
 
 import re
 

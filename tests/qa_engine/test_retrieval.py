@@ -1,5 +1,5 @@
 """Tests for retrieve, against a small hand-written corpus (a few recipe-style passages and a few
-wiki-style paragraphs), per implementation.md Stage 11 — no dependency on the real Knowledge Base.
+wiki-style paragraphs).
 """
 
 from pioneer.qa_engine.retrieval import Passage, retrieve

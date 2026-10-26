@@ -8,7 +8,7 @@ built, find where to build next, diagnose what's short, or explain a game mechan
 The reasoning is a local LLM; the arithmetic never is. Machine counts, throughput, power, distances
 and unlock orders come from plain, tested code that the model calls as tools, so every number in an
 answer traces back to a module call. See [docs/architecture.md](docs/architecture.md) for the
-design and [docs/implementation.md](docs/implementation.md) for how it was built, module by module.
+design.
 
 ## What you need
 
@@ -43,7 +43,7 @@ small.
 ## Running it
 
 ```
-python startup.py
+pioneer                     # or: python startup.py
 ```
 
 starts the model server and the dedicated server if they aren't running already, serves the web UI
@@ -53,9 +53,12 @@ on http://127.0.0.1:8000, and stops whatever it started when you quit. `--no-mod
 The pieces also run on their own:
 
 ```
-python -m pioneer.web                                    # just the web UI
-python -m pioneer.app "I want to produce 10/min of Iron Plate"   # one question, in the terminal
+pioneer-web                                             # just the web UI (python -m pioneer.web)
+pioneer-ask "I want to produce 10/min of Iron Plate"    # one question, in the terminal
 ```
+
+`pip install -e .` puts these commands in the virtual environment; `python -m pioneer.web` and
+`python -m pioneer.app` work without it.
 
 The web UI shows each answer's chat, its production graph and its map, the verification badges for
 that answer (are its numbers from the tools, does the plan balance, does it fit the spare power)
@@ -159,17 +162,17 @@ kept in `data/settings.json` and wins over `.env`, which is never written; the C
 ## The map
 
 The maps — the Map panel and an answer's map alike — lie on the game's own map:
-`docs/map/map.jpg`, the official map from the game's wiki (5000 px square), like the icons the
+`assets/map/map.jpg`, the official map from the game's wiki (5000 px square), like the icons the
 developers' own artwork. `pioneer.map_image` says where in the world it lies: x from -324 698.83
 to 425 301.83 and y from -375 000 to 375 000 cm, east and south — `tests/test_map_image.py` checks
 that the shipped deposits land on its land.
 
-The pages draw it from tiles, committed in `docs/map/tiles/`: four levels from 625 to 5000 px,
+The pages draw it from tiles, committed in `assets/map/tiles/`: four levels from 625 to 5000 px,
 512 px tiles, each page loading only those on screen at the level sharp at its zoom. A new picture
 is cut into them with
 
 ```
-python -m pioneer.map_image [picture]      # default: docs/map/map.jpg; needs Pillow (dev extra)
+python -m pioneer.map_image [picture]      # default: assets/map/map.jpg; needs Pillow (dev extra)
 ```
 
 Without the tiles the maps draw the picture whole, and without either a plain grid. Markers grow
@@ -178,7 +181,7 @@ cover the map, and zoomed out they don't bury it.
 
 ## Item icons
 
-The map, the graph and the chat show the game's own icons, committed in `docs/icons/`. They come
+The map, the graph and the chat show the game's own icons, committed in `assets/icons/`. They come
 from the game's files, which are UE5 IoStore archives since Update 8: umodel can't read those, but
 [FModel](https://github.com/4sval/FModel) can. After a game update adds items, export them again:
 
@@ -191,8 +194,9 @@ from the game's files, which are UE5 IoStore archives since Update 8: umodel can
 3. Right-click `FactoryGame/Resource`, `FactoryGame/Buildable` and `FactoryGame/Equipment` →
    "Save Folder's Packages Textures".
 4. `python -m pioneer.icons <FModel>/Output/Exports` picks out the icon of every item, building and
-   belt/pipe tier `docs/en-US.json` names, scales it to 96 px and writes `docs/icons/<class id>.png`.
-   It lists the folders of any icon it didn't find, to export those too.
+   belt/pipe tier `assets/en-US.json` names, scales it to 96 px and writes it to
+   `assets/icons/<class id>.png`. It lists the folders of any icon it didn't find, to export those
+   too.
 
 ## What it can answer
 
@@ -232,8 +236,9 @@ model and only runs with `PIONEER_LIVE_LLM_TESTS=1`.
 ```
 src/pioneer/
   contracts/            data shapes every module shares, and nothing else
-  knowledge_base/       recipes, buildings, technologies, belts (docs/en-US.json)
-  resource_db/          resource nodes and purity (docs/resource_nodes.json)
+  common/               small helpers any module may use: names, recipe counting, atomic writes
+  knowledge_base/       recipes, buildings, technologies, belts (assets/en-US.json)
+  resource_db/          resource nodes and purity (assets/resource_nodes.json)
   save_parser/          .sav -> placed buildings + production graph
   server_client/        the dedicated server's HTTPS API
   verifier/             the arithmetic: machines, balance, power, distance, transport, plan progress
@@ -246,9 +251,12 @@ src/pioneer/
   verification_feedback/  scoring an answer, and player feedback
   orchestrator/         the tools the model calls, and the routing loop
   llm_client/           the HTTP transport to the model
-  icons.py              imports item and building icons (docs/icons/)
-  map_image.py          the game's map picture (docs/map/), its tiles, and where in the world it lies
+  icons.py              imports item and building icons (assets/icons/)
+  map_image.py          the game's map picture (assets/map/), its tiles, and where in the world it lies
   app/                  the composition root: data loading, the live context the header steers
   web/, startup.py
-tests/                  mirrors the layout above
+tests/                  mirrors the layout above; save files to test the parser on in save_parser/
+assets/                 game data the assistant ships with: the game's export, resource nodes,
+                        icons, the map picture and its tiles
+docs/                   architecture.md
 ```

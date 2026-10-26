@@ -1,20 +1,14 @@
-"""The Orchestrator's verification step — architecture.md §4.3 step 3 and §6: score a finished
-`ResponseArtifact` with the Stage 15 scoring functions, against the same data it was built from.
-
-All this module does is say what that data is: the answer's own grounding, the knowledge base, the
-power the player's grid has to spare, the node data and what the judges are told. The scoring
-itself, and which channels it covers, is `verification_feedback.score_response`.
-
-Kept out of `handle_query` so the caller decides when to pay for it — the LLM-as-a-judge hooks
-cost a model call each — and so the routing loop stays about routing.
+"""The Orchestrator's verification step: scores a finished `ResponseArtifact` with
+`verification_feedback.score_response`, against the same data it was built from. Kept out of
+`handle_query` so the caller decides when to pay for it: the judges cost a model call each.
 """
 
 from __future__ import annotations
 
+from pioneer.common import raw_resource_ids
 from pioneer.contracts import ResponseArtifact
 from pioneer.orchestrator.base import OrchestratorContext
 from pioneer.orchestrator.existing_factory import reference_point, spare_power_mw
-from pioneer.orchestrator.items import raw_resource_ids
 from pioneer.orchestrator.orchestrator import context_note
 from pioneer.verification_feedback import ChatJudge, ResponseScore, TerrainJudge, score_response
 
@@ -32,7 +26,7 @@ def verify_response(
         recipes=context.recipes,
         buildings=context.buildings,
         available_power_mw=spare_power_mw(context),
-        raw_item_ids=raw_resource_ids(context),
+        raw_item_ids=raw_resource_ids(context.items),
         resource_nodes=context.resource_nodes,
         placements=context.existing_placements,
         chat_judge=chat_judge,

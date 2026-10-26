@@ -1,9 +1,4 @@
-"""The assembled knowledge base and its pure lookup functions.
-
-`KnowledgeBase` is this module's own aggregate container (not a Stage 1 contract — other modules
-never construct one themselves, they only ever receive `Recipe`/`Building`/`Technology`/`Item`
-tuples produced by the lookup functions below).
-"""
+"""The assembled knowledge base and its pure lookup functions."""
 
 from __future__ import annotations
 
@@ -36,11 +31,6 @@ def recipe_by_id(kb: KnowledgeBase, recipe_id: str) -> Recipe | None:
     return next((r for r in kb.recipes if r.recipe_id == recipe_id), None)
 
 
-def recipes_for_output(kb: KnowledgeBase, item_id: str) -> tuple[Recipe, ...]:
-    """Every recipe that produces `item_id` — the alternate-recipe choice set for that item."""
-    return tuple(r for r in kb.recipes if any(o.item_id == item_id for o in r.outputs))
-
-
 def building_for(kb: KnowledgeBase, building_id: str) -> Building | None:
     return next((b for b in kb.buildings if b.building_id == building_id), None)
 
@@ -58,10 +48,8 @@ def technology_for_recipe(kb: KnowledgeBase, recipe_id: str) -> Technology | Non
 
 
 def prerequisites_for_technology(kb: KnowledgeBase, technology_id: str) -> tuple[str, ...]:
-    """`Technology.technology_id`s that must be unlocked before `technology_id`.
-
-    Genuinely empty for milestone/MAM technologies — see loader.py's module docstring for why.
-    """
+    """`Technology.technology_id`s that must be unlocked before `technology_id`. Always empty for
+    milestones and MAM research: the export doesn't record theirs."""
     technology = technology_by_id(kb, technology_id)
     return technology.prerequisites if technology is not None else ()
 
@@ -191,18 +179,11 @@ def item_by_id(kb: KnowledgeBase, item_id: str) -> Item | None:
     return next((i for i in kb.items if i.item_id == item_id), None)
 
 
-def raw_resource_ids(kb: KnowledgeBase) -> frozenset[str]:
-    """Every raw (extracted, not crafted) resource — what the Production Planner stops at."""
-    return frozenset(i.item_id for i in kb.items if i.is_raw_resource)
-
-
 def find_items(items: Iterable[Item], query: str, *, limit: int = 5) -> tuple[Item, ...]:
     """Items matching `query`, best first: exact id, exact name, name starting with the query,
     every query word matching some word of the name (in any order, and forgiving plurals, so
     "reinforced plates" finds Reinforced Iron Plate — see `_word_matches`), then id containing the
-    query. Case-insensitive; ties go to the shorter name. Takes the items directly rather than a
-    `KnowledgeBase`, so callers holding just the tuple — like the Orchestrator's context — can
-    search too."""
+    query. Case-insensitive; ties go to the shorter name."""
     return tuple(item for _, item in _ranked_matches(items, query)[:limit])
 
 

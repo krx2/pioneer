@@ -1,9 +1,5 @@
 """The deterministic arithmetic core: machine counts, throughput balance, power balance, distance.
-
-Every function here is pure and takes Stage 1 contract data straight from its caller. Unlike
-Knowledge Base or Resource DB, this module owns no aggregate of its own — there's no `Verifier`
-container, just functions — since it has no data to load, only calculations to run over whatever
-`Recipe`/`Building` list the caller (eventually the real Knowledge Base) hands it.
+Pure functions over contract data.
 
 Power has two views. `power_balance` is a production graph's own draw — what a *plan* needs.
 `placed_power_consumption_mw`, `placed_generation_capacity_mw`, `generator_fuel_demand`,
@@ -20,9 +16,9 @@ from collections import defaultdict
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 
+from pioneer.common import machines_needed
 from pioneer.contracts import (
     Building,
-    Coordinates,
     GeneratorFuel,
     Item,
     MaterialFlow,
@@ -51,32 +47,16 @@ _PURITY_MULTIPLIER = {Purity.IMPURE: 0.5, Purity.NORMAL: 1.0, Purity.PURE: 2.0}
 """How a node's purity scales an extractor's rate — the game's own ratios."""
 
 
-def distance(a: Coordinates, b: Coordinates) -> float:
-    return math.dist((a.x, a.y, a.z), (b.x, b.y, b.z))
-
-
 def machine_count(recipe: Recipe, target_rate: float) -> int:
-    """Machines needed to hit `target_rate` of `recipe`'s primary (first-listed) output.
-
-    Rounds up — you can't build a fractional machine. `target_rate <= 0` needs zero machines.
-    """
-    if target_rate <= 0:
-        return 0
-    per_machine_rate = recipe.outputs[0].amount_per_minute
-    if per_machine_rate <= 0:
-        raise ValueError(f"recipe {recipe.recipe_id!r} has no positive primary output rate")
-    return math.ceil(target_rate / per_machine_rate)
+    """Whole machines needed to hit `target_rate` of `recipe`'s primary (first-listed) output."""
+    return machines_needed(recipe.outputs[0].amount_per_minute, target_rate)
 
 
 def balance(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -> dict[str, float]:
-    """Net per-item rate across every node: total production minus total consumption, each scaled
-    by the node's `machine_count`. Positive = surplus, negative = deficit, an item absent from the
-    result is never touched by the graph.
-
-    Computed straight from each node's own recipe, independent of how `graph.flows` routes
-    material — this is what the flows *should* sum to if the graph is internally consistent, which
-    makes it the reference a flow-routing check can be verified against. Outputs are multiplied by
-    the node's `production_boost`; inputs aren't.
+    """Net per-item rate across every node: production minus consumption, each scaled by the
+    node's `machine_count`. Positive = surplus, negative = deficit. Computed from the recipes, not
+    `graph.flows`, so it's what consistent flows must sum to. Outputs are multiplied by the node's
+    `production_boost`; inputs aren't.
     """
     net: dict[str, float] = {}
     for node in graph.nodes:
@@ -96,13 +76,10 @@ def implied_flows(
     links: Collection[tuple[str, str]] | None = None,
 ) -> ProductionGraph:
     """`graph` with the flows its recipes imply -- for a graph read from a save, which says what
-    the machines run but not what they hand each other. Each item's producers feed its consumers
-    (see `allocate_supply`): all of them, or with `links` (source node, target node) only those
-    the save's belts and pipes join. What the graph makes beyond that leaves as output (target
-    `None`), and what it uses beyond it comes in from outside (source `None`), so the flows into
-    and out of every node add up to its recipe rates, and per item to `balance` -- the recipes'
-    arithmetic, shared out along the belts where they're known, never a measurement of them. A
-    node making and using the same item feeds itself first; only the rest is shown."""
+    the machines run but not what they hand each other. Producers feed consumers
+    (`allocate_supply`), with `links` only those the belts and pipes join; the rest leaves as
+    output or comes in from outside, so every node's flows add up to its recipe rates. A node
+    making and using the same item feeds itself first."""
     made: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     used: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for node in graph.nodes:
@@ -260,11 +237,9 @@ def added_machines(graph: ProductionGraph) -> ProductionGraph:
 
 def minimal_machine_graph(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -> ProductionGraph:
     """`graph` with every node running exactly the machines its outgoing flows need — fractional,
-    i.e. underclocked — the optimum a whole-machine plan is measured against (architecture.md §6's
-    distance from optimum). Worked back from the graph's final outputs: a node feeding another
-    only needs to feed that node's own minimal count, so rounding up at one stage isn't passed on
-    as demand to the stages before it. A node no flow leaves keeps its count, since nothing says
-    what it's for; so does one caught in a loop."""
+    i.e. underclocked — the optimum a whole-machine plan is measured against. Worked back from the
+    final outputs, so rounding up at one stage isn't passed on as demand to the stages before it.
+    A node no flow leaves, or caught in a loop, keeps its count."""
     nodes_by_id = {node.node_id: node for node in graph.nodes}
     leaving: dict[str, list[MaterialFlow]] = defaultdict(list)
     for flow in graph.flows:
@@ -304,11 +279,8 @@ def minimal_machine_graph(graph: ProductionGraph, recipes: tuple[Recipe, ...]) -
 
 
 def power_balance(graph: ProductionGraph, buildings: tuple[Building, ...]) -> float:
-    """Net power draw in MW across every node, scaled by `machine_count`.
-
-    Positive = the graph is a net power consumer (needs this much external supply); negative = net
-    producer (surplus) — the same sign convention as `Building.power_consumption_mw` itself.
-    """
+    """Net power draw in MW across every node, scaled by `machine_count`; signed like
+    `Building.power_consumption_mw`."""
     total = 0.0
     for node in graph.nodes:
         building = _building_by_id(buildings, node.building_id)
@@ -321,9 +293,7 @@ def placed_power_consumption_mw(
 ) -> float:
     """Rated draw of every placed power consumer, at its clock speed (see
     `_OVERCLOCK_POWER_EXPONENT`) and Somersloop boost (`_PRODUCTION_BOOST_POWER_EXPONENT`).
-    Placements `buildings` has no entry for are skipped rather than raising, unlike in
-    `power_balance`: most placed buildings — belts, foundations, storage, poles — draw nothing and
-    appear in no building list."""
+    Placements `buildings` has no entry for (belts, foundations, poles) are skipped."""
     return sum(mw for _, mw in placed_power_consumption_by_building(placements, buildings).values())
 
 
@@ -424,11 +394,8 @@ def extraction_rates(
     resource_nodes: Sequence[ResourceNode],
 ) -> dict[str, float]:
     """Per resource, what the placed extractors pull out per minute (m³ for fluids): each one's
-    `Building.extraction_rate_per_minute`, times its node's purity multiplier (impure 0.5, normal 1,
-    pure 2) and its clock speed. The resource is the node's — or, for an extractor on no known node,
-    its `fixed_resource_id` at normal rate (a Water Extractor draws from a water volume, which has
-    no purity). An extractor that could extract several resources, on a node `resource_nodes`
-    doesn't know, is left out: without the node there's no telling what it extracts."""
+    rate × its node's purity multiplier × its clock speed. An extractor on no known node counts
+    its `fixed_resource_id` at normal rate (a Water Extractor), or is left out when it has none."""
     nodes = {node.node_id: node for node in resource_nodes}
     rates: dict[str, float] = {}
     for placement, building in _placed_buildings(placements, buildings):

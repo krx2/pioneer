@@ -1,6 +1,6 @@
-"""Loading each data source off disk or the network, each degrading on its own (architecture.md
-invariant #5), and `build_context`, which turns whatever loaded into the Orchestrator's context —
-kept pure, so the end-to-end tests build exactly the context the CLI does."""
+"""Loading each data source off disk or the network, each degrading on its own, and
+`build_context`, which turns whatever loaded into the Orchestrator's context — kept pure, so the
+end-to-end tests build exactly the context the CLI does."""
 
 from __future__ import annotations
 
@@ -27,8 +27,8 @@ from pioneer.server_client import (
 )
 
 _PROJECT_ROOT = Path(__file__).parents[3]
-DOCS_JSON = _PROJECT_ROOT / "docs" / "en-US.json"
-RESOURCE_NODES_JSON = _PROJECT_ROOT / "docs" / "resource_nodes.json"
+DOCS_JSON = _PROJECT_ROOT / "assets" / "en-US.json"
+RESOURCE_NODES_JSON = _PROJECT_ROOT / "assets" / "resource_nodes.json"
 DATA_DIR = _PROJECT_ROOT / "data"
 """Local, gitignored runtime data: player feedback, the response log, the conversations and the
 choices made in the web UI's panels."""

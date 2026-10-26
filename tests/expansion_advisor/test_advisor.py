@@ -1,6 +1,5 @@
 """Tests for turning a plan of additional machines into a `ChangeSet`, against hand-built
-"existing" and "additions" graphs — no call to the Production Planner (the additions below are a
-Stage 7 output copied in as a fixture, per implementation.md Stage 8)."""
+"existing" and "additions" graphs — no call to the Production Planner."""
 
 from pioneer.contracts import ChangeAction, MaterialFlow, ProductionGraph, ProductionNode
 from pioneer.expansion_advisor.advisor import advise_expansion

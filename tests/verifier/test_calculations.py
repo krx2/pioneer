@@ -5,19 +5,18 @@ no Save Parser."""
 from dataclasses import replace
 
 import pytest
+from tests.game_data import CONSTRUCTOR, IRON_INGOT, IRON_ROD, SMELTER
 
 from pioneer.contracts import (
     Building,
     Coordinates,
     GeneratorFuel,
     Item,
-    ItemAmount,
     MaterialFlow,
     PlacementRecord,
     ProductionGraph,
     ProductionNode,
     Purity,
-    Recipe,
     ResourceNode,
     TransportTier,
 )
@@ -27,7 +26,6 @@ from pioneer.verifier.calculations import (
     balance,
     belt_loads,
     consumption,
-    distance,
     extraction_rates,
     extractors_needed,
     generator_byproducts,
@@ -45,40 +43,12 @@ from pioneer.verifier.calculations import (
     transport_needs,
 )
 
-_SMELTER = Building(
-    building_id="Build_SmelterMk1_C",
-    name="Smelter",
-    power_consumption_mw=4,
-    input_slots=1,
-    output_slots=1,
-)
-_CONSTRUCTOR = Building(
-    building_id="Build_ConstructorMk1_C",
-    name="Constructor",
-    power_consumption_mw=4,
-    input_slots=1,
-    output_slots=1,
-)
-_RECIPE_INGOT = Recipe(
-    recipe_id="Recipe_IngotIron_C",
-    name="Iron Ingot",
-    building_ids=("Build_SmelterMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=30),),
-    outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
-)
-_RECIPE_ROD = Recipe(
-    recipe_id="Recipe_IronRod_C",
-    name="Iron Rod",
-    building_ids=("Build_ConstructorMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=15),),
-    outputs=(ItemAmount(item_id="Desc_IronRod_C", amount_per_minute=15),),
-)
-RECIPES = (_RECIPE_INGOT, _RECIPE_ROD)
-BUILDINGS = (_SMELTER, _CONSTRUCTOR)
+RECIPES = (IRON_INGOT, IRON_ROD)
+BUILDINGS = (SMELTER, CONSTRUCTOR)
 
 # Rated values as the game's own export lists them.
 _PLACED_BUILDINGS = (
-    _SMELTER,
+    SMELTER,
     Building(
         building_id="Build_MinerMk1_C",
         name="Miner Mk.1",
@@ -147,30 +117,17 @@ def _placed(
     )
 
 
-def test_distance_3_4_5_triangle() -> None:
-    assert distance(Coordinates(x=0, y=0), Coordinates(x=3, y=4)) == pytest.approx(5.0)
-
-
-def test_distance_along_z_axis() -> None:
-    assert distance(Coordinates(x=0, y=0, z=0), Coordinates(x=0, y=0, z=5)) == pytest.approx(5.0)
-
-
-def test_distance_same_point_is_zero() -> None:
-    p = Coordinates(x=1, y=2, z=3)
-    assert distance(p, p) == 0.0
-
-
 def test_machine_count_rounds_up() -> None:
-    assert machine_count(_RECIPE_ROD, target_rate=100) == 7  # 15/min * 7 = 105 >= 100
+    assert machine_count(IRON_ROD, target_rate=100) == 7  # 15/min * 7 = 105 >= 100
 
 
 def test_machine_count_exact_multiple() -> None:
-    assert machine_count(_RECIPE_ROD, target_rate=45) == 3
+    assert machine_count(IRON_ROD, target_rate=45) == 3
 
 
 def test_machine_count_zero_or_negative_target_needs_no_machines() -> None:
-    assert machine_count(_RECIPE_ROD, target_rate=0) == 0
-    assert machine_count(_RECIPE_ROD, target_rate=-10) == 0
+    assert machine_count(IRON_ROD, target_rate=0) == 0
+    assert machine_count(IRON_ROD, target_rate=-10) == 0
 
 
 def test_balance_perfectly_consumed_chain() -> None:
@@ -501,7 +458,7 @@ def test_extraction_rates_scale_with_purity_and_clock_speed() -> None:
         _placed("Build_SmelterMk1_C"),
     )
 
-    rates = extraction_rates(placements, (_SMELTER, _MINER_MK2, _WATER_EXTRACTOR), _NODES)
+    rates = extraction_rates(placements, (SMELTER, _MINER_MK2, _WATER_EXTRACTOR), _NODES)
 
     assert rates == pytest.approx(
         {"Desc_OreIron_C": 240.0, "Desc_OreCopper_C": 150.0, "Desc_Water_C": 120.0}
@@ -545,7 +502,7 @@ def test_extractors_needed_rounds_up() -> None:
     assert extractors_needed(135, _WATER_EXTRACTOR) == 2
     assert extractors_needed(0, _WATER_EXTRACTOR) == 0
     with pytest.raises(ValueError):
-        extractors_needed(10, _SMELTER)
+        extractors_needed(10, SMELTER)
 
 
 _TIERS = (

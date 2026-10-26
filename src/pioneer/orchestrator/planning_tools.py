@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from pioneer.common import raw_resource_ids, recipes_for_output
 from pioneer.contracts import (
     ChangeAction,
     ProductionGraph,
@@ -29,28 +30,27 @@ from pioneer.knowledge_base import (
 )
 from pioneer.location_advisor import rank_locations
 from pioneer.orchestrator.base import (
-    _CM_PER_M,
+    CM_PER_M,
+    ArtifactAccumulator,
     OrchestratorContext,
-    _ArtifactAccumulator,
-    _ToolError,
+    ToolError,
 )
 from pioneer.orchestrator.existing_factory import (
-    _existing_item_balance,
-    _main_site,
-    _site_summary,
-    _with_spare_power,
+    existing_item_balance,
+    main_site,
     reference_point,
+    site_summary,
+    with_spare_power,
 )
-from pioneer.orchestrator.items import _item_summary, _resolve_item_id, raw_resource_ids
+from pioneer.orchestrator.items import item_summary, resolve_item_id
 from pioneer.orchestrator.plans import propose_plan
 from pioneer.orchestrator.reservations import reservation_summary, reserve, unreserved
-from pioneer.orchestrator.sites import _build_sites
-from pioneer.orchestrator.summaries import _graph_summary, _per_item, _stage_power
+from pioneer.orchestrator.sites import build_sites
+from pioneer.orchestrator.summaries import graph_summary, per_item, stage_power
 from pioneer.production_planner import (
     MissingRecipe,
     find_missing_recipes,
     plan_targets,
-    recipes_for_output,
 )
 from pioneer.qa_engine import ChatCompletion, LLMUnavailable, NoRelevantPassages, QAAnswer
 from pioneer.qa_engine import answer_question as qa_answer_question
@@ -69,18 +69,18 @@ _SEPARATE_PLAN = (
 )
 
 
-def _handle_find_item(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+def handle_find_item(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
     if not context.items:
-        raise _ToolError("no knowledge base loaded -- item lookup is unavailable")
+        raise ToolError("no knowledge base loaded -- item lookup is unavailable")
     matches = find_items(context.items, str(args["query"]), limit=8)
-    return {"items": [_item_summary(item) for item in matches]}
+    return {"items": [item_summary(item) for item in matches]}
 
 
-def _handle_list_recipes(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
-    item_id = _resolve_item_id(args["item"], context)
+def handle_list_recipes(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+    item_id = resolve_item_id(args["item"], context)
     return {
         "item_id": item_id,
-        "raw_resource": item_id in raw_resource_ids(context),
+        "raw_resource": item_id in raw_resource_ids(context.items),
         "recipes": [
             {
                 "recipe_id": recipe.recipe_id,
@@ -102,14 +102,14 @@ def _handle_list_recipes(args: dict[str, Any], context: OrchestratorContext) -> 
     }
 
 
-def _handle_plan_production(
-    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_plan_production(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
-    target_item_id = _resolve_item_id(args["target_item_id"], context)
-    target_rate = _target_rate(args)
+    target_item_id = resolve_item_id(args["target_item_id"], context)
+    target_rate = target_rate_arg(args)
     try:
-        graph = _plan(context, target_item_id, target_rate, _recipe_choices(args, context))
-    except _PlanningBlocked as blocked:
+        graph = _plan(context, target_item_id, target_rate, recipe_choices_arg(args, context))
+    except PlanningBlocked as blocked:
         return blocked.result(context, accumulator)
     except (ValueError, KeyError) as error:
         return {"error": str(error)}
@@ -117,12 +117,12 @@ def _handle_plan_production(
     summary = {  # built before publishing: it fails on a building the knowledge base doesn't list
         "target_item_id": target_item_id,
         "target_rate_per_minute": target_rate,
-        **_graph_summary(graph, context),
-        **_needs_unlocking(graph, context),
+        **graph_summary(graph, context),
+        **needs_unlocking(graph, context),
     }
     accumulator.graph = graph
-    raw_inputs = _per_item(f for f in graph.flows if f.source_node_id is None)
-    sites_found, sites = _build_sites(raw_inputs, context, accumulator, graph)
+    raw_inputs = per_item(f for f in graph.flows if f.source_node_id is None)
+    sites_found, sites = build_sites(raw_inputs, context, accumulator, graph)
     if context.plan is None:
         accumulator.plan_proposal = propose_plan(
             context, {target_item_id: target_rate}, graph, sites=sites
@@ -130,22 +130,22 @@ def _handle_plan_production(
     else:
         summary["note"] = _SEPARATE_PLAN
     summary.update(sites_found)
-    return _with_spare_power(summary, context)
+    return with_spare_power(summary, context)
 
 
-def _handle_expand_existing_factory(
-    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_expand_existing_factory(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
     if context.existing_graph is None:
         return {
             "error": "no existing factory state available (no save loaded) -- cannot compute an "
             "expansion; offer a from-scratch plan instead, or tell the player to load a save"
         }
-    target_item_id = _resolve_item_id(args["target_item_id"], context)
-    target_rate = _target_rate(args)
-    raw_item_ids = raw_resource_ids(context)
+    target_item_id = resolve_item_id(args["target_item_id"], context)
+    target_rate = target_rate_arg(args)
+    raw_item_ids = raw_resource_ids(context.items)
     try:
-        existing_balance = _existing_item_balance(context)
+        existing_balance = existing_item_balance(context)
         spare = unreserved(existing_balance, context)  # what other plans reserved isn't spare
         surplus = {
             item_id: rate
@@ -156,10 +156,10 @@ def _handle_expand_existing_factory(
             context,
             target_item_id,
             target_rate,
-            _recipe_choices(args, context),
+            recipe_choices_arg(args, context),
             available_supply=surplus,
         )
-    except _PlanningBlocked as blocked:
+    except PlanningBlocked as blocked:
         return blocked.result(context, accumulator)
     except (ValueError, KeyError) as error:
         return {"error": str(error)}
@@ -170,7 +170,7 @@ def _handle_expand_existing_factory(
         change.recipe_id: site
         for change in change_set.changes
         if change.action is ChangeAction.EXTEND
-        and (site := _main_site(change.recipe_id, context)) is not None
+        and (site := main_site(change.recipe_id, context)) is not None
     }
     changes = [
         {
@@ -178,7 +178,7 @@ def _handle_expand_existing_factory(
             "recipe_id": change.recipe_id,
             "building_id": buildings[change.recipe_id],
             "additional_machine_count": change.additional_machine_count,
-            **_stage_power(buildings[change.recipe_id], change.additional_machine_count, context),
+            **stage_power(buildings[change.recipe_id], change.additional_machine_count, context),
             "target_node_id": change.target_node_id,
             **(
                 {"at_site": at_site[change.recipe_id].site_id}
@@ -192,12 +192,12 @@ def _handle_expand_existing_factory(
     if extended_sites:
         accumulator.factory_sites = extended_sites
     items_in_plan = {flow.item_id for flow in additions.flows}
-    raw_needed = _per_item(
+    raw_needed = per_item(
         flow
         for flow in additions.flows
         if flow.source_node_id is None and flow.item_id in raw_item_ids
     )
-    drawn = _per_item(
+    drawn = per_item(
         flow for flow in additions.flows if flow.source_node_id is None and flow.item_id in surplus
     )
     # Ore the factory mines to spare is used before any new deposit: reserved like the rest.
@@ -214,7 +214,7 @@ def _handle_expand_existing_factory(
         for item_id, rate in raw_needed.items()
         if rate > mined_spare.get(item_id, 0.0) + _RATE_EPSILON
     }
-    sites_found, sites = _build_sites(uncovered, context, accumulator, reference=near)
+    sites_found, sites = build_sites(uncovered, context, accumulator, reference=near)
     if change_set.resulting_graph.nodes:  # nothing to build is nothing to draw, nor to plan
         accumulator.graph = change_set.resulting_graph
         if context.plan is None:
@@ -241,30 +241,30 @@ def _handle_expand_existing_factory(
             if rate < 0 and item_id in items_in_plan and item_id not in raw_item_ids
         },
     }
-    result.update(_needs_unlocking(additions, context))
+    result.update(needs_unlocking(additions, context))
     if context.plan is not None:
         result["note"] = _SEPARATE_PLAN
     if extended_sites:
-        result["sites"] = {site.site_id: _site_summary(site, context) for site in extended_sites}
+        result["sites"] = {site.site_id: site_summary(site, context) for site in extended_sites}
     if reservations:
         result["reserved_from_factories"] = reservation_summary(reservations, context, spare)
     result.update(sites_found)
     if all("power_mw" in change for change in changes):
         added = added_machines(change_set.resulting_graph)
         result["added_power_draw_mw"] = power_balance(added, context.buildings)
-    return _with_spare_power(result, context)
+    return with_spare_power(result, context)
 
 
-def _handle_compare_recipes(
-    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_compare_recipes(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
-    item_id = _resolve_item_id(args["item"], context)
-    rate = _target_rate(
+    item_id = resolve_item_id(args["item"], context)
+    rate = target_rate_arg(
         {"target_rate_per_minute": args.get("target_rate_per_minute", _DEFAULT_COMPARISON_RATE)}
     )
     candidates = recipes_for_output(item_id, context.recipes)
     if not candidates:
-        raise _ToolError(f"no recipe makes {item_id} -- nothing to compare")
+        raise ToolError(f"no recipe makes {item_id} -- nothing to compare")
     primary = [r for r in candidates if r.outputs[0].item_id == item_id] or list(candidates)
 
     options: list[dict[str, Any]] = []
@@ -274,7 +274,7 @@ def _handle_compare_recipes(
             graph = _plan(
                 context, item_id, rate, {item_id: recipe.recipe_id}, also_allowed=(recipe,)
             )
-        except _PlanningBlocked as blocked:
+        except PlanningBlocked as blocked:
             options.append(
                 {"recipe_id": recipe.recipe_id, "enabled": enabled}
                 | blocked.result(context, accumulator)
@@ -295,9 +295,9 @@ def _handle_compare_recipes(
             "byproducts_per_minute": {
                 i: rate for i, rate in net.items() if rate > _RATE_EPSILON and i != item_id
             },
-            **_needs_unlocking(graph, context),
+            **needs_unlocking(graph, context),
         }
-        if all(_stage_power(n.building_id, 1, context) for n in graph.nodes):
+        if all(stage_power(n.building_id, 1, context) for n in graph.nodes):
             option["power_mw"] = power_balance(graph, context.buildings)
         options.append(option)
 
@@ -318,22 +318,22 @@ def _handle_compare_recipes(
     return result
 
 
-def _handle_plan_power(
-    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_plan_power(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
     if not context.buildings or not context.items:
-        raise _ToolError("no knowledge base loaded -- power can't be planned")
+        raise ToolError("no knowledge base loaded -- power can't be planned")
     target_mw = float(args["target_mw"])
     if not target_mw > 0:
-        raise _ToolError(f"target_mw must be positive, got {target_mw:g}")
-    fuel_id = _resolve_item_id(args["fuel"], context) if args.get("fuel") else None
+        raise ToolError(f"target_mw must be positive, got {target_mw:g}")
+    fuel_id = resolve_item_id(args["fuel"], context) if args.get("fuel") else None
     plants = [
         p
         for p in power_plants(target_mw, context.buildings, context.items)
         if fuel_id is None or p.fuel_item_id == fuel_id
     ]
     if not plants:
-        raise _ToolError(f"no generator burns {fuel_id}" if fuel_id else "no generator data")
+        raise ToolError(f"no generator burns {fuel_id}" if fuel_id else "no generator data")
     extractors = {b.fixed_resource_id: b for b in context.buildings if b.fixed_resource_id}
 
     options = []
@@ -355,7 +355,7 @@ def _handle_plan_power(
                 option["extractors"] = {
                     "building_id": extractor.building_id,
                     "count": count,
-                    **_stage_power(extractor.building_id, count, context),
+                    **stage_power(extractor.building_id, count, context),
                 }
         if plant.byproduct_item_id is not None:
             option["waste_id"] = plant.byproduct_item_id
@@ -367,38 +367,40 @@ def _handle_plan_power(
         result["fuel_supply"] = _fuel_supply(
             fuel_id, plants[0].fuel_per_minute, context, accumulator
         )
-    return _with_spare_power(result, context)
+    return with_spare_power(result, context)
 
 
 def _fuel_supply(
     fuel_id: str,
     per_minute: float,
     context: OrchestratorContext,
-    accumulator: _ArtifactAccumulator,
+    accumulator: ArtifactAccumulator,
 ) -> dict[str, Any]:
     """How the named fuel gets made: mined, or the production chain for it."""
-    if fuel_id in raw_resource_ids(context) or not recipes_for_output(fuel_id, context.recipes):
+    if fuel_id in raw_resource_ids(context.items) or not recipes_for_output(
+        fuel_id, context.recipes
+    ):
         return {"mined": True, "per_minute": per_minute}
     try:
         graph = _plan(context, fuel_id, per_minute, None)
-    except _PlanningBlocked as blocked:
+    except PlanningBlocked as blocked:
         return blocked.result(context, accumulator)
     except ValueError as error:
         return {"error": str(error)}
-    return {"per_minute": per_minute, **_graph_summary(graph, context)}
+    return {"per_minute": per_minute, **graph_summary(graph, context)}
 
 
-def _handle_plan_unlocks(
-    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_plan_unlocks(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
     if not context.technologies:
-        raise _ToolError("no technology data loaded -- unlocks can't be planned")
-    item_id = _resolve_item_id(args["item"], context)
-    if item_id in raw_resource_ids(context):
-        raise _ToolError(f"{item_id} is a raw resource: it's mined, not unlocked")
+        raise ToolError("no technology data loaded -- unlocks can't be planned")
+    item_id = resolve_item_id(args["item"], context)
+    if item_id in raw_resource_ids(context.items):
+        raise ToolError(f"{item_id} is a raw resource: it's mined, not unlocked")
     try:
         graph = _plan(context, item_id, 1.0, None)
-    except _PlanningBlocked as blocked:
+    except PlanningBlocked as blocked:
         return blocked.result(context, accumulator)
     recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
     unlocked = context.unlocked_technology_ids
@@ -432,26 +434,26 @@ def _handle_plan_unlocks(
     }
 
 
-def _handle_rank_locations(
-    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_rank_locations(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
     if not context.resource_nodes:
-        raise _ToolError(
-            "no resource node data loaded (docs/resource_nodes.json is missing) -- build "
+        raise ToolError(
+            "no resource node data loaded (assets/resource_nodes.json is missing) -- build "
             "locations can't be ranked"
         )
-    item_id = _resolve_item_id(args["item_id"], context)
+    item_id = resolve_item_id(args["item_id"], context)
     reference = reference_point(args, context)
     if args.get("rate_per_minute") is not None:
-        rate = _target_rate({"target_rate_per_minute": args["rate_per_minute"]})
-        sites, _ = _build_sites(
+        rate = target_rate_arg({"target_rate_per_minute": args["rate_per_minute"]})
+        sites, _ = build_sites(
             {item_id: rate}, context, accumulator, reference=reference, replace_map=True
         )
         if sites:
             return {"reference": {"x": reference.x, "y": reference.y, "z": reference.z}, **sites}
     count = int(args.get("count", 5))
     if count < 1:
-        raise _ToolError(f"count must be at least 1, got {count}")
+        raise ToolError(f"count must be at least 1, got {count}")
     ranked = rank_locations(item_id, context.resource_nodes, context.existing_placements, reference)
     top = ranked[:count]
     accumulator.map_locations = top
@@ -463,7 +465,7 @@ def _handle_rank_locations(
             {
                 "resource_node_id": location.resource_node_id,
                 "purity": location.purity.value,
-                "distance_m": location.distance_to_reference / _CM_PER_M,
+                "distance_m": location.distance_to_reference / CM_PER_M,
                 "score": location.score,
             }
             for location in top
@@ -471,10 +473,10 @@ def _handle_rank_locations(
     }
 
 
-def _handle_answer_question(
+def handle_answer_question(
     args: dict[str, Any],
     context: OrchestratorContext,
-    accumulator: _ArtifactAccumulator,
+    accumulator: ArtifactAccumulator,
     qa_chat_completion: ChatCompletion,
     llm_base_url: str,
     llm_model: str,
@@ -505,7 +507,7 @@ def _handle_answer_question(
     return {"answer": None, "error": f"LLM unavailable: {result.reason}"}
 
 
-class _PlanningBlocked(Exception):
+class PlanningBlocked(Exception):
     """The recipes the player ticked can't make an item every recipe could: `missing` says which
     of the others it would take."""
 
@@ -515,7 +517,7 @@ class _PlanningBlocked(Exception):
         self.missing = missing
 
     def result(
-        self, context: OrchestratorContext, accumulator: _ArtifactAccumulator
+        self, context: OrchestratorContext, accumulator: ArtifactAccumulator
     ) -> dict[str, Any]:
         """The tool result saying so -- and the recipes noted on the answer, for the page."""
         recipes = {recipe.recipe_id: recipe for recipe in context.recipes}
@@ -556,8 +558,8 @@ def _plan(
     available_supply: Mapping[str, float] | None = None,
     also_allowed: tuple[Recipe, ...] = (),
 ) -> ProductionGraph:
-    """`_plan_targets` for one target."""
-    return _plan_targets(
+    """`plan_player_targets` for one target."""
+    return plan_player_targets(
         context,
         {target_item_id: target_rate},
         recipe_choices,
@@ -566,7 +568,7 @@ def _plan(
     )
 
 
-def _plan_targets(
+def plan_player_targets(
     context: OrchestratorContext,
     targets: Mapping[str, float],
     recipe_choices: dict[str, str] | None,
@@ -578,10 +580,10 @@ def _plan_targets(
     (`_usable_recipes`, plus `also_allowed`).
 
     With the player's own pick of recipes that's all there is: when it can't make a target but
-    every recipe could, `_PlanningBlocked` says which recipes it would take. By default -- the
+    every recipe could, `PlanningBlocked` says which recipes it would take. By default -- the
     recipes the player has unlocked -- a plan those can't make is made from every recipe instead,
-    and `_needs_unlocking` says what's missing. Raises what `plan_targets` raises."""
-    raw_item_ids = raw_resource_ids(context)
+    and `needs_unlocking` says what's missing. Raises what `plan_targets` raises."""
+    raw_item_ids = raw_resource_ids(context.items)
     usable = _usable_recipes(context)
     usable += tuple(recipe for recipe in also_allowed if recipe not in usable)
 
@@ -611,7 +613,7 @@ def _plan_targets(
                     available_supply=available_supply,
                 )
                 if missing:
-                    raise _PlanningBlocked(target_item_id, missing) from None
+                    raise PlanningBlocked(target_item_id, missing) from None
             raise
     if len(usable) < len(context.recipes):
         try:
@@ -648,14 +650,14 @@ def _refuse_turned_off(
     known = {recipe.recipe_id for recipe in context.recipes}
     for recipe_id in (recipe_choices or {}).values():
         if recipe_id in known and recipe_id not in allowed:
-            raise _ToolError(
+            raise ToolError(
                 f"{recipe_id} is turned off in the player's recipe list -- plan without it, or "
                 "tell the player to turn it on in the Recipes panel",
                 turned_off=recipe_id,
             )
 
 
-def _needs_unlocking(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:
+def needs_unlocking(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:
     """`{"needs_unlocking": [...]}` naming, for each stage of `graph` the player hasn't unlocked,
     the easiest technology that unlocks it -- empty when every stage is unlocked or it's unknown
     what is."""
@@ -678,18 +680,18 @@ def _needs_unlocking(graph: ProductionGraph, context: OrchestratorContext) -> di
     return {"needs_unlocking": locked} if locked else {}
 
 
-def _target_rate(args: dict[str, Any]) -> float:
+def target_rate_arg(args: dict[str, Any]) -> float:
     rate = float(args["target_rate_per_minute"])
     if not rate > 0:
-        raise _ToolError(f"target_rate_per_minute must be a positive rate, got {rate:g}")
+        raise ToolError(f"target_rate_per_minute must be a positive rate, got {rate:g}")
     return rate
 
 
-def _recipe_choices(args: dict[str, Any], context: OrchestratorContext) -> dict[str, str] | None:
+def recipe_choices_arg(args: dict[str, Any], context: OrchestratorContext) -> dict[str, str] | None:
     raw = args.get("recipe_choices")
     if not isinstance(raw, dict) or not raw:
         return None
-    return {_resolve_item_id(item, context): str(recipe_id) for item, recipe_id in raw.items()}
+    return {resolve_item_id(item, context): str(recipe_id) for item, recipe_id in raw.items()}
 
 
 _RATE_EPSILON = 1e-6

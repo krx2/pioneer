@@ -8,6 +8,7 @@ from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
+from pioneer.common import raw_resource_ids
 from pioneer.contracts import (
     Coordinates,
     FactorySite,
@@ -16,11 +17,10 @@ from pioneer.contracts import (
     ProductionNode,
     Recipe,
 )
-from pioneer.orchestrator.base import _CM_PER_M, OrchestratorContext
-from pioneer.orchestrator.items import _uncraftable_item_ids, raw_resource_ids
+from pioneer.orchestrator.base import CM_PER_M, OrchestratorContext
+from pioneer.orchestrator.items import uncraftable_item_ids
 from pioneer.verifier import (
     balance,
-    distance,
     extraction_rates,
     generator_byproducts,
     generator_fuel_demand,
@@ -31,7 +31,7 @@ from pioneer.verifier import (
 )
 
 
-def _site_graph(site: FactorySite) -> ProductionGraph:
+def site_graph(site: FactorySite) -> ProductionGraph:
     """One factory's buildings as a graph, by the save parser's rules: a node per recipe, its
     machines its buildings' clock speeds summed, its boost theirs averaged by clock speed."""
     machines: dict[str, float] = defaultdict(float)
@@ -60,7 +60,7 @@ def _site_graph(site: FactorySite) -> ProductionGraph:
     )
 
 
-def _chain_graph(
+def chain_graph(
     graph: ProductionGraph, item_id: str, recipes: tuple[Recipe, ...]
 ) -> ProductionGraph:
     """The part of `graph` that makes `item_id`: the stages making it, the stages making their
@@ -84,7 +84,7 @@ def _chain_graph(
     return ProductionGraph(nodes=tuple(kept.values()), flows=())
 
 
-def _node_links(
+def node_links(
     graph: ProductionGraph, members: Iterable[PlacementRecord], context: OrchestratorContext
 ) -> set[tuple[str, str]] | None:
     """Which of `graph`'s nodes the save's belts and pipes join: a link from one of `members` to
@@ -105,50 +105,50 @@ def _node_links(
     }
 
 
-def _existing_item_balance(context: OrchestratorContext) -> dict[str, float]:
+def existing_item_balance(context: OrchestratorContext) -> dict[str, float]:
     """The player's factory's net per-item rate: what its recipes make, its extractors pull out of
     the ground and its generators leave behind, minus what its recipes and its generators consume
     -- a factory burning its own Fuel isn't overproducing it, and the water its coal generators
     drink isn't spare."""
     assert context.existing_graph is not None
-    return _item_balance(context.existing_graph, context.existing_placements, context)
+    return item_balance_of(context.existing_graph, context.existing_placements, context)
 
 
 def site_balance(site: FactorySite, context: OrchestratorContext) -> dict[str, float]:
-    """One factory's net per-item rate, as `_existing_item_balance` reckons the whole one's: what
+    """One factory's net per-item rate, as `existing_item_balance` reckons the whole one's: what
     it needs from outside is negative, what it has to spare positive."""
-    return _item_balance(_site_graph(site), site.placements, context)
+    return item_balance_of(site_graph(site), site.placements, context)
 
 
-def _item_balance(
+def item_balance_of(
     graph: ProductionGraph, placements: Sequence[PlacementRecord], context: OrchestratorContext
 ) -> dict[str, float]:
-    """`_existing_item_balance` of `graph` and the `placements` it stands on -- the whole factory,
+    """`existing_item_balance` of `graph` and the `placements` it stands on -- the whole factory,
     or one of its sites."""
     net = balance(graph, context.recipes)
-    _add_rates(net, extraction_rates(placements, context.buildings, context.resource_nodes))
-    _add_rates(net, generator_byproducts(placements, context.buildings, context.items))
-    _add_rates(net, _generator_consumption(context, placements), sign=-1.0)
+    add_rates(net, extraction_rates(placements, context.buildings, context.resource_nodes))
+    add_rates(net, generator_byproducts(placements, context.buildings, context.items))
+    add_rates(net, generator_consumption(context, placements), sign=-1.0)
     return net
 
 
-def _generator_consumption(
+def generator_consumption(
     context: OrchestratorContext, placements: Sequence[PlacementRecord] | None = None
 ) -> dict[str, float]:
     """What the placed generators consume per minute: their fuel and any supplemental water."""
     placements = context.existing_placements if placements is None else placements
     buildings = context.buildings
     consumed = generator_fuel_demand(placements, buildings, context.items)
-    _add_rates(consumed, generator_supplemental_demand(placements, buildings))
+    add_rates(consumed, generator_supplemental_demand(placements, buildings))
     return consumed
 
 
-def _add_rates(totals: dict[str, float], rates: Mapping[str, float], sign: float = 1.0) -> None:
+def add_rates(totals: dict[str, float], rates: Mapping[str, float], sign: float = 1.0) -> None:
     for item_id, rate in rates.items():
         totals[item_id] = totals.get(item_id, 0.0) + sign * rate
 
 
-def _consuming_nodes(
+def consuming_nodes(
     context: OrchestratorContext, *, shared: Collection[str]
 ) -> dict[str, set[str]]:
     """Per item, the existing graph's nodes whose recipe consumes it -- leaving out the `shared`
@@ -165,7 +165,7 @@ def _consuming_nodes(
     return consumers
 
 
-def _existing_power(context: OrchestratorContext) -> tuple[float, float | None]:
+def existing_power(context: OrchestratorContext) -> tuple[float, float | None]:
     """(draw, capacity) in MW. Taken from every placed building when the save's placements are
     loaded -- extractors, pumps and generators included -- otherwise just the recipe graph's own
     draw, against whatever capacity the context was given (`None`: unknown, so never a blackout).
@@ -184,12 +184,12 @@ def _existing_power(context: OrchestratorContext) -> tuple[float, float | None]:
     return draw, context.available_power_mw
 
 
-def _inputs_from_outside(context: OrchestratorContext, item_ids: Iterable[str]) -> frozenset[str]:
+def inputs_from_outside(context: OrchestratorContext, item_ids: Iterable[str]) -> frozenset[str]:
     """Items diagnosis doesn't judge as short: hand-gathered ones always, and raw resources unless
     resource node data is loaded -- without it, what the extractors mine is unknown and every ore
     would look short."""
-    raw = raw_resource_ids(context)
-    gathered = _uncraftable_item_ids(context, item_ids) - raw
+    raw = raw_resource_ids(context.items)
+    gathered = uncraftable_item_ids(context, item_ids) - raw
     return gathered if context.resource_nodes else gathered | raw
 
 
@@ -212,7 +212,7 @@ def reference_point(args: dict[str, Any], context: OrchestratorContext) -> Coord
     )
 
 
-def _main_site(recipe_id: str, context: OrchestratorContext) -> FactorySite | None:
+def main_site(recipe_id: str, context: OrchestratorContext) -> FactorySite | None:
     """The factory site running the most of `recipe_id`, by clock speed."""
 
     def running(site: FactorySite) -> float:
@@ -222,7 +222,7 @@ def _main_site(recipe_id: str, context: OrchestratorContext) -> FactorySite | No
     return best if best is not None and running(best) > 0 else None
 
 
-def _site_summary(site: FactorySite, context: OrchestratorContext) -> dict[str, Any]:
+def site_summary(site: FactorySite, context: OrchestratorContext) -> dict[str, Any]:
     reference = reference_point({}, context)
     counts: dict[str, float] = {}
     for placement in site.placements:
@@ -232,13 +232,13 @@ def _site_summary(site: FactorySite, context: OrchestratorContext) -> dict[str, 
         "x": site.position.x,
         "y": site.position.y,
         "z": site.position.z,
-        "distance_from_base_m": distance(site.position, reference) / _CM_PER_M,
+        "distance_from_base_m": site.position.distance_to(reference) / CM_PER_M,
         "buildings": len(site.placements),
         "main_recipes": sorted(counts, key=lambda r: -counts[r])[:3],
     }
 
 
-def _with_spare_power(result: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+def with_spare_power(result: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
     """`result`, plus what the player's grid has to spare, when the save tells."""
     spare = spare_power_mw(context)
     return result if spare is None else {**result, "grid_spare_power_mw": spare}
@@ -250,7 +250,7 @@ def spare_power_mw(context: OrchestratorContext) -> float | None:
     if context.existing_graph is None:
         return None
     try:
-        draw, capacity = _existing_power(context)
+        draw, capacity = existing_power(context)
     except ValueError:
         return None
     return None if capacity is None else capacity - draw

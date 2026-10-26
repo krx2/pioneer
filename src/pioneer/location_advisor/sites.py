@@ -1,52 +1,23 @@
 """Where a plan is to be built: which free resource nodes feed it, worked by which extractor at what
-clock speed, and whether it all fits on one site or is split across several, each making its part.
+clock speed, and whether it fits on one site or is split across several, each making its part.
 
-**What a node can give.** `extractor_for` says which extractor a node would be worked with — the
-best one the player has, as the caller knows from their unlocks — or `None` if none can work it.
-A node only an extractor the player hasn't unlocked can work is used only when the others can't
-cover the need: a well's satellite before the Resource Well Extractor, say.
-A node gives that extractor's rate, times its purity's multiplier (impure 0.5, normal 1, pure 2),
-times the clock speed it can be pushed to (2.5 overclocked with three power shards), but no more
-than the belt or pipe out of it carries (`Extractor.output_capacity`).
-
-**No better node than needed.** For each resource the plan needs, a set of nodes is chosen that
-covers the need with the least capacity to spare — then the fewest nodes, then the nearest. So a
-normal node overclocked to 167% is chosen over a pure one underclocked, and the pure node is left
-for when it's needed. The chosen nodes run at the same share of what each can give, so between
-them they give exactly the need; one past 100% takes a power shard per 50 points.
-
-**One site if it fits.** Every free node of a needed resource is tried as the middle of a site,
-each resource's nodes within `site_radius` of it chosen as above. Of the middles where every
-resource is covered, those sparing the least capacity — within a tenth of a need — and of them
-the cheapest: how far a unit of resource travels on average to the middle of the chosen nodes
-(weighed by what each gives), plus a quarter of how far that middle is from `reference` (where the
-player is based), plus 500 m for every node worked. So a pure node next to the base doesn't win
-over a normal one that's enough, and one normal node wins over two impure ones.
-
-**Several sites if not.** Then each resource, the biggest need first, gets deposits of its own: the
-nodes within `site_radius` of one of them that cover what's left of its need, chosen and picked
-as above — costed with half the distance to the nearest deposits already chosen besides, so that
-different resources' deposits gather. When no such area covers it, the one that gives the most
-does, all it can, and the rest comes from the next — capacity spared is reckoned against the
-whole need, not what's left of it, so the last few units don't send it to a lone node across the
-map for want of one that spares less. Deposits closer than `site_radius` to each other make one
-site; one with nothing to make but its resource is an outpost, sending it on.
-
-**What each site makes.** Given the plan's graph, its stages are placed from the raw resources
-down. A stage taking in resources mined for the plan goes whole to the site with enough of them
-left — those taking in several first, as they're the hardest to place — or, short of that, to the
-one importing the least; a stage taking in one resource no site has enough of is split among its
-sites by what each has left, as smelters at every mine. Every other stage goes whole to the site
-most of what it takes in comes from. So each site makes certain parts, not a slice of the whole
-chain. What a stage needs from another site — a part, or a resource mined there — is a
-`SiteTransfer`. A site's machines are its share of the stage's, rounded up.
-
-**Revisions keep what's there.** Given the plan as it was (`kept`), its deposits stay: for a
-resource needed less, the fewest of them that are still enough — those the player has already
-built an extractor on first — and for one needed more, all of them and new deposits for the rest,
-sought near what's kept; a new deposit within `site_radius` of a kept site joins it. Kept sites
-keep their ids and where they are, and a stage stays at the site it was at while that site still
-gets what the stage takes in. Nodes other plans work (`reserved`) are never offered.
+- A node gives its extractor's rate × purity (0.5/1/2) × the clock speed it can reach (2.5 with
+  three shards), capped by `Extractor.output_capacity`. Nodes only a locked extractor can work
+  are used only for what the others can't give.
+- Per resource, the nodes covering the need with the least capacity to spare are chosen, then the
+  fewest, then the nearest; they run at the same share of what each can give.
+- One site if it fits: every free node is tried as a middle, with each resource's nodes within
+  `site_radius`. Of those sparing the least (within `_SPARE_TOLERANCE` of a need), the cheapest:
+  average haul to the middle, plus a quarter of its distance from `reference`, plus `_NODE_COST`
+  per node.
+- Else several sites: biggest need first, each resource gets deposits of its own, costed also by
+  distance to deposits already chosen so they gather. Deposits within `site_radius` of each other
+  make one site.
+- With the plan's graph, stages are placed from the raw resources down: a mining-fed stage whole at
+  a site with enough left, or split among its sites when none has; every other stage where most
+  of its inputs come from. What crosses sites is a `SiteTransfer`.
+- A revision (`kept`) keeps its deposits, sites and stage placements where it can. Nodes other
+  plans work (`reserved`) are never offered.
 
 Water is never asked for here: Water Extractors go on any water, not on nodes.
 """
@@ -71,12 +42,8 @@ from pioneer.contracts import (
     SiteStage,
     SiteTransfer,
 )
-from pioneer.location_advisor.advisor import (
-    _PURITY_WEIGHT,
-    DistanceFn,
-    _euclidean_distance,
-    claimed_node_ids,
-)
+from pioneer.location_advisor.advisor import PURITY_WEIGHT, DistanceFn, claimed_node_ids
+from pioneer.location_advisor.grid import SpatialGrid
 
 ExtractorFor = Callable[[ResourceNode], Extractor | None]
 
@@ -125,9 +92,9 @@ def plan_sites(
     reserved: Collection[str] = (),
     site_radius: float = SITE_RADIUS,
     claim_radius: float = 1000.0,
-    distance_fn: DistanceFn = _euclidean_distance,
+    distance_fn: DistanceFn = Coordinates.distance_to,
 ) -> SitePlan:
-    """Where to build for `needs` (raw resource item id -> per minute): see the module docstring.
+    """Where to build for `needs` (raw resource item id -> per minute).
     Nodes `placements` claim are left out (`claimed_node_ids`), and so are those `reserved` for
     other plans; with `graph`, the plan's stages are shared out among the sites, else only its
     deposits are chosen. With `kept` — the plan as it was — it's revised, not chosen anew."""
@@ -237,7 +204,7 @@ def _candidate(node: ResourceNode, extractor: Extractor | None) -> _Candidate | 
     """`node` worked by `extractor` — `None` when it gives nothing that way."""
     if extractor is None or extractor.rate_per_minute <= 0:
         return None
-    base = extractor.rate_per_minute * _PURITY_WEIGHT[node.purity]
+    base = extractor.rate_per_minute * PURITY_WEIGHT[node.purity]
     capacity = min(base * extractor.max_clock_speed, extractor.output_capacity)
     return _Candidate(node, extractor, base, capacity) if capacity > _EPSILON else None
 
@@ -253,8 +220,8 @@ def _revised(
     radius: float,
     distance_fn: DistanceFn,
 ) -> tuple[dict[str, list[_Deposits]], dict[str, Coordinates], dict[str, float]]:
-    """`kept` revised for `needs` — see the module docstring: the deposits of each site, by site
-    id, kept sites first; where each site is; and what no free node is left for."""
+    """`kept` revised for `needs`: the deposits of each site, by site id, kept sites first; where
+    each site is; and what no free node is left for."""
     by_id = {node.node_id: node for node in nodes}
     built = {p.resource_node_id for p in placements if p.resource_node_id is not None}
     groups: dict[str, list[_Deposits]] = {site.site_id: [] for site in kept.sites}
@@ -328,7 +295,7 @@ def _one_site(
     """Every need covered from around one middle, the cheapest there is — `None` if none does."""
     if not needs:
         return None
-    grids = {item: _Grid(candidates[item], radius) for item in needs}
+    grids = {item: SpatialGrid(candidates[item], radius, _position) for item in needs}
     options: list[tuple[float, float, str, tuple[_Deposits, ...]]] = []
     for item in sorted(needs):
         for anchor in candidates[item]:
@@ -494,7 +461,7 @@ def _spare(chosen: Sequence[_Deposits], needs: Mapping[str, float]) -> float:
 
 
 def _cost(chosen: Sequence[_Deposits], reference: Coordinates, distance_fn: DistanceFn) -> float:
-    """What a choice of deposits costs, in centimetres of hauling — see the module docstring."""
+    """What a choice of deposits costs, in centimetres of hauling."""
     worked = [
         (candidate.node.position, candidate.capacity * found.rate / _capacity(found))
         for found in chosen
@@ -552,8 +519,7 @@ def _shared_out(
     raw_item_ids: frozenset[str],
     previous: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, list[SiteStage]], tuple[SiteTransfer, ...]]:
-    """Which site builds how much of each of `graph`'s stages, and what has to go between them —
-    see the module docstring."""
+    """Which site builds how much of each of `graph`'s stages, and what has to go between them."""
     if not site_ids:
         return {}, ()
     flows_into: dict[str, list[MaterialFlow]] = defaultdict(list)
@@ -628,8 +594,8 @@ def _placed(
     mined: Callable[[str], dict[str, float]],
     previous: Mapping[str, str],
 ) -> dict[str, dict[str, float]]:
-    """Each stage's share at each site, stages placed from the raw resources down — see the module
-    docstring: a stage mining-fed where its resources are left, a single resource's stage split
+    """Each stage's share at each site, stages placed from the raw resources down: a stage
+    mining-fed where its resources are left, a single resource's stage split
     among its sites when no one of them has enough, and every other stage where most of what it
     takes in comes from."""
     left = {site: dict(supply[site]) for site in site_ids}
@@ -740,21 +706,5 @@ def _match(
             moved[(item_id, source, target)] += amount * left * want / wanting
 
 
-class _Grid:
-    """Candidates bucketed into square x/y cells of side `radius`: everything within `radius` of a
-    point lies in that point's cell or one of the eight around it."""
-
-    def __init__(self, candidates: Sequence[_Candidate], radius: float):
-        self._size = max(radius, 1.0)
-        self._cells: dict[tuple[int, int], list[_Candidate]] = defaultdict(list)
-        for candidate in candidates:
-            self._cells[self._cell(candidate.node.position)].append(candidate)
-
-    def around(self, position: Coordinates) -> Iterator[_Candidate]:
-        column, row = self._cell(position)
-        for d_column in (-1, 0, 1):
-            for d_row in (-1, 0, 1):
-                yield from self._cells.get((column + d_column, row + d_row), ())
-
-    def _cell(self, position: Coordinates) -> tuple[int, int]:
-        return math.floor(position.x / self._size), math.floor(position.y / self._size)
+def _position(candidate: _Candidate) -> Coordinates:
+    return candidate.node.position

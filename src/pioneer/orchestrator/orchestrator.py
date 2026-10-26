@@ -1,82 +1,18 @@
-"""LLM Orchestrator core (implementation.md Stage 16).
+"""The routing loop: hand the player's question and the tools to the model, run whichever tools it
+calls, feed the results back, and repeat until it answers in plain text. Which tools the model
+reaches for is the intent classification; there's no separate call for it.
 
-The routing loop: hand the player's question and a set of tools -- one per Stage 2-11 module, plus
-item/recipe lookups over the Knowledge Base -- to a local, OpenAI-compatible LLM, execute whichever
-tools it calls, feed the results back, and repeat until it answers in plain text. Tool-calling *is*
-the intent-routing step from architecture.md §4.3 ("classify what the player is asking for") --
-which tool(s) the model reaches for is the classification, so there's no separate
-intent-classification call.
+- Tool handlers return real module output, which goes into the `ResponseArtifact` as is; the model
+  only phrases the numbers. Every result it saw is kept as the answer's `grounding`.
+- Nothing a tool does escapes as an exception: failures come back to the model as an
+  `{"error": ...}` result (`_run_tool`). A tool call written as text is run like any other.
+- Only the newest turns of `history` that fit `_HISTORY_BUDGET_CHARS` are passed on.
+- A conversation's accepted plan comes in as `OrchestratorContext.plan`; an answer that plans
+  something offers its plan as `ResponseArtifact.plan_proposal`, withdrawn if a later tool draws
+  another graph.
+- With an `on_event` sink, `handle_query` reports what it's doing (`base.ProgressSink`).
 
-**No arithmetic in the LLM path (architecture.md invariant #1).** Every tool handler below calls
-straight into a deterministic module (and, where the module needs it, the Verifier) and returns
-its *real* structured output. That structured output is accumulated into the final
-`ResponseArtifact.graph` / `.map_locations` directly by this module's own code -- never
-reconstructed from the LLM's prose -- so every number in a response still traces back to a
-specific module call (invariant #6). The LLM only ever sees a compact JSON summary of a tool's
-result and is responsible for *phrasing*, not producing, the numbers in it.
-
-**Tool calls written as text.** A local model sometimes puts a tool call in its answer instead of
-the API's `tool_calls` field. One naming a real tool is executed like any other, rather than shown
-to the player as a line of JSON -- see `_tool_calls_written_as_text`.
-
-**Nothing a tool does escapes as an exception (invariant #5).** Expected failures (unknown item,
-no save loaded) and unexpected ones (a module choking on data it didn't anticipate) alike come back
-to the model as an `{"error": ...}` tool result it can explain to the player -- see `_run_tool`.
-
-**Grounding.** Every tool result carries a `names` map for the ids in it, so the model can
-answer in the names a player knows. Every result it saw, and every knowledge passage it
-retrieved, is kept on the artifact as `grounding`: what the
-answer is checked against (see verification.py) and what its claims trace back to.
-
-**Conversations.** `history` is the earlier turns of the same conversation, oldest first, as
-(question, answer) pairs: the model sees them before the new question, so "and how much power is
-that?" makes sense. They're grounding too — a follow-up may repeat a number an earlier answer gave,
-which was checked against that turn's own tools when it was given. Only the newest turns that fit
-`_HISTORY_BUDGET_CHARS` are passed on (see `recent_history`): a local model's context window is
-small, and what overflows it is cut from the front — the system prompt and the tools.
-
-**The player's plan.** A conversation may have a plan the player accepted (see
-`contracts.plan`): it comes in as `OrchestratorContext.plan`, and the model is shown it next to
-what data it has (`plans.plan_note`), with how far the save has built it -- grounding too, since a
-follow-up may repeat its numbers --
-and offered the tools that draw and revise it. An answer that plans something offers that plan to
-be accepted (`ResponseArtifact.plan_proposal`): the first in a conversation, or a revision of the
-plan it has. A plan is offered only with its own graph: a later tool drawing another one takes the
-offer back.
-
-**Progress.** Given an `on_event` sink, `handle_query` says what it's doing while it works (see
-`base.ProgressSink`): that it's thinking, which tool it's running on what, and when text a
-streaming transport already passed on turned out to be a round of tool calls rather than the
-answer. The page shows those as the answer's live status.
-
-**Items by name.** Tools accept an item's in-game name ("Reinforced Iron Plate") as well as its id
-(`Desc_IronPlateReinforced_C`): a local model can't be expected to know the export's class names.
-Plurals and a name only one item fits are taken too ("Screw", "reinforced plates"); a name that
-fits several items, or none, comes back as an error listing the closest matches, so the model can
-correct itself on the next round.
-
-**What the player has unlocked.** With a save loaded, planning uses the recipes the player has
-unlocked first; only when those can't make the item does it plan with every recipe, and then it
-says which stages need what unlocked. `plan_unlocks` turns that into an unlock order.
-
-**Which recipes the player picked.** Once the player has ticked which recipes plans may use
-(`OrchestratorContext.enabled_recipe_ids`), plans use those and nothing else -- also ones not yet
-unlocked, which `needs_unlocking` then names. When the ticked ones can't make an item every recipe
-could, the tool says which recipes it would take instead of planning (`missing_recipes`), and the
-answer carries their ids for the page to offer turning them on.
-
-**The existing factory, as the Verifier sees it.** Expansion and diagnosis both start from the
-factory's net per-item balance: what its recipes make, its extractors mine and its generators leave
-behind (nuclear waste), minus what its recipes and its generators consume — fuel, and the water
-coal and nuclear plants need besides. Expansion then plans only what that surplus doesn't cover (see
-expansion_advisor) and reports the raw resources the plan needs against spare extraction;
-diagnosis judges power against every placed building -- extractors and generators included, which
-the save's recipe graph never contains -- and ore supply too, once resource node data is loaded.
-
-Like `qa_engine.engine` and `server_client.client`, this module never imports an HTTP library
-itself -- the caller injects a `ToolCallingLLM` transport (see `pioneer.llm_client` for the real
-implementation), so the whole routing loop is testable against a scripted fake model with zero
-real networking.
+The `ToolCallingLLM` transport is injected, so the loop runs against a scripted fake in tests.
 """
 
 from __future__ import annotations
@@ -90,22 +26,22 @@ from pioneer.contracts import (
 )
 from pioneer.knowledge_base import recipe_is_unlocked
 from pioneer.orchestrator.base import (
+    ArtifactAccumulator,
     OrchestratorContext,
     OrchestratorUnavailable,
     ProgressSink,
     ToolCallingLLM,
-    _ArtifactAccumulator,
 )
 from pioneer.orchestrator.items import display_names
 from pioneer.orchestrator.plans import deposits_built, plan_note, progress_of
 from pioneer.orchestrator.progress import describe_tool_call
 from pioneer.orchestrator.tool_calls import (
-    _assistant_message,
-    _execute_tool,
-    _resolve_tool_name,
-    _tool_calls_written_as_text,
+    assistant_message,
+    execute_tool,
+    resolve_tool_name,
+    tool_calls_written_as_text,
 )
-from pioneer.orchestrator.tools import _build_tools
+from pioneer.orchestrator.tools import build_tools
 from pioneer.qa_engine import ChatCompletion
 
 _MAX_TOOL_ROUNDS = 6
@@ -184,7 +120,7 @@ def handle_query(
     history = recent_history(history)  # what the model sees is also what the answer is held to
     names = display_names(context)
     system = f"{_SYSTEM_PROMPT}\n\n{context_note(context)}"
-    accumulator = _ArtifactAccumulator(
+    accumulator = ArtifactAccumulator(
         grounding=[question, *(text for turn in history for text in turn)]
     )
     if context.plan is not None:
@@ -196,7 +132,7 @@ def handle_query(
         )
         system += f"\n\n{note}"
         accumulator.grounding.append(note)
-    tools = _build_tools(
+    tools = build_tools(
         context, accumulator, qa_chat_completion, llm_base_url, llm_model, llm_api_key
     )
     tool_schemas = [tool.as_schema() for tool in tools]
@@ -215,7 +151,7 @@ def handle_query(
         except TransportError as error:
             return OrchestratorUnavailable(reason=f"could not reach LLM endpoint: {error}")
 
-        tool_calls = message.get("tool_calls") or _tool_calls_written_as_text(
+        tool_calls = message.get("tool_calls") or tool_calls_written_as_text(
             message.get("content"), tools_by_name
         )
         if not tool_calls:
@@ -239,9 +175,9 @@ def handle_query(
             )
 
         emit({"type": "discard"})
-        messages.append(_assistant_message(message, tool_calls))
+        messages.append(assistant_message(message, tool_calls))
         for call in tool_calls:
-            name = _resolve_tool_name(call["name"], tools_by_name) or str(call["name"])
+            name = resolve_tool_name(call["name"], tools_by_name) or str(call["name"])
             arguments = call.get("arguments")
             emit(
                 {
@@ -252,7 +188,7 @@ def handle_query(
                     ),
                 }
             )
-            result_message = _execute_tool(call, tools_by_name, names)
+            result_message = execute_tool(call, tools_by_name, names)
             messages.append(result_message)
             accumulator.grounding.append(result_message["content"])
 
@@ -285,7 +221,7 @@ def recent_history(
 
 def context_note(context: OrchestratorContext) -> str:
     """What this conversation has to go on, so the model can say what it doesn't know instead of
-    assuming it (architecture.md invariant #5)."""
+    assuming it."""
     lines = [
         f"Knowledge base: {len(context.recipes)} factory recipes."
         if context.recipes

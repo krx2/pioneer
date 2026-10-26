@@ -21,8 +21,9 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Local working notes
+# Local working notes and tooling
 /TODO.md
+/.claude/
 
 # Local runtime data: player feedback and the response log (see pioneer.web)
 /data/

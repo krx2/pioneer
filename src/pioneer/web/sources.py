@@ -1,10 +1,6 @@
-"""The endpoints behind the header's panels: what each data source holds, and the changes the
-player makes to them — all through the `app.LiveContext` the assistant's context comes from, so a
-change shows in the very next answer. Without one there's nothing to show or change, and every
-endpoint here says so with a 404.
-
-Every change answers with the status as it then stands (`/api/status`'s shape), for the page to
-redraw its buttons from at once.
+"""The endpoints behind the header's panels, all through the `app.LiveContext` the context comes
+from, so a change shows in the very next answer; without one, every endpoint is a 404. Every change
+answers with the status as it then stands (`/api/status`'s shape).
 
 - `GET /api/saves`: the saves under the game's `SaveGames` folder, by session, and which is read.
 - `PUT /api/saves/selection`: which save to read — by a path `GET /api/saves` listed, never any
@@ -35,7 +31,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from pioneer.app import LiveContext
-from pioneer.map_presentation import readable_id
+from pioneer.common import readable_id
 
 StatusBody = Callable[[], dict[str, Any]]
 

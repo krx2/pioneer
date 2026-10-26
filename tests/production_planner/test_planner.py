@@ -1,9 +1,10 @@
 """Tests for the production planner, against a hand-written iron-chain recipe set (own fixture,
-not knowledge_base's `docs/en-US.json` or its loader) covering the Reinforced Iron Plate chain
+not knowledge_base's `assets/en-US.json` or its loader) covering the Reinforced Iron Plate chain
 from the source deck — chosen because Iron Ingot demand converges from two branches (Iron Plate
 and, via Screw, Iron Rod), which is exactly what demand aggregation needs to get right."""
 
 import pytest
+from tests.game_data import FUEL, IRON_INGOT, IRON_PLATE, IRON_ROD, PURE_IRON_INGOT
 
 from pioneer.contracts import ItemAmount, MaterialFlow, ProductionNode, Recipe
 from pioneer.production_planner.planner import (
@@ -11,30 +12,8 @@ from pioneer.production_planner.planner import (
     find_missing_recipes,
     plan_production,
     plan_targets,
-    recipes_for_output,
 )
 
-_IRON_INGOT = Recipe(
-    recipe_id="Recipe_IngotIron_C",
-    name="Iron Ingot",
-    building_ids=("Build_SmelterMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=30),),
-    outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
-)
-_IRON_PLATE = Recipe(
-    recipe_id="Recipe_IronPlate_C",
-    name="Iron Plate",
-    building_ids=("Build_ConstructorMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
-    outputs=(ItemAmount(item_id="Desc_IronPlate_C", amount_per_minute=20),),
-)
-_IRON_ROD = Recipe(
-    recipe_id="Recipe_IronRod_C",
-    name="Iron Rod",
-    building_ids=("Build_ConstructorMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=15),),
-    outputs=(ItemAmount(item_id="Desc_IronRod_C", amount_per_minute=15),),
-)
 _SCREW = Recipe(
     recipe_id="Recipe_Screw_C",
     name="Screw",
@@ -52,31 +31,10 @@ _REINFORCED_IRON_PLATE = Recipe(
     ),
     outputs=(ItemAmount(item_id="Desc_IronPlateReinforced_C", amount_per_minute=5),),
 )
-_IRON_INGOT_PURE = Recipe(
-    recipe_id="Recipe_Alternate_PureIronIngot_C",
-    name="Alternate: Pure Iron Ingot",
-    building_ids=("Build_OilRefinery_C",),
-    inputs=(
-        ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=35),
-        ItemAmount(item_id="Desc_Water_C", amount_per_minute=20),
-    ),
-    outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=65),),
-    is_alternate=True,
-)
 
-RECIPES = (_IRON_INGOT, _IRON_PLATE, _IRON_ROD, _SCREW, _REINFORCED_IRON_PLATE)
+RECIPES = (IRON_INGOT, IRON_PLATE, IRON_ROD, _SCREW, _REINFORCED_IRON_PLATE)
 
 # A refinery recipe, plus the Packager's pack/unpack pair that loops Fuel back onto itself.
-_FUEL = Recipe(
-    recipe_id="Recipe_LiquidFuel_C",
-    name="Fuel",
-    building_ids=("Build_OilRefinery_C",),
-    inputs=(ItemAmount(item_id="Desc_LiquidOil_C", amount_per_minute=60),),
-    outputs=(
-        ItemAmount(item_id="Desc_LiquidFuel_C", amount_per_minute=40),
-        ItemAmount(item_id="Desc_PolymerResin_C", amount_per_minute=30),
-    ),
-)
 _UNPACKAGE_FUEL = Recipe(
     recipe_id="Recipe_UnpackageFuel_C",
     name="Unpackage Fuel",
@@ -97,7 +55,7 @@ _PACKAGED_FUEL = Recipe(
     ),
     outputs=(ItemAmount(item_id="Desc_Fuel_C", amount_per_minute=40),),
 )
-_FUEL_RECIPES = (_UNPACKAGE_FUEL, _PACKAGED_FUEL, _FUEL)
+_FUEL_RECIPES = (_UNPACKAGE_FUEL, _PACKAGED_FUEL, FUEL)
 
 
 def _node(graph, item_id: str) -> ProductionNode:
@@ -186,7 +144,7 @@ def test_partial_supply_splits_a_flow_between_supply_and_new_machines() -> None:
     graph = plan_production(
         "Desc_IronPlate_C",
         40,
-        (_IRON_INGOT, _IRON_PLATE),
+        (IRON_INGOT, IRON_PLATE),
         available_supply={"Desc_IronIngot_C": 15},
     )
 
@@ -203,7 +161,7 @@ def test_target_wholly_covered_by_supply_needs_no_machines() -> None:
     graph = plan_production(
         "Desc_IronPlate_C",
         20,
-        (_IRON_INGOT, _IRON_PLATE),
+        (IRON_INGOT, IRON_PLATE),
         available_supply={"Desc_IronPlate_C": 50},
     )
 
@@ -268,7 +226,7 @@ def test_expansion_stops_at_raw_resources_even_when_a_recipe_makes_them() -> Non
     graph = plan_production(
         "Desc_IronPlate_C",
         20,
-        (ore_from_limestone, _IRON_INGOT, _IRON_PLATE),
+        (ore_from_limestone, IRON_INGOT, IRON_PLATE),
         raw_item_ids={"Desc_OreIron_C", "Desc_Stone_C"},
     )
 
@@ -276,24 +234,14 @@ def test_expansion_stops_at_raw_resources_even_when_a_recipe_makes_them() -> Non
     assert _flow(graph, "Desc_OreIron_C", "Desc_IronIngot_C").source_node_id is None
 
 
-def test_recipes_for_output_returns_all_alternates() -> None:
-    recipes = (_IRON_INGOT, _IRON_INGOT_PURE)
-    result = recipes_for_output("Desc_IronIngot_C", recipes)
-    assert set(result) == {_IRON_INGOT, _IRON_INGOT_PURE}
-
-
-def test_recipes_for_output_unknown_item_is_empty() -> None:
-    assert recipes_for_output("nonexistent", RECIPES) == ()
-
-
 def test_standard_recipe_is_preferred_over_an_alternate_listed_first() -> None:
-    recipes = (_IRON_INGOT_PURE, _IRON_INGOT, _IRON_PLATE)
+    recipes = (PURE_IRON_INGOT, IRON_INGOT, IRON_PLATE)
     graph = plan_production("Desc_IronPlate_C", 20, recipes)
     assert _node(graph, "Desc_IronIngot_C").recipe_id == "Recipe_IngotIron_C"
 
 
 def test_alternate_is_used_when_an_item_has_no_standard_recipe() -> None:
-    graph = plan_production("Desc_IronPlate_C", 20, (_IRON_INGOT_PURE, _IRON_PLATE))
+    graph = plan_production("Desc_IronPlate_C", 20, (PURE_IRON_INGOT, IRON_PLATE))
     assert _node(graph, "Desc_IronIngot_C").recipe_id == "Recipe_Alternate_PureIronIngot_C"
 
 
@@ -336,7 +284,7 @@ def test_alternates_are_the_fallback_when_every_standard_recipe_loops() -> None:
     )
 
     graph = plan_production(
-        "Desc_LiquidTurboFuel_C", 18.75, (turbofuel, rocket_fuel, compacted_coal, _FUEL)
+        "Desc_LiquidTurboFuel_C", 18.75, (turbofuel, rocket_fuel, compacted_coal, FUEL)
     )
 
     assert _node(graph, "Desc_CompactedCoal_C").recipe_id == "Recipe_Alternate_EnrichedCoal_C"
@@ -354,7 +302,7 @@ def test_primary_output_recipe_is_preferred_over_a_byproduct_one() -> None:
             ItemAmount(item_id="Desc_HeavyOilResidue_C", amount_per_minute=20),
         ),
     )
-    graph = plan_production("Desc_PolymerResin_C", 130, (_FUEL, resin_first))
+    graph = plan_production("Desc_PolymerResin_C", 130, (FUEL, resin_first))
     assert _node(graph, "Desc_PolymerResin_C").recipe_id == "Recipe_PolymerResin_C"
 
 
@@ -384,7 +332,7 @@ def test_packaging_plans_through_the_loop_free_direction() -> None:
 
 
 def test_recipe_choices_overrides_the_default() -> None:
-    recipes = (_IRON_INGOT, _IRON_INGOT_PURE, _IRON_PLATE)
+    recipes = (IRON_INGOT, PURE_IRON_INGOT, IRON_PLATE)
     graph = plan_production(
         "Desc_IronPlate_C",
         20,
@@ -402,7 +350,7 @@ def test_invalid_recipe_choice_raises() -> None:
         plan_production(
             "Desc_IronPlate_C",
             20,
-            (_IRON_INGOT, _IRON_PLATE),
+            (IRON_INGOT, IRON_PLATE),
             recipe_choices={"Desc_IronIngot_C": "does_not_exist"},
         )
 
@@ -482,7 +430,7 @@ def test_an_item_only_a_left_out_recipe_makes_is_no_raw_input() -> None:
 
 
 def test_a_chain_running_into_a_dead_end_gives_way_to_another() -> None:
-    recipes = _without(_IRON_ROD, _STEEL_SCREW)  # the standard Screw needs rods: Cast Screw then
+    recipes = _without(IRON_ROD, _STEEL_SCREW)  # the standard Screw needs rods: Cast Screw then
 
     graph = plan_production(_RIP, 5, recipes, raw_item_ids=_RAW, game_recipes=_GAME)
 
@@ -527,7 +475,7 @@ def test_missing_recipes_name_every_recipe_that_alone_would_make_the_item() -> N
 
 def test_missing_recipes_needed_together_are_listed_each() -> None:
     missing = find_missing_recipes(
-        _RIP, 5, _without(_IRON_PLATE, *_ALL_SCREWS), _GAME, raw_item_ids=_RAW
+        _RIP, 5, _without(IRON_PLATE, *_ALL_SCREWS), _GAME, raw_item_ids=_RAW
     )
 
     assert [(entry.item_id, len(entry.any_of)) for entry in missing] == [
@@ -539,7 +487,7 @@ def test_missing_recipes_needed_together_are_listed_each() -> None:
 def test_an_item_that_closes_with_the_choice_for_another_is_not_listed() -> None:
     # Without Screw and Iron Rod, Cast Screw alone mends the chain: no Iron Rod entry.
     alone = find_missing_recipes(
-        _RIP, 5, _without(_IRON_ROD, *_ALL_SCREWS, _STEEL_BEAM), _GAME, raw_item_ids=_RAW
+        _RIP, 5, _without(IRON_ROD, *_ALL_SCREWS, _STEEL_BEAM), _GAME, raw_item_ids=_RAW
     )
     # In a game without Cast Screw, neither screw recipe does it alone: the best is taken, and
     # what it needs besides is listed after it.
@@ -547,7 +495,7 @@ def test_an_item_that_closes_with_the_choice_for_another_is_not_listed() -> None
     chained = find_missing_recipes(
         _RIP,
         5,
-        _without(_SCREW, _STEEL_SCREW, _IRON_ROD, _STEEL_BEAM, game=game),
+        _without(_SCREW, _STEEL_SCREW, IRON_ROD, _STEEL_BEAM, game=game),
         game,
         raw_item_ids=_RAW,
     )

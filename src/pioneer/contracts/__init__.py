@@ -1,11 +1,6 @@
-"""Shared data contracts (implementation.md Stage 1).
-
-Plain data definitions, plus the one exception an injected transport raises — no logic, no I/O.
-Every other module in this package depends on these shapes and nothing else; this package must
-never import from any sibling module.
-
-Everything is re-exported here so other modules can do `from pioneer.contracts import Recipe`
-instead of reaching into individual files.
+"""Shared data contracts: plain data definitions, a few derived values on them
+(`Coordinates.distance_to`, `Recipe.output_rate`), and the one exception an injected transport
+raises — no I/O. Modules depend on these shapes; this package imports no sibling.
 """
 
 from pioneer.contracts.anomalies import AnomalyKind, AnomalyRecord, AnomalySeverity

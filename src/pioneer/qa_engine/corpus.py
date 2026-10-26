@@ -1,14 +1,7 @@
-"""Builds the Q&A Engine's corpus from Knowledge Base data (implementation.md Stage 11).
-
-Two kinds of passage. First, the game's own description of every class it describes in words —
-items, buildings, belts, equipment, schematics, around a thousand in `docs/en-US.json` — as its UI
-shows them. Second, one generated line per factory recipe spelling out where it's made, its
-per-machine rates and what unlocks it: the facts players ask about most, which the export only
-holds as data. Every number in a recipe passage is Knowledge Base data, never model output; the
-Q&A model only rephrases it. Ids are replaced by the names the game shows, so a question worded
-the way a player words it finds them.
-
-Depends only on `pioneer.contracts`.
+"""Builds the Q&A Engine's corpus: the game's own description of every class it describes in
+words, and one generated line per factory recipe — where it's made, its per-machine rates and what
+unlocks it. Ids are replaced by in-game names, so a question worded the way a player words it
+finds them.
 """
 
 from __future__ import annotations

@@ -1,12 +1,5 @@
-"""Real HTTP transport for the local OpenAI-compatible LLM endpoint (architecture.md §3.1).
-
-This is the one place in the project that actually speaks HTTP to the LLM. Every module that needs
-one (`qa_engine.engine`, `orchestrator.orchestrator`) receives it as a plain callable conforming to
-its own Protocol -- the same transport-injection pattern `server_client.client` uses for the
-dedicated server -- so this is where the concrete local backend (Ollama, llama.cpp, vLLM, ...)
-actually gets picked, per implementation.md Stage 16 ("reuse that connection, don't stand up a
-second LLM client"). Uses only the standard library (`urllib`) so pointing this at a local server
-never needs a new project dependency.
+"""HTTP transport for the local OpenAI-compatible LLM endpoint — the one place that speaks HTTP to
+the model. Standard library only (`urllib`).
 """
 
 from __future__ import annotations

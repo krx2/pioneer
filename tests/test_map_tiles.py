@@ -47,7 +47,7 @@ def test_without_tiles_or_with_a_manifest_that_cant_be_read_there_are_none(tmp_p
 
 
 @pytest.mark.skipif(
-    not MAP_IMAGE.is_file() or map_tiles() is None, reason="docs/map has no picture or no tiles"
+    not MAP_IMAGE.is_file() or map_tiles() is None, reason="assets/map has no picture or no tiles"
 )
 def test_the_shipped_tiles_are_cut_from_the_shipped_picture() -> None:
     image = pytest.importorskip("PIL.Image")

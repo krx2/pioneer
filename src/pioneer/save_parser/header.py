@@ -2,31 +2,18 @@
 
 Field layout reverse-engineered by the community — see
 https://docs.ficsit.app/satisfactory-modding/latest/Development/Satisfactory/Savegame.html and
-https://github.com/moritz-h/satisfactory-3d-map/blob/master/docs/SATISFACTORY_SAVE.md. Verified
-byte-for-byte against a real save committed at tests/save_parser/fixtures/stal_mielec.sav (see
-tests/save_parser/test_real_saves.py): every field through `editor_object_version` decodes to a
-sane value (a `save_name` matching the actual filename, a `play_duration_seconds` in a believable
-range, ...), and the chunk stream's magic number turns up exactly where expected afterward.
+https://github.com/moritz-h/satisfactory-3d-map/blob/master/docs/SATISFACTORY_SAVE.md.
 
-Known gap: the trailing metadata block isn't parsed field-by-field. Its true layout — confirmed
-straight from Coffee Stain's own `FSaveHeader` struct declaration, shipped with the game at
-`CommunityResources/Headers.zip` (`Source/FactoryGame/Public/FGSaveManagerInterface.h`) — is:
+The trailing metadata block isn't parsed. Per the game's `FSaveHeader` declaration
+(`CommunityResources/Headers.zip`, `FGSaveManagerInterface.h`) it is:
 
     FString ModMetadata; bool IsModdedSave; FMD5Hash SaveDataHash (bIsValid + [16 bytes]);
-    bool IsEditedSave (commented "set at load", i.e. never actually serialized to disk);
-    FString SaveIdentifier; bool IsPartitionedWorld; bool IsCreativeModeEnabled;
+    bool IsEditedSave (never serialized); FString SaveIdentifier; bool IsPartitionedWorld;
+    bool IsCreativeModeEnabled;
 
-That header only declares the struct, not the `operator<<` that serializes it (compiled into the
-game, not shipped), so the exact bool width and field order are still inferred rather than
-certain — though this layout does cleanly explain every byte in the real fixture saves (e.g.
-`IsModdedSave` serialized as a 4-byte bool, `SaveDataHash.bIsValid == false` contributing 1 byte
-with no trailing hash, landing exactly on a valid `SaveIdentifier` length prefix). None of these
-fields are needed by this project's contracts (`ProductionGraph`, `PlacementRecord` — see
-contracts/production_graph.py and contracts/placement.py) regardless, so rather than lock in that
-inference, `parse_header` stops trusting the byte stream after `editor_object_version` and
-*resyncs* by scanning forward for the chunk stream's own magic number instead of parsing the
-trailing block field-by-field. This is robust to that block's layout being subtly wrong, or
-changing between game versions, in a way a field-by-field guess is not.
+but the serializer isn't shipped, so bool widths and order are inferred. Nothing here needs those
+fields, so `parse_header` stops after `editor_object_version` and resyncs by scanning forward for
+the chunk stream's magic number, which survives that block changing between game versions.
 """
 
 from __future__ import annotations
@@ -40,11 +27,7 @@ _PACKAGE_FILE_TAG_BYTES = (0x9E2A83C1).to_bytes(4, "little")
 
 @dataclass(frozen=True)
 class SaveHeader:
-    """The header fields this module actually trusts and surfaces.
-
-    Not a Stage 1 contract — nothing outside `save_parser` needs a save's header metadata; this is
-    an internal detail of getting to the chunk stream.
-    """
+    """The header fields this module actually trusts and surfaces."""
 
     save_header_version: int
     save_version: int
@@ -88,9 +71,9 @@ def _read_fields(data: bytes) -> tuple[SaveHeader, int]:
     session_name = reader.read_fstring() if save_header_version >= 4 else ""
     play_duration_seconds = reader.read_int32() if save_header_version >= 3 else 0
     if save_header_version >= 4:
-        reader.read_int64()  # SaveDateTime, .NET ticks — not surfaced, see module docstring
+        reader.read_int64()  # SaveDateTime, .NET ticks — not surfaced
     if save_header_version >= 7:
-        reader.read_int32()  # EditorObjectVersion — not surfaced, see module docstring
+        reader.read_int32()  # EditorObjectVersion — not surfaced
 
     header = SaveHeader(
         save_header_version=save_header_version,
@@ -106,8 +89,7 @@ def _read_fields(data: bytes) -> tuple[SaveHeader, int]:
 
 
 def _find_chunk_stream_start(data: bytes, search_from: int) -> int:
-    """Scan forward for the chunk stream's magic number — see module docstring for why this beats
-    parsing the trailing metadata block field-by-field."""
+    """Scan forward for the chunk stream's magic number, past the unparsed metadata block."""
     index = data.find(_PACKAGE_FILE_TAG_BYTES, search_from)
     if index == -1:
         raise ValueError("could not locate chunk stream start (package file tag not found)")

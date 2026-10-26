@@ -1,10 +1,8 @@
 """Tests for graph_to_d3_data, against a Reinforced Iron Plate production graph copied in as a
-static fixture (a Stage 7/8-style example output), per implementation.md Stage 13."""
-
-import pytest
+static fixture."""
 
 from pioneer.contracts import MaterialFlow, ProductionGraph, ProductionNode
-from pioneer.graph_presentation.renderer import graph_to_d3_data, readable_id, render_page
+from pioneer.graph_presentation.renderer import graph_to_d3_data, render_page
 
 _GRAPH = ProductionGraph(
     nodes=(
@@ -246,21 +244,6 @@ def test_no_label_shows_a_raw_class_id_even_with_no_names_at_all() -> None:
     labelled += [link["itemName"] for link in data["links"]]
     assert not [text for text in labelled if "_C" in text]
     assert "Ore Iron (input)" in labelled
-
-
-@pytest.mark.parametrize(
-    ("class_id", "expected"),
-    [
-        ("Desc_IronPlate_C", "Iron Plate"),
-        ("Recipe_Alternate_CoatedIronPlate_C", "Alternate Coated Iron Plate"),
-        ("Build_SmelterMk1_C", "Smelter Mk1"),
-        ("Desc_SpaceElevatorPart_1_C", "Space Elevator Part 1"),
-        ("Desc_GunpowderMK2_C", "Gunpowder MK2"),
-        ("just a name", "just a name"),
-    ],
-)
-def test_readable_id_turns_a_class_id_into_words(class_id: str, expected: str) -> None:
-    assert readable_id(class_id) == expected
 
 
 def test_nodes_carry_the_icon_of_their_recipe_or_building_or_item() -> None:

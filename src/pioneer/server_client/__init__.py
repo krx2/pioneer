@@ -1,10 +1,6 @@
-"""Dedicated server API client module (implementation.md Stage 6).
-
-Pulls live game state: progress, phase, session info. Depends only on `pioneer.contracts`;
-tested against mocked HTTP responses, including the "server unreachable" case, which must
-surface as a typed result, never a raw exception. `transport.post_json` is the real HTTPS
-transport the app wires in. `access` checks a server and gets a token for it (`HealthCheck`,
-`VerifyAuthenticationToken`, admin password to application token).
+"""Dedicated server API client: live game state (`client`), checking a server and getting a token
+for it (`access`), and the real HTTPS transport (`transport.post_json`). An unreachable server is
+a typed `ServerUnavailable` result, never an exception.
 """
 
 from pioneer.server_client.access import (

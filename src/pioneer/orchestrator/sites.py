@@ -31,19 +31,19 @@ from pioneer.contracts import (
 )
 from pioneer.knowledge_base import easiest_unlock
 from pioneer.location_advisor import SITE_RADIUS, ExtractorFor, plan_sites
-from pioneer.orchestrator.base import _CM_PER_M, OrchestratorContext, _ArtifactAccumulator
+from pioneer.orchestrator.base import CM_PER_M, ArtifactAccumulator, OrchestratorContext
 from pioneer.orchestrator.existing_factory import reference_point
-from pioneer.verifier import distance, placed_power_consumption_mw, transport_needs
+from pioneer.verifier import placed_power_consumption_mw, transport_needs
 
 _MAX_CLOCK_SPEED = 2.5
 """Three power shards' worth."""
 _WATER_ID = "Desc_Water_C"
 
 
-def _build_sites(
+def build_sites(
     raw_rates: Mapping[str, float],
     context: OrchestratorContext,
-    accumulator: _ArtifactAccumulator,
+    accumulator: ArtifactAccumulator,
     graph: ProductionGraph | None = None,
     reference: Coordinates | None = None,
     *,
@@ -75,13 +75,13 @@ def _build_sites(
     )
     if not plan.deposits and not plan.shortfall:
         return {}, None
-    return _shown(plan, context, accumulator, reference, kept, replace_map=replace_map), plan
+    return shown_sites(plan, context, accumulator, reference, kept, replace_map=replace_map), plan
 
 
-def _shown(
+def shown_sites(
     plan: SitePlan,
     context: OrchestratorContext,
-    accumulator: _ArtifactAccumulator,
+    accumulator: ArtifactAccumulator,
     reference: Coordinates | None = None,
     kept: SitePlan | None = None,
     *,
@@ -98,8 +98,8 @@ def _shown(
 
 
 def _extractor_for(context: OrchestratorContext) -> ExtractorFor | None:
-    """The extractor each node would be worked with — see the module docstring. `None` when the
-    knowledge base lists no extractors at all."""
+    """The extractor each node would be worked with. `None` when the knowledge base lists no
+    extractors at all."""
     extractors = [
         building
         for building in context.buildings
@@ -172,7 +172,7 @@ def _as_locations(plan: SitePlan, reference: Coordinates) -> tuple[RankedLocatio
             resource_node_id=deposit.resource_node_id,
             position=deposit.position,
             purity=deposit.purity,
-            distance_to_reference=distance(deposit.position, reference),
+            distance_to_reference=deposit.position.distance_to(reference),
             score=deposit.rate_per_minute,
         )
         for deposit in plan.deposits
@@ -210,7 +210,7 @@ def _summary(
                 alike[key].append(deposit)
         entry: dict[str, Any] = {
             "site_id": site.site_id,
-            "distance_from_base_m": round(distance(site.position, reference) / _CM_PER_M),
+            "distance_from_base_m": round(site.position.distance_to(reference) / CM_PER_M),
             "deposits": [
                 {
                     "item_id": item_id,
@@ -240,7 +240,7 @@ def _summary(
         sites.append(entry)
     summary: dict[str, Any] = {
         "layout": (
-            f"one site: every deposit within {SITE_RADIUS / _CM_PER_M:.0f} m of its middle"
+            f"one site: every deposit within {SITE_RADIUS / CM_PER_M:.0f} m of its middle"
             if len(plan.sites) == 1
             else f"{len(plan.sites)} sites: what can't be had close together is split, each site "
             "building the parts its own deposits are for and sending them on"

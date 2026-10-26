@@ -1,7 +1,5 @@
 """Location shapes: ranked build sites for new extraction, the player's existing factories, and
 where a plan is to be built -- which deposits feed it, worked how, and on how many sites.
-
-Produced by the Location Advisor (Stage 9); consumed by Map presentation (Stage 14).
 """
 
 from __future__ import annotations

@@ -1,11 +1,6 @@
-"""LLM answer-synthesis half of the Q&A Engine (implementation.md Stage 11).
-
-Ties `retrieval.retrieve` to a chat-completion call against the local OpenAI-compatible endpoint
-named by `pioneer.config.Settings` (`llm_base_url` + `llm_model`). Like `server_client`, this
-module never imports an HTTP library itself — the caller injects a `ChatCompletion` transport, so
-prompt-building and response-shaping stay testable against a fake model with zero real networking.
-The prompt is scoped to rephrase retrieved passages only; retrieval never runs empty into the LLM
-(`NoRelevantPassages`), matching architecture.md's graceful-degradation invariant.
+"""LLM answer synthesis for the Q&A Engine: `retrieval.retrieve`, then a chat completion over an
+injected `ChatCompletion` transport. The prompt only rephrases retrieved passages, and the model
+is never called with none (`NoRelevantPassages`).
 """
 
 from __future__ import annotations

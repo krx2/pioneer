@@ -18,6 +18,13 @@ dev = [
     "pillow>=10.0",  # `python -m pioneer.icons`: importing the game's icons
 ]
 
+[project.scripts]
+pioneer = "pioneer.startup:main"
+pioneer-web = "pioneer.web.__main__:main"
+pioneer-ask = "pioneer.app.__main__:main"
+pioneer-import-icons = "pioneer.icons:main"
+pioneer-cut-map-tiles = "pioneer.map_image:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -27,6 +34,7 @@ packages = ["src/pioneer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # `from tests.game_data import ...`, also when one file is run on its own
 addopts = "-ra --import-mode=importlib"
 
 [tool.ruff]

@@ -1,12 +1,9 @@
-"""LLM-as-a-judge hooks for the Stage 15 scoring (architecture.md §6): a second model call rating
-whether the first one's answer fits — the player's question, progress and data for Chat, the
-surroundings for a Map pin. Never arithmetic: the deterministic checks own every number.
+"""LLM-as-a-judge hooks: a second model call rating whether an answer fits — the player's
+question, progress and data for Chat, the surroundings for a Map pin. Never arithmetic.
 
-Each factory returns a callable matching `verification_feedback.scoring`'s `ChatJudge` or
-`TerrainJudge`, talking to the same local endpoint as everything else through `chat_completion`
-(injectable, for tests). A judge that can't be reached, or answers with anything but the requested
-JSON, yields `None` — no verdict — rather than an error: a verdict is advisory, and a flaky judge
-mustn't cost the player their answer.
+Each factory returns a `verification_feedback.scoring` `ChatJudge` or `TerrainJudge`. A judge that
+can't be reached, or doesn't answer with the requested JSON, yields `None` rather than an error:
+a verdict is advisory, and a flaky judge mustn't cost the player their answer.
 """
 
 from __future__ import annotations

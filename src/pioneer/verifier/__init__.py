@@ -1,8 +1,5 @@
-"""Verifier module (implementation.md Stage 4).
-
-The deterministic arithmetic core: machine counts, throughput balance, power balance, distance.
-Depends only on `pioneer.contracts`; tested against hand-built fixture production graphs with
-known-correct expected results. `progress` counts how far the save has built the player's plan.
+"""Verifier: the deterministic arithmetic core — machine counts, throughput, power, distance — and
+`progress`, how far the save has built the player's plan.
 """
 
 from pioneer.verifier.calculations import (
@@ -13,7 +10,6 @@ from pioneer.verifier.calculations import (
     balance,
     belt_loads,
     consumption,
-    distance,
     extraction_rates,
     extractors_needed,
     generator_byproducts,
@@ -42,7 +38,6 @@ __all__ = [
     "buildings_by_recipe",
     "built_by_recipe",
     "consumption",
-    "distance",
     "extraction_rates",
     "extractors_needed",
     "generator_byproducts",

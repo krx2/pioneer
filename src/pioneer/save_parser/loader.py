@@ -1,10 +1,5 @@
-"""Top-level entry points: raw decompression, and the whole save-to-contracts pipeline.
-
-`load_body_from_file` / `load_body_from_bytes` return the fully decompressed level-data body.
-`load_save_state` goes the rest of the way — object table, entity framing, recipe attribution —
-and hands back the Stage 5 contracts (`PlacementRecord`s + a `ProductionGraph`) that the rest of
-the project consumes. See the module docstrings in `header.py`, `chunks.py`, `object_table.py`,
-`entities.py` and `properties.py` for what each step is verified against.
+"""Top-level entry points: `load_body_from_file` / `load_body_from_bytes` return the decompressed
+level-data body, and `load_save_state` goes the rest of the way to contracts.
 """
 
 from __future__ import annotations
@@ -43,10 +38,7 @@ def find_latest_save(directory: Path | str) -> Path | None:
     directory doesn't exist or holds no saves.
 
     Modification time, not filename, decides: the game rotates autosaves through numbered names
-    (`<session>_autosave_0.sav`, `_1`, `_2`), so the highest number is not the newest file. In
-    practice the winner is usually the latest autosave, which is exactly the freshest snapshot of
-    the factory available — bearing in mind architecture.md §2's caveat that a save is a snapshot
-    taken at write time, not live state.
+    (`<session>_autosave_0.sav`, `_1`, `_2`), so the highest number is not the newest file.
     """
     root = Path(directory)
     if not root.is_dir():
@@ -59,13 +51,13 @@ def find_latest_save(directory: Path | str) -> Path | None:
 
 @dataclass(frozen=True)
 class SaveState:
-    """One save file, in this project's own contract shapes — the Stage 5 deliverable."""
+    """One save file, in this project's own contract shapes."""
 
     header: SaveHeader
     placements: tuple[PlacementRecord, ...]
     graph: ProductionGraph
-    """What the player has already built, one node per recipe in use. `flows` is empty — see
-    production_graph.py for why."""
+    """What the player has already built, one node per recipe in use. `flows` is empty: `links`
+    says what the belts and pipes join."""
     unlocked_technology_ids: frozenset[str] | None = None
     """Every schematic the player has unlocked — milestones, MAM research, alternates — by the
     class name the Knowledge Base keys technologies with (`Schematic_3-4_C`). `None` if the save's
@@ -111,9 +103,8 @@ def _purchased_schematics(
 
 
 def _validate_total_size(body: bytes) -> None:
-    """The decompressed body's own first field is an int64 declaring the length of everything
-    that follows it — a cheap, strong integrity check that decompression consumed the chunk
-    stream correctly."""
+    """The decompressed body's first field is an int64 declaring the length of everything after
+    it: a cheap check that decompression consumed the chunk stream correctly."""
     declared = struct.unpack_from("<q", body, 0)[0]
     actual = len(body) - 8
     if declared != actual:

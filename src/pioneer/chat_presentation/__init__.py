@@ -1,9 +1,5 @@
-"""Chat presentation module (implementation.md Stage 12).
+"""Chat presentation: renders a `ResponseArtifact`'s `chat` text as HTML."""
 
-Renders the `chat` field of a `ResponseArtifact`. Depends only on `pioneer.contracts`; tested
-against hand-written fixture artifacts, with no dependency on the orchestrator.
-"""
+from pioneer.chat_presentation.renderer import STYLESHEET, Role, render_message, render_page
 
-from pioneer.chat_presentation.renderer import Role, render_message, render_page
-
-__all__ = ["Role", "render_message", "render_page"]
+__all__ = ["STYLESHEET", "Role", "render_message", "render_page"]

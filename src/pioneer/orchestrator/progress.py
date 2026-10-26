@@ -35,7 +35,11 @@ def _rate(prefix: str) -> Callable[[_Arguments, Mapping], str]:
     return describe
 
 
-def _power(arguments: _Arguments, names: Mapping[str, str]) -> str:
+def _fixed(text: str) -> Callable[[_Arguments, Mapping], str]:
+    return lambda _arguments, _names: text
+
+
+def _power(arguments: _Arguments, _names: Mapping[str, str]) -> str:
     target = arguments.get("target_mw")
     return (
         f"Planning {target:g} MW of power" if isinstance(target, int | float) else "Planning power"
@@ -47,17 +51,17 @@ _ACTIVITIES: dict[str, Callable[[_Arguments, Mapping[str, str]], str]] = {
     "list_recipes_for_item": _for("item", "Looking up recipes for"),
     "plan_production": _rate("Planning"),
     "expand_existing_factory": _rate("Planning how to extend your factory to"),
-    "show_existing_factory": lambda arguments, names: "Drawing your existing factory",
+    "show_existing_factory": _fixed("Drawing your existing factory"),
     "factory_item_balance": _for("item", "Checking your factory's balance of"),
-    "factory_power": lambda arguments, names: "Checking your factory's power",
+    "factory_power": _fixed("Checking your factory's power"),
     "compare_recipes": _for("item", "Comparing recipes for"),
     "plan_power": _power,
     "plan_unlocks": _for("item", "Working out what to unlock for"),
     "rank_build_locations": _for("item_id", "Ranking build sites for"),
-    "diagnose_factory_problems": lambda arguments, names: "Diagnosing your factory",
-    "answer_game_question": lambda arguments, names: "Searching the game's documentation",
-    "show_plan": lambda arguments, names: "Drawing your plan",
-    "revise_plan": lambda arguments, names: "Revising your plan",
+    "diagnose_factory_problems": _fixed("Diagnosing your factory"),
+    "answer_game_question": _fixed("Searching the game's documentation"),
+    "show_plan": _fixed("Drawing your plan"),
+    "revise_plan": _fixed("Revising your plan"),
 }
 
 

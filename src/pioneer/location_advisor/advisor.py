@@ -1,51 +1,23 @@
-"""Ranks unclaimed resource deposits of a given type as candidate build sites, best first, and
-finds where the player's existing factories stand.
+"""Ranks unclaimed resource deposits as candidate build sites, and finds the player's factories.
 
-**Factory sites.** With the save's belts and pipes known (`TransportLink`s), a site is every
-running building they join, through any chain of links: a whole tree of machines together with
-the extractors that feed it, the generators it fuels and the containers and stations along the
-way. Only a group running at least one recipe is a site; a miner filling a lone container isn't a
-factory. A machine no link reaches still belongs somewhere, so those are grouped by distance, as
-below, into sites of their own.
+- Factory sites: running buildings the save's belts and pipes join, through any chain of links,
+  running at least one recipe. Machines no link reaches — or every machine, without links — are
+  grouped by distance: within `link_distance` (50 m) of each other through any chain.
+- What feeds a factory: the extractors its links join it to; failing that, the nearest site
+  within `feed_distance`, marked as a guess.
+- Claimed deposits: named by an extractor (`PlacementRecord.resource_node_id`), or with any
+  placement within `claim_radius`.
+- Ranking: `purity_weight / (1 + distance / distance_scale)`, purity weights 0.5/1/2 and distance
+  from `reference`.
 
-Without links, running production buildings (those with a recipe) that stand within
-`link_distance` of each other — through any chain of them — form a site. 50 m separates the
-factories of real saves well: closer, and one factory floor splits in two; much farther, and
-neighbouring factories merge. Belts, foundations and power poles aren't considered; they'd join
-everything to everything.
-
-**What feeds a factory.** An extractor feeds the site its belts and pipes lead to: with links
-known, the site whose machines they join it to, through splitters, mergers and containers alike
-— it's one of that site's placements. One that reaches no site that way, or a save without links,
-is put down to the nearest site within `feed_distance`, and marked as a guess: an extractor
-standing next to a factory most likely feeds it, but a train or a drone may as well carry its ore
-across the map.
-
-**Unclaimed cross-reference.** A deposit is claimed when an extractor in the save names it as what
-it extracts from (`PlacementRecord.resource_node_id` — exact, the save's own
-`mExtractableResource`), or when any placement sits within `claim_radius` of it. The proximity test
-stays for everything that doesn't name a node: whatever is built right on a deposit makes it
-occupied, and data without references at all still works. Building class isn't considered.
-
-**Ranking** combines purity and distance into a single `score` (higher is better):
-`purity_weight / (1 + distance / distance_scale)`, where `purity_weight` is the deposit's
-extraction multiplier (impure 0.5, normal 1.0, pure 2.0 — the game's own Miner Mk.1 rate ratios)
-and `distance` is measured from `reference` (where the player wants to build). `distance_scale`
-sets how fast distance erodes the score — at `distance == distance_scale`, score is halved.
-
-**Distance function** is injectable (`distance_fn`), matching Stage 4's `verifier.distance`
-signature. It defaults to a local straight-line implementation so this module needs no dependency
-on `verifier`; the orchestrator can pass the real one at integration time. The proximity test looks
-placements up in a grid of `claim_radius`-sized cells instead of measuring every one of a real
-save's thousands against every deposit, which assumes `distance_fn` is never shorter than the
-straight-line distance on the x/y plane — as the real one isn't.
+The proximity test buckets placements into a grid of `claim_radius` cells, which assumes
+`distance_fn` is never shorter than the straight-line x/y distance.
 """
 
 from __future__ import annotations
 
-import math
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from pioneer.contracts import (
@@ -57,18 +29,15 @@ from pioneer.contracts import (
     ResourceNode,
     TransportLink,
 )
+from pioneer.location_advisor.grid import SpatialGrid
 
 DistanceFn = Callable[[Coordinates, Coordinates], float]
 
-_PURITY_WEIGHT: dict[Purity, float] = {
+PURITY_WEIGHT: dict[Purity, float] = {
     Purity.IMPURE: 0.5,
     Purity.NORMAL: 1.0,
     Purity.PURE: 2.0,
 }
-
-
-def _euclidean_distance(a: Coordinates, b: Coordinates) -> float:
-    return math.dist((a.x, a.y, a.z), (b.x, b.y, b.z))
 
 
 def rank_locations(
@@ -77,7 +46,7 @@ def rank_locations(
     placements: tuple[PlacementRecord, ...],
     reference: Coordinates,
     *,
-    distance_fn: DistanceFn = _euclidean_distance,
+    distance_fn: DistanceFn = Coordinates.distance_to,
     claim_radius: float = 1000.0,
     distance_scale: float = 10000.0,
 ) -> tuple[RankedLocation, ...]:
@@ -100,7 +69,7 @@ def rank_locations(
                 position=node.position,
                 purity=node.purity,
                 distance_to_reference=distance,
-                score=_PURITY_WEIGHT[node.purity] / (1.0 + distance / distance_scale),
+                score=PURITY_WEIGHT[node.purity] / (1.0 + distance / distance_scale),
             )
         )
 
@@ -112,17 +81,20 @@ def claimed_node_ids(
     nodes: Sequence[ResourceNode],
     placements: Sequence[PlacementRecord],
     *,
-    distance_fn: DistanceFn = _euclidean_distance,
+    distance_fn: DistanceFn = Coordinates.distance_to,
     claim_radius: float = 1000.0,
 ) -> frozenset[str]:
-    """Which of `nodes` are taken: named by an extractor, or built on (see the module docstring)."""
+    """Which of `nodes` are taken: named by an extractor, or built on."""
     named = {p.resource_node_id for p in placements if p.resource_node_id is not None}
-    nearby = _PositionGrid((p.position for p in placements), claim_radius)
+    nearby = SpatialGrid(placements, claim_radius, lambda placement: placement.position)
     return frozenset(
         node.node_id
         for node in nodes
         if node.node_id in named
-        or any(distance_fn(node.position, p) <= claim_radius for p in nearby.around(node.position))
+        or any(
+            distance_fn(node.position, p.position) <= claim_radius
+            for p in nearby.around(node.position)
+        )
     )
 
 
@@ -131,11 +103,11 @@ def find_factory_sites(
     links: Sequence[TransportLink] = (),
     *,
     link_distance: float = 5000.0,
-    distance_fn: DistanceFn = _euclidean_distance,
+    distance_fn: DistanceFn = Coordinates.distance_to,
 ) -> tuple[FactorySite, ...]:
     """The player's factories, most machines first, ids `site_1`, `site_2`, ... in that order:
-    what `links` joins, and machines no link reaches grouped by distance (see module docstring).
-    Paused buildings are left out."""
+    what `links` joins, and machines no link reaches grouped by distance. Paused buildings are left
+    out."""
     running = {p.object_id: p for p in placements if p.object_id and not p.is_paused}
     parent: dict[str, str] = {}
 
@@ -199,10 +171,10 @@ def site_feeds(
     placements: Sequence[PlacementRecord],
     *,
     feed_distance: float = 30000.0,
-    distance_fn: DistanceFn = _euclidean_distance,
+    distance_fn: DistanceFn = Coordinates.distance_to,
 ) -> dict[str, tuple[SiteFeed, ...]]:
-    """Which resource nodes feed each site, by site id (see the module docstring): the extractors
-    among a site's own placements -- the links joined them to it -- and, as guesses, every other
+    """Which resource nodes feed each site, by site id: the extractors among a site's own
+    placements -- the links joined them to it -- and, as guesses, every other
     running extractor within `feed_distance` (300 m, in save centimetres) of a site, nearest one.
     A site no extractor feeds has no entry."""
     feeds: dict[str, list[SiteFeed]] = defaultdict(list)
@@ -237,45 +209,15 @@ def _groups_by_distance(
             index = parent[index]
         return index
 
-    cells: dict[tuple[int, int], list[int]] = defaultdict(list)
-    grid = _PositionGrid((), link_distance)
+    grid = SpatialGrid(range(len(machines)), link_distance, lambda i: machines[i].position)
     for index, machine in enumerate(machines):
-        cells[grid.cell(machine.position)].append(index)
-    for (column, row), members in cells.items():
-        for d_column in (-1, 0, 1):
-            for d_row in (-1, 0, 1):
-                for other in cells.get((column + d_column, row + d_row), ()):
-                    for index in members:
-                        if index < other and (
-                            distance_fn(machines[index].position, machines[other].position)
-                            <= link_distance
-                        ):
-                            parent[root(index)] = root(other)
+        for other in grid.around(machine.position):
+            if index < other and (
+                distance_fn(machine.position, machines[other].position) <= link_distance
+            ):
+                parent[root(index)] = root(other)
 
     groups: dict[int, list[PlacementRecord]] = defaultdict(list)
     for index, machine in enumerate(machines):
         groups[root(index)].append(machine)
     return list(groups.values())
-
-
-class _PositionGrid:
-    """Positions bucketed into square x/y cells of side `radius`: everything within `radius` of a
-    point lies in that point's cell or one of the eight around it."""
-
-    def __init__(self, positions: Iterator[Coordinates] | Sequence[Coordinates], radius: float):
-        self._cell_size = max(radius, 1.0)
-        self._cells: dict[tuple[int, int], list[Coordinates]] = defaultdict(list)
-        for position in positions:
-            self._cells[self.cell(position)].append(position)
-
-    def around(self, position: Coordinates) -> Iterator[Coordinates]:
-        column, row = self.cell(position)
-        for d_column in (-1, 0, 1):
-            for d_row in (-1, 0, 1):
-                yield from self._cells.get((column + d_column, row + d_row), ())
-
-    def cell(self, position: Coordinates) -> tuple[int, int]:
-        return (
-            math.floor(position.x / self._cell_size),
-            math.floor(position.y / self._cell_size),
-        )

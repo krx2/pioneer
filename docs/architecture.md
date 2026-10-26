@@ -82,8 +82,7 @@ unit-tested without ever invoking a model.
 The LLM runs **locally**, not against a hosted provider API. Every module that talks to it
 (Orchestrator, Q&A Engine) does so through an **OpenAI-compatible chat/completions endpoint** —
 that interface is the fixed assumption; the specific local backend behind it (Ollama, llama.cpp,
-vLLM, LM Studio, ...) is an implementation choice deferred to the stage that first needs it (Q&A
-Engine, implementation.md Stage 11) and swappable later without touching calling code. Config
+vLLM, LM Studio, ...) is swappable without touching calling code. Config
 (`pioneer.config.Settings`) exposes this as `llm_base_url` + `llm_model`, with `llm_api_key`
 optional since most local setups don't require one.
 
@@ -302,4 +301,18 @@ player feedback can be attached to a specific plan/graph/location rather than a 
    the Map must trace back to a specific module call, so verification (§6) and player feedback can
    target it precisely.
 
-See [implementation.md](implementation.md) for the build order derived from these boundaries.
+## 8. Module boundaries
+
+Each module lives in its own package under `src/pioneer/` and may import `pioneer.contracts` —
+plain data definitions with a few derived values (`Coordinates.distance_to`,
+`Recipe.output_rate`), no I/O — and `pioneer.common`, small helpers several modules need (readable
+names for class ids, recipe and machine counting, atomic file writes), which imports nothing but
+the contracts. Nothing else of this project's: that keeps every module testable on its own,
+against hand-written fixtures. The exceptions are the integration layers: the Orchestrator, which
+calls every module; verification scoring, which calls the Verifier; the LLM transport; and the
+app, the web UI and the launcher, which wire everything together. `tests/test_architecture.py`
+enforces the rule and lists every exception.
+
+Tests mirror the package layout under `tests/`, each module with its own fixtures next to its
+tests. Where real data is committed (`assets/en-US.json`, the save files under
+`tests/save_parser/fixtures/`), a second suite runs the same code against it.

@@ -1,28 +1,17 @@
 """Which buildings the player's belts and pipes join, read off the save's connection components.
 
-Every belt end, splitter port, machine input and pipe socket is an object of its own in the save
-(`FGFactoryConnectionComponent`, `FGPipeConnectionComponent`, `FGPipeConnectionFactory`), named
-after its building and port -- `...Build_ConstructorMk1_C_2147422360.Output0` -- and one joined to
-another names it in `mConnectedComponent`. Which way a port faces isn't saved (`mDirection` is a
-class default), but its name says: a building takes items in at its `Input…` ports and puts them
-out at its `Output…` ones, and a belt or lift has two ends, `ConveyorAny0` and `ConveyorAny1`,
-items leaving by whichever they didn't come in at. Hypertubes use pipe components too
-(`FGPipeConnectionComponentHyper`) and carry players, so they're left out, as are the snap points
-of poles and wall holes, which join nothing.
+Every belt end, splitter port, machine input and pipe socket is an object of its own, named after
+its building and port (`...Build_ConstructorMk1_C_2147422360.Output0`); one joined to another
+names it in `mConnectedComponent`. Direction isn't saved, but the port's name says it: `Input…`,
+`Output…`, and a belt's two ends `ConveyorAny0`/`ConveyorAny1`. Hypertubes and the snap points of
+poles and wall holes are left out.
 
-**Belts** are followed downstream from every output of a building that isn't itself part of a belt
-line -- a machine, an extractor, a station, a container nothing feeds: along each belt and lift
-from end to end, through a splitter from its input to all its outputs and a merger from its
-inputs to its output, until the input of anything else -- a machine, a generator, a sink, a
-station. Each (building, building) pair so joined is a `TransportLink`, with the belts and lifts of
-the shortest route between them. A storage container is both: items reaching it are linked to it,
-and carry on from its outputs to wherever those lead. A belt that ends in nothing links nowhere.
-
-**Pipes** carry fluid either way, so they're taken as networks instead: every pipe, junction,
-pump, valve and fluid buffer joins its sockets into one, and each building putting fluid into a
-network is linked to each one taking fluid out of it. A socket's direction is its name again
-(`PipeInputFactory`, `PipeOutputFactory`), except the one unnamed socket of a pump or a generator
-(`FGPipeConnectionFactory`), which an extractor puts fluid out of and a generator takes it in by.
+- Belts are followed downstream from every building output that isn't part of a belt line, through
+  splitters, mergers and storage containers, to the input of anything else. Each (building,
+  building) pair is a `TransportLink` with the belts of the shortest route between them.
+- Pipes carry fluid either way, so each network links every building putting fluid in to every
+  one taking it out. An unnamed socket (`FGPipeConnectionFactory`) is an extractor's output or a
+  generator's input.
 """
 
 from __future__ import annotations
@@ -81,7 +70,7 @@ def read_ports(
 
 
 def trace_links(ports: Sequence[Port], building_of: Mapping[str, str]) -> tuple[TransportLink, ...]:
-    """Every (building, building) pair the belts and pipes join -- see the module docstring.
+    """Every (building, building) pair the belts and pipes join.
     `building_of` names each building's class (`Build_ConstructorMk1_C`) by its path; a port of
     one it doesn't know is told by its path instead."""
 

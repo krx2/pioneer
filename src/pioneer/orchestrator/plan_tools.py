@@ -1,28 +1,11 @@
 """Tool handlers for the player's plan, offered only in a conversation that has one: drawing it, and
 revising it.
 
-**A revision is planned again, not anew.** `revise_plan` takes only what the player wants changed
--- a target's rate, a target added or dropped, another recipe for an item -- and plans the result
-from everything else the plan was made from: its other targets, the recipe every other stage runs
-(pinned, see `contracts.plan`), and for a plan extending the factory, the spare output it drew on
-then. The planner being deterministic, what the player didn't touch comes out as it was, and
-`expansion_advisor.plan_changes` says what did change: machines to build, take down or switch to
-another recipe.
-
-**What's built already.** How far the save has built the plan (see `verifier.progress`) comes with
-it: `show_plan` says it stage by stage, and a revision says, of the machines it takes down or
-switches over, how many already stand in the game.
-
-**Extending the factory as it stood.** A plan extending the factory extends what stood when its
-recipes came into it (`Plan.baseline_machines`), not what stands now: the machines the player has
-built for the plan since are part of it, not more factory to extend.
-
-**Where it's built stays.** The plan keeps its deposits and sites (`Plan.sites`): `show_plan`
-shows them as they were accepted, with how many already have an extractor standing on them, and a
-revision keeps them — more deposits for more, fewer for less, the ones built on kept first — and
-keeps taking what it reserved of the factories' spare output from the same factories.
-
-The revision is a proposal, like a new plan: it's the player who accepts it, on the page.
+`revise_plan` takes only what the player wants changed and plans the result from everything else
+the plan was made from, so untouched stages come out as they were; `plan_changes` says what did
+change. A plan extending the factory extends what stood when its recipes came into it
+(`Plan.baseline_machines`), not what stands now. Its deposits, sites and reservations are kept.
+A revision is a proposal: the player accepts it on the page.
 """
 
 from __future__ import annotations
@@ -30,6 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from pioneer.common import machines_by_recipe, raw_resource_ids
 from pioneer.contracts import (
     Plan,
     PlanTarget,
@@ -39,30 +23,29 @@ from pioneer.contracts import (
     SupplyReservation,
 )
 from pioneer.expansion_advisor import advise_expansion, plan_changes
-from pioneer.orchestrator.base import OrchestratorContext, _ArtifactAccumulator, _ToolError
-from pioneer.orchestrator.existing_factory import _existing_item_balance, _with_spare_power
-from pioneer.orchestrator.items import _resolve_item_id, raw_resource_ids
+from pioneer.orchestrator.base import ArtifactAccumulator, OrchestratorContext, ToolError
+from pioneer.orchestrator.existing_factory import existing_item_balance, with_spare_power
+from pioneer.orchestrator.items import resolve_item_id
 from pioneer.orchestrator.planning_tools import (
-    _needs_unlocking,
-    _plan_targets,
-    _PlanningBlocked,
-    _recipe_choices,
-    _target_rate,
+    PlanningBlocked,
+    needs_unlocking,
+    plan_player_targets,
+    recipe_choices_arg,
+    target_rate_arg,
 )
 from pioneer.orchestrator.plans import (
-    machines_by_recipe,
     progress_of,
     recipe_choices_of,
     standing_buildings,
 )
 from pioneer.orchestrator.reservations import factory_of, reserve, unreserved
-from pioneer.orchestrator.sites import _build_sites, _shown
-from pioneer.orchestrator.summaries import _graph_summary, _per_item
+from pioneer.orchestrator.sites import build_sites, shown_sites
+from pioneer.orchestrator.summaries import graph_summary, per_item
 from pioneer.verifier import built_by_recipe
 
 
-def _handle_show_plan(
-    context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_show_plan(
+    context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
     plan = _the_plan(context)
     accumulator.graph = plan.graph
@@ -77,15 +60,15 @@ def _handle_show_plan(
             stage["marked_built_by_player"] = told.marked
     known = [stage for stage in progress if stage.built is not None]
     if plan.sites is not None:
-        sites = _shown(plan.sites, context, accumulator, kept=plan.sites)
+        sites = shown_sites(plan.sites, context, accumulator, kept=plan.sites)
         built = {p.resource_node_id for p in context.existing_placements if p.resource_node_id}
         deposits = plan.sites.deposits
         sites["build_sites"]["deposits_with_an_extractor"] = (
             f"{sum(d.resource_node_id in built for d in deposits)} of {len(deposits)}"
         )
     elif not plan.extends_factory:  # a plan from before plans kept where they're built
-        sites, _ = _build_sites(
-            _per_item(f for f in plan.graph.flows if f.source_node_id is None),
+        sites, _ = build_sites(
+            per_item(f for f in plan.graph.flows if f.source_node_id is None),
             context,
             accumulator,
             plan.graph,
@@ -108,35 +91,35 @@ def _handle_show_plan(
             "the plan was made"
         ),
         **summary,
-        **_needs_unlocking(plan.graph, context),
+        **needs_unlocking(plan.graph, context),
         **sites,
     }
 
 
-def _handle_revise_plan(
-    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_revise_plan(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
     plan = _the_plan(context)
     targets = {target.item_id: target.rate_per_minute for target in plan.targets}
     set_targets = args.get("targets")
     for item, rate in set_targets.items() if isinstance(set_targets, dict) else ():
-        targets[_resolve_item_id(item, context)] = _target_rate({"target_rate_per_minute": rate})
+        targets[resolve_item_id(item, context)] = target_rate_arg({"target_rate_per_minute": rate})
     dropped = args.get("remove_targets")
     for item in dropped if isinstance(dropped, list) else ():
-        item_id = _resolve_item_id(item, context)
+        item_id = resolve_item_id(item, context)
         if item_id not in targets:
-            raise _ToolError(f"{item_id} is not a target of the plan", targets=list(targets))
+            raise ToolError(f"{item_id} is not a target of the plan", targets=list(targets))
         del targets[item_id]
     if not targets:
-        raise _ToolError(
+        raise ToolError(
             "a plan needs at least one target -- for a different plan altogether, the player "
             "starts a new conversation"
         )
-    choices = dict(plan.recipe_choices) | (_recipe_choices(args, context) or {})
+    choices = dict(plan.recipe_choices) | (recipe_choices_arg(args, context) or {})
     supply = dict(plan.available_supply) if plan.extends_factory else None
     try:
-        graph = _plan_targets(context, targets, choices, available_supply=supply)
-    except _PlanningBlocked as blocked:
+        graph = plan_player_targets(context, targets, choices, available_supply=supply)
+    except PlanningBlocked as blocked:
         return blocked.result(context, accumulator)
     except (ValueError, KeyError) as error:
         return {"error": str(error)}
@@ -193,7 +176,7 @@ def _handle_revise_plan(
             for change in changes
         ],
         **summary,
-        **_needs_unlocking(graph, context),
+        **needs_unlocking(graph, context),
     }
     if unchanged:
         result["note"] = "nothing changes: the plan stays as it is"
@@ -207,25 +190,25 @@ def _handle_revise_plan(
             }
             for reservation in reservations
         ]
-    return _with_spare_power(result, context)
+    return with_spare_power(result, context)
 
 
 def _kept_where(
     plan: Plan,
     additions: ProductionGraph,
     context: OrchestratorContext,
-    accumulator: _ArtifactAccumulator,
+    accumulator: ArtifactAccumulator,
 ) -> tuple[dict[str, Any], SitePlan | None, tuple[SupplyReservation, ...]]:
     """Where the revised plan — `additions`, before it's laid over the factory — is built: the
     plan's own deposits and sites revised, and for a plan extending the factory, what it reserves
     of the factories' spare output, from the same factories first. What it reserved before is
     its own, spare or not now that the player may have built what uses it."""
-    raw_inputs = _per_item(f for f in additions.flows if f.source_node_id is None)
+    raw_inputs = per_item(f for f in additions.flows if f.source_node_id is None)
     if not plan.extends_factory:
-        found, sites = _build_sites(raw_inputs, context, accumulator, additions, kept=plan.sites)
+        found, sites = build_sites(raw_inputs, context, accumulator, additions, kept=plan.sites)
         return found, sites, ()
-    raw_item_ids = raw_resource_ids(context)
-    whole = unreserved(_existing_item_balance(context), context)
+    raw_item_ids = raw_resource_ids(context.items)
+    whole = unreserved(existing_item_balance(context), context)
     for reservation in plan.reservations:
         own = sum(r.rate_per_minute for r in plan.reservations if r.item_id == reservation.item_id)
         whole[reservation.item_id] = max(whole.get(reservation.item_id, 0.0), own)
@@ -243,7 +226,7 @@ def _kept_where(
         for item, rate in raw_inputs.items()
         if item in raw_item_ids and rate > mined_spare.get(item, 0.0) + 1e-6
     }
-    found, sites = _build_sites(uncovered, context, accumulator, reference=near, kept=plan.sites)
+    found, sites = build_sites(uncovered, context, accumulator, reference=near, kept=plan.sites)
     return found, sites, reservations
 
 
@@ -265,7 +248,7 @@ def _reserved(plan: Plan, context: OrchestratorContext) -> list[dict[str, Any]]:
 
 def _the_plan(context: OrchestratorContext) -> Plan:
     if context.plan is None:
-        raise _ToolError("this conversation has no plan -- plan_production makes one to propose")
+        raise ToolError("this conversation has no plan -- plan_production makes one to propose")
     return context.plan
 
 
@@ -274,9 +257,9 @@ def _targets(targets: tuple[PlanTarget, ...]) -> dict[str, float]:
 
 
 def _plan_summary(graph: ProductionGraph, context: OrchestratorContext) -> dict[str, Any]:
-    """`_graph_summary` of a plan, each stage extending the factory saying how many already
+    """`graph_summary` of a plan, each stage extending the factory saying how many already
     stand."""
-    summary = _graph_summary(graph, context)
+    summary = graph_summary(graph, context)
     for stage, node in zip(summary["stages"], graph.nodes, strict=True):
         if node.existing_machine_count > 0:
             stage["already_standing"] = node.existing_machine_count

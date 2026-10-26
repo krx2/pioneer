@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from pioneer.common import machines_by_recipe
 from pioneer.contracts import (
     Plan,
     PlanTarget,
@@ -64,15 +65,6 @@ def recipe_choices_of(graph: ProductionGraph) -> tuple[tuple[str, str], ...]:
         if flow.source_node_id in recipe_of:
             choices.setdefault(flow.item_id, recipe_of[flow.source_node_id])
     return tuple(choices.items())
-
-
-def machines_by_recipe(graph: ProductionGraph | None) -> dict[str, float]:
-    """How many machines run each recipe in `graph` -- the save's factory, say -- all its nodes
-    running one taken together."""
-    machines: dict[str, float] = {}
-    for node in graph.nodes if graph is not None else ():
-        machines[node.recipe_id] = machines.get(node.recipe_id, 0.0) + node.machine_count
-    return machines
 
 
 def standing_buildings(context: OrchestratorContext) -> dict[str, int] | None:

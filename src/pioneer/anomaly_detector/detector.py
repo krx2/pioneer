@@ -1,38 +1,18 @@
-"""Classifies balance / power / flow problems in a `ProductionGraph` into `AnomalyRecord`s.
+"""Classifies balance, power, flow and wiring problems into `AnomalyRecord`s.
 
-This module *classifies*, it doesn't *compute* — the numeric inputs (`item_balance`,
-`net_power_draw_mw`) are expected to come from the Verifier (`verifier.balance` /
-`verifier.power_balance`), matching architecture.md's picture of the Anomaly Detector consuming
-Verifier output. It never imports `verifier` itself; the orchestrator wires them together at
-Stage 16.
+It classifies, it doesn't compute: the numbers (`item_balance`, `net_power_draw_mw`, belt loads)
+come from the Verifier, passed in by the caller.
 
-What it flags:
+- RESOURCE_DEFICIT: consumed faster than produced, and not a raw input (named in `raw_item_ids`
+  or fed by a boundary inflow).
+- RESOURCE_SURPLUS: overproduced, consumed by nothing and not an intended output. Always LOW.
+- POWER_BLACKOUT: net draw over `available_power_mw`, when that's given.
+- CONGESTION: a flow over `belt_capacity_per_minute` (default 780/min, Mk.5), or a save's belt over
+  its tier's capacity (`detect_belt_overloads`).
+- MACHINE_NOT_FED / OUTPUT_BLOCKED: from the save's belts and pipes (`detect_wiring_problems`).
 
-- **RESOURCE_DEFICIT** — an item consumed faster than it's produced, and not explained as a raw
-  input. "Explained as raw" means: named in `raw_item_ids`, or fed by a boundary inflow in the
-  graph's flows (`source_node_id is None`). Without either signal a bare negative balance is
-  treated as a genuine shortage.
-- **RESOURCE_SURPLUS** — an item overproduced with nothing downstream consuming it, and not the
-  graph's intended output (named in `output_item_ids`, or drained by a boundary outflow,
-  `target_node_id is None`). Always LOW severity: wasteful, not broken.
-- **POWER_BLACKOUT** — only when `available_power_mw` is given and net draw exceeds it. With no
-  budget supplied there's nothing to judge against, so nothing is flagged.
-- **CONGESTION** — a single flow whose rate exceeds `belt_capacity_per_minute` (default 780/min,
-  the Mk.5 belt; pass the tier the player has actually unlocked).
-
-Severity for deficits/power/congestion scales with how far over the line the number is (>=100%
-over -> HIGH, >=50% -> MEDIUM, else LOW); a deficit with no derivable demand falls back to MEDIUM.
-
-**Wiring**, where the save's belts and pipes are known (`TransportLink`s, see the save parser's
-connections.py): `detect_wiring_problems` flags **MACHINE_NOT_FED** -- a running machine none of
-whose belts or pipes brings one of its ingredients -- and **OUTPUT_BLOCKED** -- one whose product
-has nowhere that takes it -- and `detect_belt_overloads` a **CONGESTION** for each belt carrying
-more than its tier's capacity, from the loads the Verifier puts on it (`verifier.belt_loads`).
-
-**Demand and consumers without flows.** A deficit's demand, and the node it's pinned on, come from
-the graph's flows — which a save's graph doesn't have. `item_demand` (gross consumption per item,
-e.g. `verifier.consumption`) and `item_consumers` (the node ids consuming each item) stand in for
-them, item by item: whatever they give wins over what the flows say.
+Severity scales with how far over the line a number is: >=100% HIGH, >=50% MEDIUM, else LOW.
+A save's graph has no flows, so `item_demand` and `item_consumers` stand in for them.
 """
 
 from __future__ import annotations

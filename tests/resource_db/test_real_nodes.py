@@ -1,4 +1,4 @@
-"""Bonus confidence check: the resource node data shipped at `docs/resource_nodes.json` (see
+"""Bonus confidence check: the resource node data shipped at `assets/resource_nodes.json` (see
 loader.py for where it came from). The fixture-based tests stay the module's "done" bar."""
 
 import json
@@ -9,10 +9,10 @@ import pytest
 
 from pioneer.resource_db.loader import load_from_file
 
-_DATA_PATH = Path(__file__).parent.parent.parent / "docs" / "resource_nodes.json"
+_DATA_PATH = Path(__file__).parent.parent.parent / "assets" / "resource_nodes.json"
 
 pytestmark = pytest.mark.skipif(
-    not _DATA_PATH.exists(), reason="docs/resource_nodes.json not present"
+    not _DATA_PATH.exists(), reason="assets/resource_nodes.json not present"
 )
 
 

@@ -1,24 +1,11 @@
-"""Save file (.sav) parser module (implementation.md Stage 5).
+"""Save file (.sav) parser, read-only.
 
-Reads a Satisfactory save file into `ProductionGraph` + `PlacementRecord` shapes. Read-only —
-never writes to the save file. Depends only on `pioneer.contracts`; tested against fixture save
-files, resolving recipe IDs against a fixture recipe list rather than a live Knowledge Base call.
-
-`load_save_state` is the one-call entry point: save file in, `PlacementRecord`s (each with the
-recipe its building is running) and a `ProductionGraph` of the existing factory out. The steps
-underneath are usable on their own — `load_body_from_file` decompresses the level-data body,
-`find_object_table` reads the TOC into `RawObjectHeader`s, `find_entity_spans` frames each object's
-property blob, `find_recipe_ids` pulls `mCurrentRecipe` out of one of those spans, and
-`to_placement_records*` / `to_production_graph` map the result into Stage 1 contracts.
-
-Every step is verified against the two real saves committed under tests/save_parser/fixtures/:
-entity framing lands byte-exactly on the section's declared end, and all 500 / 906 recipes in them
-resolve to real Knowledge Base recipe ids, each attributed to exactly one manufacturing building.
-The graph's `flows` are empty (see production_graph.py) — routing isn't recoverable from what this
-parser reads.
-
-`discover_saves` lists the saves under the game's `SaveGames` folder, reading only their headers
-(see catalog.py).
+`load_save_state` is the one-call entry point: a save in, its `PlacementRecord`s, a
+`ProductionGraph` of the existing factory and the belts' and pipes' `TransportLink`s out. The
+steps underneath are usable on their own: `load_body_from_file` decompresses the body,
+`find_object_table` reads the TOC, `find_entity_spans` frames each object's properties,
+`find_recipe_ids` pulls out `mCurrentRecipe`, and `to_placement_records*` / `to_production_graph`
+map the result into contracts. `discover_saves` lists saves by their headers alone.
 """
 
 from pioneer.save_parser.catalog import (

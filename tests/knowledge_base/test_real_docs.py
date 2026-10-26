@@ -1,35 +1,28 @@
-"""Bonus confidence check: the loader against the real game export at `docs/en-US.json`.
-
-Not the module's "done" bar — test_loader.py's fixture-based tests are (per
-docs/implementation.md Stage 2). This is extra: proof the parsing/joining logic holds up against
-the real, messy source data, not just the small hand-built stand-in. `docs/en-US.json` is
-committed to the repo, so this runs by default; it skips cleanly if the file is ever missing
-locally rather than failing the whole suite.
+"""Bonus confidence check: the loader against the real game export at `assets/en-US.json`, beside
+test_loader.py's fixture-based tests. Skips if the file is missing locally.
 """
 
 from pathlib import Path
 
 import pytest
 
-from pioneer.knowledge_base.loader import load_from_file
+from pioneer.common import raw_resource_ids, recipes_for_output
 from pioneer.knowledge_base.queries import (
     building_for,
     find_items,
     item_by_id,
-    raw_resource_ids,
-    recipes_for_output,
     research_trees,
     technology_for_recipe,
 )
 
-_DOCS_PATH = Path(__file__).parent.parent.parent / "docs" / "en-US.json"
+_DOCS_PATH = Path(__file__).parent.parent.parent / "assets" / "en-US.json"
 
-pytestmark = pytest.mark.skipif(not _DOCS_PATH.exists(), reason="docs/en-US.json not present")
+pytestmark = pytest.mark.skipif(not _DOCS_PATH.exists(), reason="assets/en-US.json not present")
 
 
 @pytest.fixture(scope="module")
-def kb():
-    return load_from_file(_DOCS_PATH)
+def kb(real_kb):
+    return real_kb
 
 
 def test_loads_every_factory_recipe(kb) -> None:
@@ -131,7 +124,7 @@ def test_fluid_items_are_flagged(kb) -> None:
 
 
 def test_raw_resources_are_the_extractable_ones(kb) -> None:
-    assert raw_resource_ids(kb) == {
+    assert raw_resource_ids(kb.items) == {
         "Desc_Coal_C",
         "Desc_LiquidOil_C",
         "Desc_NitrogenGas_C",
@@ -234,7 +227,7 @@ def test_extractors_and_pressurizer_are_loaded(kb) -> None:
 
 
 def test_alternate_recipes_exist_for_iron_ingot(kb) -> None:
-    recipes = recipes_for_output(kb, "Desc_IronIngot_C")
+    recipes = recipes_for_output("Desc_IronIngot_C", kb.recipes)
     assert len(recipes) > 1
 
 

@@ -13,6 +13,7 @@ from pioneer.anomaly_detector import (
     detect_belt_overloads,
     detect_wiring_problems,
 )
+from pioneer.common import raw_resource_ids
 from pioneer.contracts import (
     AnomalyKind,
     AnomalyRecord,
@@ -23,31 +24,30 @@ from pioneer.contracts import (
     Recipe,
 )
 from pioneer.orchestrator.base import (
-    _CM_PER_M,
+    CM_PER_M,
+    ArtifactAccumulator,
     OrchestratorContext,
-    _ArtifactAccumulator,
-    _ToolError,
+    ToolError,
 )
 from pioneer.orchestrator.existing_factory import (
-    _add_rates,
-    _chain_graph,
-    _consuming_nodes,
-    _existing_item_balance,
-    _existing_power,
-    _generator_consumption,
-    _inputs_from_outside,
-    _item_balance,
-    _node_links,
-    _site_graph,
-    _site_summary,
+    add_rates,
+    chain_graph,
+    consuming_nodes,
+    existing_item_balance,
+    existing_power,
+    generator_consumption,
+    inputs_from_outside,
+    item_balance_of,
+    node_links,
+    site_graph,
+    site_summary,
 )
-from pioneer.orchestrator.items import _resolve_item_id, raw_resource_ids
-from pioneer.orchestrator.summaries import _per_item, _stage_power
+from pioneer.orchestrator.items import resolve_item_id
+from pioneer.orchestrator.summaries import per_item, stage_power
 from pioneer.verifier import (
     allocate_supply,
     belt_loads,
     consumption,
-    distance,
     extraction_rates,
     generator_byproducts,
     generator_fuel_demand,
@@ -58,8 +58,8 @@ from pioneer.verifier import (
 )
 
 
-def _handle_show_existing_factory(
-    args: dict[str, Any], context: OrchestratorContext, accumulator: _ArtifactAccumulator
+def handle_show_existing_factory(
+    args: dict[str, Any], context: OrchestratorContext, accumulator: ArtifactAccumulator
 ) -> dict[str, Any]:
     """Draws what the save says is built: one site, the chain behind one item, or all of it. The
     flows are `verifier.implied_flows` -- what the stages' recipes make at their clock speeds,
@@ -72,12 +72,12 @@ def _handle_show_existing_factory(
     site = None
     if site_id:
         site = _find_site(str(site_id), context)
-        graph, drawn = _site_graph(site), site.site_id
+        graph, drawn = site_graph(site), site.site_id
     elif item:
-        item_id = _resolve_item_id(item, context)
-        graph, drawn = _chain_graph(context.existing_graph, item_id, context.recipes), item_id
+        item_id = resolve_item_id(item, context)
+        graph, drawn = chain_graph(context.existing_graph, item_id, context.recipes), item_id
         if not graph.nodes:
-            raise _ToolError(f"nothing in the player's factory makes {item_id}")
+            raise ToolError(f"nothing in the player's factory makes {item_id}")
     else:
         graph, drawn = context.existing_graph, "whole factory"
         if len(graph.nodes) > _MAX_DRAWN_STAGES:
@@ -90,12 +90,12 @@ def _handle_show_existing_factory(
     known = {recipe.recipe_id for recipe in context.recipes}
     graph = replace(graph, nodes=tuple(node for node in graph.nodes if node.recipe_id in known))
     members = site.placements if site is not None else context.existing_placements
-    links = _node_links(graph, members, context)
+    links = node_links(graph, members, context)
     graph = implied_flows(graph, context.recipes, links)
     accumulator.graph = graph
     if site is not None:
         accumulator.factory_sites = (site,)
-    raw = raw_resource_ids(context)
+    raw = raw_resource_ids(context.items)
     recipe_of = {recipe.recipe_id: recipe for recipe in context.recipes}
     result: dict[str, Any] = {
         "drawn": drawn,
@@ -105,18 +105,18 @@ def _handle_show_existing_factory(
                 "recipe_id": node.recipe_id,
                 "building_id": node.building_id,
                 "effective_machines": round(node.machine_count, 2),
-                **_stage_power(node.building_id, node.machine_count, context),
+                **stage_power(node.building_id, node.machine_count, context),
                 **_stage_rates(node, recipe_of[node.recipe_id]),
             }
             for node in graph.nodes
         ],
-        "raw_resources_in_per_minute": _per_item(
+        "raw_resources_in_per_minute": per_item(
             f for f in graph.flows if f.source_node_id is None and f.item_id in raw
         ),
-        "parts_brought_in_per_minute": _per_item(
+        "parts_brought_in_per_minute": per_item(
             f for f in graph.flows if f.source_node_id is None and f.item_id not in raw
         ),
-        "goes_out_per_minute": _per_item(f for f in graph.flows if f.target_node_id is None),
+        "goes_out_per_minute": per_item(f for f in graph.flows if f.target_node_id is None),
     }
     if site is not None:
         result["site"] = _site_entry(site, context)
@@ -152,14 +152,14 @@ def _find_site(site_id: str, context: OrchestratorContext) -> FactorySite:
     for site in context.factory_sites:
         if site.site_id.casefold() == wanted:
             return site
-    raise _ToolError(
+    raise ToolError(
         f"no factory {site_id!r}",
         factories=[_site_entry(site, context) for site in context.factory_sites],
     )
 
 
 def _site_entry(site: FactorySite, context: OrchestratorContext) -> dict[str, Any]:
-    summary = _site_summary(site, context)
+    summary = site_summary(site, context)
     return {
         "site_id": site.site_id,
         "buildings": summary["buildings"],
@@ -180,10 +180,10 @@ def _site_net_rates(site: FactorySite, context: OrchestratorContext) -> dict[str
     recipe-running machines (see `find_factory_sites`), so the ore and water it uses always show as
     taken in, wherever it's mined. Empty when the site's recipes aren't all known."""
     known = {recipe.recipe_id for recipe in context.recipes}
-    graph = _site_graph(site)
+    graph = site_graph(site)
     if not graph.nodes or any(node.recipe_id not in known for node in graph.nodes):
         return {}
-    net = _item_balance(graph, site.placements, context)
+    net = item_balance_of(graph, site.placements, context)
     out = sorted(((i, r) for i, r in net.items() if r >= _BALANCE_TOLERANCE), key=lambda e: -e[1])
     into = sorted(
         ((i, -r) for i, r in net.items() if r <= -_BALANCE_TOLERANCE), key=lambda e: -e[1]
@@ -198,7 +198,7 @@ _BALANCE_TOLERANCE = 0.01
 """Rates below this (per minute) are float noise from summing clock speeds, not production."""
 
 
-def _handle_factory_item_balance(
+def handle_factory_item_balance(
     args: dict[str, Any], context: OrchestratorContext
 ) -> dict[str, Any]:
     """What the save's factory produces and uses of each item, and the net of the two -- the same
@@ -209,14 +209,14 @@ def _handle_factory_item_balance(
     if not context.recipes:
         return {"error": "no knowledge base loaded -- the stages' recipes are unknown"}
     try:
-        net = _existing_item_balance(context)
+        net = existing_item_balance(context)
         used = consumption(context.existing_graph, context.recipes)
     except ValueError as error:
         return {"error": f"cannot compute the balance: {error}"}
-    _add_rates(used, _generator_consumption(context))
+    add_rates(used, generator_consumption(context))
 
     item = args.get("item")
-    wanted = {_resolve_item_id(item, context)} if item else net.keys() | used.keys()
+    wanted = {resolve_item_id(item, context)} if item else net.keys() | used.keys()
     rows = {}
     for item_id in wanted:
         net_rate, used_rate = net.get(item_id, 0.0), used.get(item_id, 0.0)
@@ -229,20 +229,20 @@ def _handle_factory_item_balance(
             "net": round(net_rate, 2) if abs(net_rate) >= _BALANCE_TOLERANCE else 0.0,
         }
     if item and not rows:
-        raise _ToolError(f"the player's factory neither produces nor uses {next(iter(wanted))}")
+        raise ToolError(f"the player's factory neither produces nor uses {next(iter(wanted))}")
     return {
         "per_minute": dict(sorted(rows.items(), key=lambda row: (row[1]["net"], row[0]))),
         "note": "net = produced - used; produced includes mining, used includes generator fuel",
     }
 
 
-def _handle_factory_power(context: OrchestratorContext) -> dict[str, Any]:
+def handle_factory_power(context: OrchestratorContext) -> dict[str, Any]:
     """The save's power grid as it stands: draw against capacity, and which buildings account for
     each -- the numbers diagnosis judges a blackout by, without the rest of a diagnosis."""
     if context.existing_graph is None:
         return {"error": "no save loaded -- nothing is known about what the player has built"}
     try:
-        draw, capacity = _existing_power(context)
+        draw, capacity = existing_power(context)
     except ValueError as error:
         return {"error": f"cannot compute power: {error}"}
     result: dict[str, Any] = {"draw_mw": round(draw, 2), "capacity_mw": None, "spare_mw": None}
@@ -270,26 +270,26 @@ def _by_building(rates: Mapping[str, tuple[int, float]]) -> dict[str, dict[str, 
     }
 
 
-def _handle_diagnose_factory(args: dict[str, Any], context: OrchestratorContext) -> dict[str, Any]:
+def handle_diagnose_factory(context: OrchestratorContext) -> dict[str, Any]:
     if context.existing_graph is None:
         return {
             "error": "no existing factory state available (no save loaded) -- nothing to diagnose"
         }
     try:
-        item_balance = _existing_item_balance(context)
-        power_draw_mw, power_capacity_mw = _existing_power(context)
-        burned = _generator_consumption(context)
+        item_balance = existing_item_balance(context)
+        power_draw_mw, power_capacity_mw = existing_power(context)
+        burned = generator_consumption(context)
         demand = consumption(context.existing_graph, context.recipes)
     except ValueError as error:
         return {"error": f"cannot diagnose: {error}"}
-    _add_rates(demand, burned)
+    add_rates(demand, burned)
     anomalies = detect_anomalies(
         context.existing_graph,
         item_balance,
         power_draw_mw,
-        raw_item_ids=_inputs_from_outside(context, item_balance),
+        raw_item_ids=inputs_from_outside(context, item_balance),
         item_demand=demand,
-        item_consumers=_consuming_nodes(context, shared=burned.keys()),
+        item_consumers=consuming_nodes(context, shared=burned.keys()),
         available_power_mw=power_capacity_mw,
     )
     return {
@@ -461,7 +461,7 @@ def _building_roles(placed: Mapping[str, PlacementRecord], context: Orchestrator
                 fuel.byproduct_item_id for fuel in fuels if fuel.byproduct_item_id
             }
             burned = generator_fuel_demand((p,), context.buildings, context.items)
-            _add_rates(burned, generator_supplemental_demand((p,), context.buildings))
+            add_rates(burned, generator_supplemental_demand((p,), context.buildings))
             roles.demand_rates[object_id] = burned
             roles.supply_rates[object_id] = generator_byproducts(
                 (p,), context.buildings, context.items
@@ -490,12 +490,12 @@ def _located(
     entry["building_id"] = placement.building_id
     nearest = min(
         context.factory_sites,
-        key=lambda site: distance(site.position, placement.position),
+        key=lambda site: site.position.distance_to(placement.position),
         default=None,
     )
     factory = site_of.get(placement.object_id or "") or (nearest.site_id if nearest else None)
     if factory is not None:
         entry["factory"] = factory
-    entry["x_m"] = round(placement.position.x / _CM_PER_M)
-    entry["y_m"] = round(placement.position.y / _CM_PER_M)
+    entry["x_m"] = round(placement.position.x / CM_PER_M)
+    entry["y_m"] = round(placement.position.y / CM_PER_M)
     return entry

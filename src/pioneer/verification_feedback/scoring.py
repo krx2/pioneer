@@ -1,27 +1,13 @@
-"""Scoring functions from architecture.md §6, over a `ResponseArtifact`'s three channels
-(implementation.md Stage 15).
+"""Scoring a `ResponseArtifact`'s three channels: deterministic checks, plus injectable judge hooks
+for subjective fit only.
 
-Each channel mixes deterministic checks with, where architecture.md calls for it, an injectable
-"judge" hook — the same transport-injection pattern `qa_engine.engine` and `server_client.client`
-use for their own external calls: the caller supplies a plain callable, so the real LLM-as-a-judge
-call (Stage 16's job) never needs to exist for these functions to be fully unit-tested.
-
-The Chat channel measures word overlap with the same notion of a significant word that retrieval
-ranks passages by (`qa_engine.significant_words`) — the answer is being compared against retrieved
-text, so the two have to agree on what a word worth matching is.
-
-- Chat: `check_rag_consistency` is fully deterministic (grounding is a fact-check, not a matter of
-  taste, so it doesn't need a judge) — architecture.md's own three-way split reserves LLM-as-a-judge
-  for *subjective* fit, never arithmetic-or-fact correctness. The numbers decide consistency:
-  every number the answer states has to be one its grounding holds (architecture.md invariant #1 —
-  the model phrases numbers, it never makes them), allowing for the answer rounding it. Word
-  overlap is reported alongside, but an answer in natural sentences shares too few words with a
-  JSON tool result for that to judge anything.
-- Graph: `score_graph` calls the real Stage 4 Verifier directly — implementation.md Stage 15
-  explicitly allows this ("just calling a finished function library, not a live integration").
-- Map: `score_map` deterministically checks position, purity and distance against the real
-  resource data, and that the save shows nothing extracting from the node yet, plus an optional
-  `TerrainJudge` hook for the subjective "does this fit the terrain/existing infra" call.
+- Chat: `check_rag_consistency` is deterministic: every number the answer states must be one its
+  grounding holds, allowing for rounding. Word overlap (`qa_engine.significant_words`) is reported
+  alongside, but natural sentences share too few words with JSON tool results to judge by.
+- Graph: `score_graph` checks balance and power with the Verifier, and the deviation from an
+  optimal plan.
+- Map: `score_map` checks position, purity and distance against the real resource data, and that
+  nothing extracts from the node yet; a `TerrainJudge` may add its verdict.
 """
 
 from __future__ import annotations
@@ -31,6 +17,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 
+from pioneer.common import machines_by_recipe
 from pioneer.contracts import (
     Building,
     Coordinates,
@@ -45,7 +32,6 @@ from pioneer.qa_engine import significant_words
 from pioneer.verifier import (
     added_machines,
     balance,
-    distance,
     minimal_machine_graph,
     power_balance,
 )
@@ -128,8 +114,8 @@ class ChatScore:
     """Player feedback's 1-5 rating (`Feedback.qualitative_score`), carried through unchanged —
     this function never invents one."""
     judge_verdict: JudgeVerdict | None = None
-    """architecture.md §6's Chat-channel LLM-as-a-judge call: does the answer suit the player's
-    question, context and game phase. `None` when no judge ran, or it gave no usable verdict."""
+    """The LLM-as-a-judge call: does the answer suit the player's question, context and game
+    phase. `None` when no judge ran, or it gave no usable verdict."""
     ungrounded_numbers: tuple[str, ...] = ()
     """Numbers the chat states, as written, that nothing in its grounding matches — even rounded
     to the precision written, or 1% either way. Numbers that are part of a name ("Mk.2") and
@@ -137,9 +123,8 @@ class ChatScore:
 
 
 class ChatJudge(Protocol):
-    """Rates whether `answer` suits the player's `question` and situation (`context`) —
-    architecture.md's Chat-channel LLM-as-a-judge step (the real one is
-    `llm_client.judges.chat_judge`). `None` means it gave no usable verdict."""
+    """Rates whether `answer` suits the player's `question` and situation (`context`); the real
+    one is `llm_client.judges.chat_judge`. `None` means it gave no usable verdict."""
 
     def __call__(self, question: str, answer: str, context: str) -> JudgeVerdict | None: ...
 
@@ -187,16 +172,9 @@ class GraphScore:
     """The budget `power_ok` was judged against, if one was given."""
 
 
-def _machines_by_recipe(graph: ProductionGraph) -> dict[str, float]:
-    totals: dict[str, float] = {}
-    for node in graph.nodes:
-        totals[node.recipe_id] = totals.get(node.recipe_id, 0.0) + node.machine_count
-    return totals
-
-
 def _deviation_from_optimum(graph: ProductionGraph, optimal_graph: ProductionGraph) -> float:
-    actual = _machines_by_recipe(graph)
-    optimal = _machines_by_recipe(optimal_graph)
+    actual = machines_by_recipe(graph)
+    optimal = machines_by_recipe(optimal_graph)
     optimal_total = sum(optimal.values())
     if optimal_total <= 0:
         return 0.0
@@ -244,9 +222,8 @@ def score_graph(
 
 
 class TerrainJudge(Protocol):
-    """Scores whether `location` fits the player's terrain/logistics/existing-infra context —
-    architecture.md's Map-channel LLM-as-a-judge step (the real one is
-    `llm_client.judges.terrain_judge`). `None` means it gave no usable verdict."""
+    """Scores whether `location` fits the player's terrain/logistics/existing-infra context; the
+    real one is `llm_client.judges.terrain_judge`. `None` means it gave no usable verdict."""
 
     def __call__(self, location: RankedLocation, context: str) -> JudgeVerdict | None: ...
 
@@ -299,10 +276,10 @@ def score_map(
             )
             continue
 
-        position_ok = distance(location.position, node.position) <= distance_tolerance
+        position_ok = location.position.distance_to(node.position) <= distance_tolerance
         purity_ok = location.purity == node.purity
         distance_ok = (
-            abs(distance(node.position, reference) - location.distance_to_reference)
+            abs(node.position.distance_to(reference) - location.distance_to_reference)
             <= distance_tolerance
             if reference is not None
             else None
@@ -350,16 +327,13 @@ def score_response(
     chat_context: str = "",
     terrain_context: str = "",
 ) -> ResponseScore:
-    """Scores whichever channels `artifact` actually populates — per architecture.md §4.4, not
-    every response needs all three — and only as far as the data allows: a channel that can't be
-    scored (no knowledge base, a graph on a building the knowledge base doesn't list) comes back
-    unscored rather than costing the others theirs.
+    """Scores whichever channels `artifact` populates, as far as the data allows: a channel that
+    can't be scored comes back unscored rather than costing the others theirs.
 
-    The graph channel is scored for what the answer *adds*: an expansion's extended nodes count
-    only their new machines, every material the graph takes in from outside is not held against
-    it, and, unless a better `optimal_graph` is given, the optimum it's measured against is the
-    same plan in fractional machines. `chat_context` and `terrain_context` are what the two judges
-    are told about the player's situation."""
+    The graph is scored for what the answer adds: extended nodes count only their new machines,
+    inputs from outside aren't held against it, and the optimum is the same plan in fractional
+    machines unless `optimal_graph` is given. `chat_context` and `terrain_context` are what the
+    judges are told about the player's situation."""
     return ResponseScore(
         chat=_chat_channel(artifact, cited_passages, chat_judge, chat_context),
         graph=_graph_channel(

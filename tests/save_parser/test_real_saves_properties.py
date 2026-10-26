@@ -1,24 +1,21 @@
 """Bonus confidence check against real, committed save files — not the suite that decides whether
 properties.py is "done" (test_properties.py, hand-built fixtures, is). Cross-checks every
-`mCurrentRecipe` occurrence against the real Knowledge Base loaded from `docs/en-US.json`, per
+`mCurrentRecipe` occurrence against the real Knowledge Base loaded from `assets/en-US.json`, per
 properties.py's own module docstring claim: every occurrence in both fixtures resolves."""
 
 from pathlib import Path
 
 import pytest
 
-from pioneer.knowledge_base.loader import load_from_file
 from pioneer.save_parser.loader import load_body_from_file
 from pioneer.save_parser.properties import find_recipe_ids
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
-_DOCS_JSON = Path(__file__).parent.parent.parent / "docs" / "en-US.json"
 
 
 @pytest.fixture(scope="module")
-def known_recipe_ids() -> frozenset[str]:
-    kb = load_from_file(_DOCS_JSON)
-    return frozenset(r.recipe_id for r in kb.recipes)
+def known_recipe_ids(real_kb) -> frozenset[str]:
+    return frozenset(r.recipe_id for r in real_kb.recipes)
 
 
 @pytest.mark.parametrize(

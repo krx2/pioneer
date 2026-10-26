@@ -1,10 +1,5 @@
-"""Decompresses the chunk stream that follows the save header into one contiguous buffer.
-
-Each chunk is independently zlib-compressed with a small fixed framing header. See
-`header.py`'s module docstring for format references. Verified against a real save's full chunk
-stream in tests/save_parser/test_real_saves.py: every chunk (294 of them, for the committed
-`stal_mielec.sav` fixture) decompresses cleanly, and the pieces concatenate to exactly the length
-the decompressed body's own embedded `TotalSize` field declares (see `loader.py`).
+"""Decompresses the chunk stream that follows the save header into one contiguous buffer. Each
+chunk is independently zlib-compressed behind a small fixed framing header.
 """
 
 from __future__ import annotations

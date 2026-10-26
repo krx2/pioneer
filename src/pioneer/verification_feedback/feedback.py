@@ -1,21 +1,17 @@
-"""Feedback capture (implementation.md Stage 15).
-
-Keyed to a specific `ResponseArtifact.response_id`, not a session — architecture.md §6 treats
-player feedback as the ground-truth signal for a *particular* plan/graph/location, not a whole
-conversation. `FeedbackStore` keeps it in memory; `JsonlFeedbackStore` also appends every record to
-a JSON-lines file and reads that file back when it starts, so feedback outlives a restart and can
-be analysed later. `ResponseLog` is the other half of that record: what was asked, what was
-answered, and how the answer scored, per response id.
+"""Feedback capture, keyed to a `ResponseArtifact.response_id`: feedback is about a particular
+answer, not a whole conversation. `FeedbackStore` keeps it in memory; `JsonlFeedbackStore` also
+appends it to a JSON-lines file it reads back on start. `ResponseLog` records what was asked,
+answered and scored, per response id.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pioneer.common import utc_timestamp
 from pioneer.contracts import Feedback, ResponseArtifact
 from pioneer.verification_feedback.scoring import ResponseScore
 
@@ -50,14 +46,18 @@ class JsonlFeedbackStore(FeedbackStore):
         super().record(response_id, feedback)
         _append_jsonl(
             self._path,
-            {"response_id": response_id, "recorded_at": _now(), "feedback": asdict(feedback)},
+            {
+                "response_id": response_id,
+                "recorded_at": utc_timestamp(),
+                "feedback": asdict(feedback),
+            },
         )
 
 
 class ResponseLog:
     """Appends one JSON line per answered question: the question, the answer, what its graph and
-    map channels held, and its verification scores — the evaluation record architecture.md §6
-    calls for, joinable with the feedback file by response id."""
+    map channels held, and its verification scores — joinable with the feedback file by response
+    id."""
 
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path)
@@ -76,7 +76,7 @@ class ResponseLog:
             self._path,
             {
                 "response_id": artifact.response_id,
-                "recorded_at": _now(),
+                "recorded_at": utc_timestamp(),
                 "question": artifact.question,
                 "chat": artifact.chat,
                 "graph_nodes": len(artifact.graph.nodes) if artifact.graph is not None else None,
@@ -108,7 +108,3 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")

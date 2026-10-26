@@ -1,6 +1,5 @@
-"""Tests for answer_question, against a fake `ChatCompletion` transport — no real networking, per
-implementation.md Stage 11: known questions against a fixture corpus get answers traceable to
-specific retrieved passages."""
+"""Tests for answer_question, against a fake `ChatCompletion` transport: known questions against a
+fixture corpus get answers traceable to specific retrieved passages."""
 
 from pioneer.qa_engine.engine import (
     LLMUnavailable,

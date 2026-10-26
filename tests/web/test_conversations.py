@@ -1,6 +1,9 @@
 """Tests for the conversation store, on a temporary folder."""
 
 import json
+import os
+
+import pytest
 
 from pioneer.web.conversations import ConversationStore
 
@@ -40,3 +43,21 @@ def test_unreadable_files_are_left_out(tmp_path) -> None:
 
     assert [c["id"] for c in store.list()] == [kept]
     assert store.get(_ID) is None
+
+
+def test_a_write_that_fails_halfway_leaves_the_conversation_as_it_was(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ConversationStore(tmp_path)
+    conversation_id = store.save_turn(None, 0, "first question", {"chat": "first answer"})
+
+    def crash(source: str, target: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", crash)
+    with pytest.raises(OSError):
+        store.save_turn(conversation_id, 1, "second question", {"chat": "second answer"})
+
+    turns = store.get(conversation_id)["turns"]
+    assert [turn["question"] for turn in turns] == ["first question"]
+    assert [path.name for path in tmp_path.iterdir()] == [f"{conversation_id}.json"]

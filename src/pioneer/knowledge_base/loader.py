@@ -1,69 +1,26 @@
 """Loads items, recipes, buildings, technologies and the game's own descriptions from a
-Satisfactory `Docs.json`-shaped export.
+Satisfactory `Docs.json`-shaped export (the real one ships UTF-16 encoded).
 
-`load_from_dict` is the pure entry point every test in `tests/knowledge_base/test_loader.py`
-exercises, against `fixtures/mini_docs.json`. `load_from_file` is the thin I/O wrapper around it
-for the real game export at `docs/en-US.json` (which ships UTF-16 encoded, per the game's own
-tooling); `tests/knowledge_base/test_real_docs.py` runs the same kind of checks against that real
-file as a bonus confidence check.
+Quirks of the export, handled here:
 
-Known limitations of the source data, discovered by inspecting the real export (see
-docs/implementation.md Stage 2 discussion) and encoded as deliberate choices below:
-
-- **Only factory recipes are kept.** Two thirds of the export's recipes (581 of 872) run only in
-  the build gun (the cost of placing a building), the Equipment Workshop (gear) or the Craft
-  Bench — manual stations, none of which is a `Building` this project can plan, place or count.
-  `mProducedIn` also lists those stations next to the real machine for many factory recipes (Iron
-  Plate: Constructor *and* Craft Bench), so `Recipe.building_ids` keeps only the
-  `FGBuildableManufacturer*` buildings a recipe runs in, and a recipe left with none is dropped.
-- **Raw resources** are the `FGResourceDescriptor` items (ores, water, crude oil, nitrogen gas,
-  SAM, ...), flagged on `Item.is_raw_resource`. Recipes alone can't identify them: 1.0's Converter
-  turns ores into other ores and unpackaging yields crude oil, so most raw resources *have* a
-  recipe producing them — a planner walking recipes backwards would never stop.
-- **Alternates** are recipes whose display name the game prefixes with "Alternate:" — exactly
-  the ones it presents to the player as alternates. Neither structural signal agrees with that:
-  `EST_Alternate` (hard-drive) schematics also unlock the standard Turbofuel packaging recipes,
-  some alternates (Compacted Coal, Polyester Fabric) come from MAM research instead, and class
-  names are unreliable in both directions (`Recipe_Alternate_Turbofuel_C` is the plain,
-  MAM-unlocked "Turbofuel"; `Recipe_PureAluminumIngot_C` is "Alternate: Pure Aluminum Ingot").
-- Building input/output slot counts aren't present as data anywhere in the export. They're
-  derived from the max ingredient/product count across recipes that use each building; for
-  buildings with no matching recipe (extractors, generators, ...) a small documented fallback is
-  used instead of inventing precision the source data doesn't have.
-- **Variable-power buildings have no fixed rating.** The Particle Accelerator, Converter and
-  Quantum Encoder list `mPowerConsumption` 0 because their draw cycles between
-  `mEstimatedMininumPowerConsumption` (sic) and `mEstimatedMaximumPowerConsumption`; the midpoint
-  is used. The Geothermal Generator likewise lists `mPowerProduction` 0 — its output cycles too,
-  and `mVariablePowerProductionConstant + mVariablePowerProductionFactor` comes to 200 MW, the
-  game's stated average on a normal geyser, which is what's used.
-- `mSchematicDependencies` (technology prerequisites) is populated for alternate-recipe and
-  custom schematics, but is empty for every milestone and MAM schematic in the export — the
-  game encodes milestone order via `mTechTier` and MAM unlocks via in-game item scanning,
-  neither of which is prerequisite data we can parse out of this file. `Technology.prerequisites`
-  is therefore genuinely empty for milestones/MAM, not a parsing gap.
-- **MAM trees aren't named either**, but the game files each research schematic in a folder of
-  its tree's: `FullName` reads `.../Schematics/Research/Quartz_RS/Research_Quartz_1_2...`, so
-  `Technology.tree` is that folder without its `_RS`, its words spaced out ("PowerSlugs" -> "Power
-  Slugs") — and the two the game's UI calls otherwise by their in-game names (`_TREE_NAMES`).
-- **Fluid amounts are stored scaled by 1000.** The export writes liquid and gas quantities in
-  litres while the game's own UI (and every other tool) talks in m³ — `Recipe_LiquidFuel_C` lists
-  its crude oil ingredient as `60000`, meaning 60 m³/min. Solids are unscaled. Which items are
-  fluids comes from the item descriptors' `mForm` field (`RF_LIQUID`/`RF_GAS` vs `RF_SOLID`), so
-  `_load_items` indexes every descriptor in the export and `_item_amount` divides fluid amounts
-  back down. Without this, anything touching oil, water, gas or their derivatives is off by three
-  orders of magnitude — machine counts, balance, power, anomaly severities.
-- **Belt and pipe capacity** is `mSpeed` / 2 items a minute for a belt (Mk.1's 120 is 60/min) and
-  `mFlowLimit` m³ a second for a pipeline. The export lists each pipeline twice — with and without
-  flow indicators — at the same capacity; only the plain one is kept.
-- **What unlocks a building** is what unlocks its build-gun recipe (`Recipe_MinerMk2_C`), whose
-  product is the building's build-menu descriptor (`Desc_MinerMk2_C`) — the building itself is
-  `Build_MinerMk2_C`. So `Building.unlockable_by` and `TransportTier.unlockable_by` come from those
-  recipes, though the recipes themselves aren't kept.
-- **Generators consume more than fuel.** Each entry of a generator's `mFuel` names, per fuel, a
-  supplemental resource (water, for coal and nuclear) and a byproduct (nuclear waste, with
-  `mByproductAmount` per fuel unit). How much supplemental resource is consumed comes from the
-  building's `mSupplementalToPowerRatio`, which is in litres per MW per second for a fluid: the
-  Coal-Powered Generator's 10 makes 75 MW take 750 L/s, the game's 45 m³/min.
+- Only factory recipes are kept: `Recipe.building_ids` keeps the `FGBuildableManufacturer*`
+  buildings, dropping the build gun, Equipment Workshop and Craft Bench, and a recipe left with
+  none is dropped (581 of 872).
+- Raw resources are the `FGResourceDescriptor` items. Recipes can't tell them apart: the Converter
+  and unpackaging produce most of them.
+- Alternates are recipes named "Alternate: ..."; neither schematic type nor class name agrees.
+- Slot counts aren't in the data: derived from the recipes a building runs, else `_FALLBACK_SLOTS`.
+- Variable-power buildings list 0 MW: the midpoint of their estimated range is used, and the
+  Geothermal Generator's constant plus factor (200 MW).
+- `mSchematicDependencies` is empty for every milestone and MAM schematic, so are their
+  `Technology.prerequisites`. A MAM tree is named after its research schematics' folder.
+- Fluid amounts ship in litres, scaled back to m³ by the descriptor's `mForm`; without that,
+  anything touching fluids is off by three orders of magnitude.
+- A belt carries `mSpeed` / 2 a minute, a pipe `mFlowLimit` m³ a second; each pipe is listed twice,
+  only the plain one is kept.
+- A building is unlocked by whatever unlocks its build-gun recipe.
+- A generator's `mSupplementalToPowerRatio` is litres per MW per second for a fluid: the
+  Coal-Powered Generator's 10 makes 75 MW take 45 m³/min of water.
 """
 
 from __future__ import annotations
@@ -74,6 +31,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from pioneer.common import class_name_from_path
 from pioneer.contracts import (
     Building,
     ClassDescription,
@@ -85,11 +43,7 @@ from pioneer.contracts import (
     Technology,
     TransportTier,
 )
-from pioneer.knowledge_base.parsing import (
-    class_name_from_path,
-    parse_item_amounts,
-    parse_quoted_class_list,
-)
+from pioneer.knowledge_base.parsing import parse_item_amounts, parse_quoted_class_list
 from pioneer.knowledge_base.queries import KnowledgeBase
 
 _RECIPE_NATIVE_CLASS = "FGRecipe"
@@ -131,8 +85,8 @@ _FALLBACK_SLOTS: dict[str, tuple[int, int]] = {
     **dict.fromkeys(_GENERATOR_NATIVE_CLASSES, (1, 0)),
     "FGBuildableResourceSink": (1, 0),
 }
-"""(input, output) slots for buildings no recipe runs in — see module docstring. Anything not
-listed (the pressurizer, power storage) moves no items at all."""
+"""(input, output) slots for buildings no recipe runs in. Anything not listed (the pressurizer,
+power storage) moves no items at all."""
 
 # Schematic categories that never gate a production recipe: cosmetics and resource-sink point
 # unlocks. Milestones, MAM research, alternates, the tutorial's HUB upgrades and custom (e.g. the
@@ -146,7 +100,7 @@ _ITEM_FORMS = frozenset({"RF_SOLID", "RF_LIQUID", "RF_GAS"})
 """`mForm` values of real items — building and vehicle descriptors carry `RF_INVALID`."""
 _FLUID_FORMS = frozenset({"RF_LIQUID", "RF_GAS"})
 _LITRES_PER_CUBIC_METRE = 1000.0
-"""Fluid amounts ship in litres; every consumer of this data works in m³ — see module docstring."""
+"""Fluid amounts ship in litres; every consumer of this data works in m³."""
 
 
 def load_from_file(path: Path | str) -> KnowledgeBase:
@@ -205,8 +159,7 @@ def load_from_dict(raw_docs: list[dict[str, Any]]) -> KnowledgeBase:
 def _building_unlocks(
     recipe_entries: list[dict[str, Any]], recipe_to_technologies: dict[str, list[str]]
 ) -> dict[str, tuple[str, ...]]:
-    """Per building, every technology unlocking the build-gun recipe that places it — see the
-    module docstring."""
+    """Per building, every technology unlocking the build-gun recipe that places it."""
     unlocks: dict[str, tuple[str, ...]] = {}
     for entry in recipe_entries:
         if _BUILD_GUN not in parse_quoted_class_list(entry.get("mProducedIn", "")):
@@ -221,7 +174,7 @@ def _building_unlocks(
 def _load_transport_tiers(
     entries_by_native_class: dict[str, list[dict[str, Any]]],
 ) -> tuple[TransportTier, ...]:
-    """Every belt and pipeline tier, slowest first — see module docstring."""
+    """Every belt and pipeline tier, slowest first."""
     belts = [
         TransportTier(
             building_id=entry["ClassName"],
@@ -250,13 +203,8 @@ def _index_by_native_class(raw_docs: list[dict[str, Any]]) -> dict[str, list[dic
 
 
 def _load_items(entries_by_native_class: dict[str, list[dict[str, Any]]]) -> tuple[Item, ...]:
-    """Every item descriptor in the export, across all of its descriptor native classes.
-
-    Scanned by `mForm` rather than from a fixed list of descriptor native classes
-    (`FGItemDescriptor`, `FGResourceDescriptor`, `FGItemDescriptorBiomass`, ...) — there are a
-    dozen-odd of them and the game adds more between versions, but every real item carries a
-    solid/liquid/gas form.
-    """
+    """Every item descriptor in the export, found by its `mForm` rather than a fixed list of
+    descriptor classes, of which the game adds more between versions."""
     return tuple(
         Item(
             item_id=entry["ClassName"],
@@ -272,9 +220,8 @@ def _load_items(entries_by_native_class: dict[str, list[dict[str, Any]]]) -> tup
 
 
 def _energy_value_mj(entry: dict[str, Any]) -> float:
-    """`mEnergyValue` is per unit for solids but per *litre* for fluids — the same litres-vs-m³
-    split as recipe amounts (see module docstring) — so a fluid's scales up to MJ per m³: Fuel's
-    0.75 MJ/L is 750 MJ/m³, which a 250 MW Fuel Generator burns at 20 m³/min, as in game."""
+    """`mEnergyValue` is per unit for solids but per litre for fluids, so a fluid's scales up to
+    MJ per m³: Fuel's 0.75 MJ/L is 750 MJ/m³."""
     energy = float(entry.get("mEnergyValue") or 0)
     return energy * _LITRES_PER_CUBIC_METRE if entry["mForm"] in _FLUID_FORMS else energy
 
@@ -311,12 +258,8 @@ def _rate_per_minute(amount: float, duration_seconds: float) -> float:
 def _item_amount(
     item_id: str, amount: float, duration: float, fluid_item_ids: frozenset[str]
 ) -> ItemAmount:
-    """One ingredient/product, in units (or m³ for fluids) per minute.
-
-    An item with no descriptor in the export is treated as solid: an unknown item is far likelier
-    to be a descriptor type this parser hasn't seen than a secret fluid, and leaving an amount
-    alone is the harmless failure — scaling one that shouldn't be is not.
-    """
+    """One ingredient/product, in units (or m³ for fluids) per minute. An item with no descriptor
+    is treated as solid: leaving an amount alone is the harmless failure."""
     if item_id in fluid_item_ids:
         amount /= _LITRES_PER_CUBIC_METRE
     return ItemAmount(item_id=item_id, amount_per_minute=_rate_per_minute(amount, duration))
@@ -372,8 +315,7 @@ def _slots_from_recipes(building_id: str, recipes: tuple[Recipe, ...]) -> tuple[
 
 
 def _power_consumption_mw(entry: dict[str, Any]) -> float:
-    """Net draw, signed the way `Building.power_consumption_mw` wants it. See the module docstring
-    for the variable-power buildings, whose fixed ratings read 0."""
+    """Net draw, signed the way `Building.power_consumption_mw` wants it."""
     consumption = float(entry.get("mPowerConsumption") or 0)
     if consumption == 0 and "mEstimatedMaximumPowerConsumption" in entry:
         low = float(entry.get("mEstimatedMininumPowerConsumption") or 0)
@@ -443,8 +385,8 @@ def _class_name_or_none(raw: str | None) -> str | None:
 def _supplemental_rate(
     entry: dict[str, Any], fuels: tuple[GeneratorFuel, ...], fluid_item_ids: frozenset[str]
 ) -> float:
-    """`mSupplementalToPowerRatio` as units (m³ for fluids) per minute per MW — see the module
-    docstring. 0 for a generator none of whose fuels needs a supplemental resource."""
+    """`mSupplementalToPowerRatio` as units (m³ for fluids) per minute per MW. 0 for a generator
+    none of whose fuels needs a supplemental resource."""
     supplemental = next(
         (fuel.supplemental_item_id for fuel in fuels if fuel.supplemental_item_id), None
     )
@@ -458,9 +400,7 @@ def _supplemental_rate(
 
 def _extraction(entry: dict[str, Any]) -> tuple[float, str | None]:
     """An extractor's rate at 100% clock on a normal node, and the one resource it's limited to,
-    if any (`mAllowedResources` lists exactly one; miners list none, meaning "whatever the node
-    has"). `mItemsPerCycle` is in litres for extractors that allow no solid form — the same
-    litres-vs-m³ split as recipe amounts — so a Water Extractor's 2000 per second is 120 m³/min."""
+    if any (miners list none). `mItemsPerCycle` is in litres for fluid-only extractors."""
     cycle_seconds = float(entry.get("mExtractCycleTime") or 0)
     if cycle_seconds <= 0:
         return 0.0, None

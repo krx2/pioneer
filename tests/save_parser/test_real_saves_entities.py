@@ -8,14 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from pioneer.knowledge_base.loader import load_from_file
 from pioneer.save_parser.entities import find_entity_spans
-from pioneer.save_parser.loader import load_body_from_file, load_save_state
+from pioneer.save_parser.loader import load_body_from_file
 from pioneer.save_parser.object_table import find_object_table
 from pioneer.save_parser.properties import find_recipe_ids
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
-_DOCS_JSON = Path(__file__).parent.parent.parent / "docs" / "en-US.json"
 
 _MANUFACTURER_IDS = frozenset(
     {
@@ -35,9 +33,8 @@ _MANUFACTURER_IDS = frozenset(
 
 
 @pytest.fixture(scope="module")
-def known_recipe_ids() -> frozenset[str]:
-    kb = load_from_file(_DOCS_JSON)
-    return frozenset(r.recipe_id for r in kb.recipes)
+def known_recipe_ids(real_kb) -> frozenset[str]:
+    return frozenset(r.recipe_id for r in real_kb.recipes)
 
 
 @pytest.mark.parametrize(
@@ -94,8 +91,8 @@ def test_every_recipe_is_attributed_to_exactly_one_manufacturer(
     assert all(ids[0] in known_recipe_ids for _, ids in carrying)
 
 
-def test_load_save_state_produces_a_usable_existing_factory_graph() -> None:
-    state = load_save_state(_FIXTURES_DIR / "stal_mielec.sav")
+def test_load_save_state_produces_a_usable_existing_factory_graph(real_save) -> None:
+    state = real_save("stal_mielec")
 
     assert state.header.session_name == "stal mielec"
     assert len(state.placements) >= 7000
@@ -121,8 +118,8 @@ def test_load_save_state_produces_a_usable_existing_factory_graph() -> None:
     assert any(p.clock_speed != 1.0 for p in with_recipes)
 
 
-def test_generators_report_their_fuel_and_buildings_their_clock_speed() -> None:
-    state = load_save_state(_FIXTURES_DIR / "stal_mielec.sav")
+def test_generators_report_their_fuel_and_buildings_their_clock_speed(real_save) -> None:
+    state = real_save("stal_mielec")
 
     fuels = Counter((p.building_id, p.fuel_item_id) for p in state.placements if p.fuel_item_id)
     assert fuels == {
@@ -134,8 +131,8 @@ def test_generators_report_their_fuel_and_buildings_their_clock_speed() -> None:
     assert water_pumps.count(0.75) == 18
 
 
-def test_extractors_name_the_node_or_water_volume_they_extract_from() -> None:
-    state = load_save_state(_FIXTURES_DIR / "stal_mielec.sav")
+def test_extractors_name_the_node_or_water_volume_they_extract_from(real_save) -> None:
+    state = real_save("stal_mielec")
 
     for placement in state.placements:
         if placement.building_id in ("Build_MinerMk1_C", "Build_MinerMk2_C", "Build_OilPump_C"):
@@ -151,8 +148,8 @@ def test_extractors_name_the_node_or_water_volume_they_extract_from() -> None:
     assert sum(1 for p in state.placements if p.resource_node_id) == 61
 
 
-def test_the_two_assemblers_put_on_standby_are_left_out_of_the_graph() -> None:
-    state = load_save_state(_FIXTURES_DIR / "wielka_polska_niesmiertelna.sav")
+def test_the_two_assemblers_put_on_standby_are_left_out_of_the_graph(real_save) -> None:
+    state = real_save("wielka_polska_niesmiertelna")
 
     paused = [p for p in state.placements if p.is_paused]
     assert [p.building_id for p in paused] == ["Build_AssemblerMk1_C"] * 2
@@ -173,9 +170,9 @@ def test_the_two_assemblers_put_on_standby_are_left_out_of_the_graph() -> None:
     ],
 )
 def test_small_saves_report_what_the_player_put_on_standby(
-    filename: str, paused: list[str]
+    filename: str, paused: list[str], real_save
 ) -> None:
-    state = load_save_state(_FIXTURES_DIR / filename)
+    state = real_save(filename.removesuffix(".sav"))
 
     assert sorted(p.building_id for p in state.placements if p.is_paused) == paused
     assert state.graph.nodes
@@ -192,9 +189,9 @@ def test_small_saves_report_what_the_player_put_on_standby(
     ],
 )
 def test_the_schematics_the_player_unlocked_are_read(
-    filename: str, unlocked: str, locked: str, known_technology_ids: frozenset[str]
+    filename: str, unlocked: str, locked: str, known_technology_ids: frozenset[str], real_save
 ) -> None:
-    state = load_save_state(_FIXTURES_DIR / filename)
+    state = real_save(filename.removesuffix(".sav"))
 
     assert state.unlocked_technology_ids is not None
     assert "Schematic_StartingRecipes_C" in state.unlocked_technology_ids
@@ -205,5 +202,5 @@ def test_the_schematics_the_player_unlocked_are_read(
 
 
 @pytest.fixture(scope="module")
-def known_technology_ids() -> frozenset[str]:
-    return frozenset(t.technology_id for t in load_from_file(_DOCS_JSON).technologies)
+def known_technology_ids(real_kb) -> frozenset[str]:
+    return frozenset(t.technology_id for t in real_kb.technologies)

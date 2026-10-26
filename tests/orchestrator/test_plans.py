@@ -6,6 +6,8 @@ import json
 from dataclasses import replace
 from typing import Any
 
+from tests.game_data import IRON_INGOT, IRON_PLATE, IRON_ROD, PURE_IRON_INGOT, iron_factory
+
 from pioneer.contracts import (
     Building,
     ChangeAction,
@@ -17,8 +19,6 @@ from pioneer.contracts import (
     PlacementRecord,
     Plan,
     PlanTarget,
-    ProductionGraph,
-    ProductionNode,
     Purity,
     Recipe,
     ResourceNode,
@@ -27,13 +27,6 @@ from pioneer.contracts import (
 from pioneer.orchestrator.base import OrchestratorContext
 from pioneer.orchestrator.orchestrator import handle_query
 
-_IRON_INGOT = Recipe(
-    recipe_id="Recipe_IngotIron_C",
-    name="Iron Ingot",
-    building_ids=("Build_SmelterMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=30),),
-    outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
-)
 _HOT_IRON_INGOT = Recipe(  # made up: an alternate in the same building
     recipe_id="Recipe_Alternate_HotIngot_C",
     name="Alternate: Hot Iron Ingot",
@@ -42,32 +35,7 @@ _HOT_IRON_INGOT = Recipe(  # made up: an alternate in the same building
     outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=60),),
     is_alternate=True,
 )
-_PURE_IRON_INGOT = Recipe(
-    recipe_id="Recipe_Alternate_PureIronIngot_C",
-    name="Alternate: Pure Iron Ingot",
-    building_ids=("Build_OilRefinery_C",),
-    inputs=(
-        ItemAmount(item_id="Desc_OreIron_C", amount_per_minute=35),
-        ItemAmount(item_id="Desc_Water_C", amount_per_minute=20),
-    ),
-    outputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=65),),
-    is_alternate=True,
-)
-_IRON_PLATE = Recipe(
-    recipe_id="Recipe_IronPlate_C",
-    name="Iron Plate",
-    building_ids=("Build_ConstructorMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=30),),
-    outputs=(ItemAmount(item_id="Desc_IronPlate_C", amount_per_minute=20),),
-)
-_IRON_ROD = Recipe(
-    recipe_id="Recipe_IronRod_C",
-    name="Iron Rod",
-    building_ids=("Build_ConstructorMk1_C",),
-    inputs=(ItemAmount(item_id="Desc_IronIngot_C", amount_per_minute=15),),
-    outputs=(ItemAmount(item_id="Desc_IronRod_C", amount_per_minute=15),),
-)
-_RECIPES = (_IRON_INGOT, _HOT_IRON_INGOT, _PURE_IRON_INGOT, _IRON_PLATE, _IRON_ROD)
+_RECIPES = (IRON_INGOT, _HOT_IRON_INGOT, PURE_IRON_INGOT, IRON_PLATE, IRON_ROD)
 _ITEMS = (
     Item(item_id="Desc_IronPlate_C", name="Iron Plate"),
     Item(item_id="Desc_IronRod_C", name="Iron Rod"),
@@ -111,28 +79,6 @@ def _run(context: OrchestratorContext, *calls: dict[str, Any]):
     return result, tool_results, requests
 
 
-def _existing(*, smelters: float, constructors: float) -> ProductionGraph:
-    return ProductionGraph(
-        nodes=(
-            ProductionNode(
-                node_id="save_Recipe_IngotIron_C",
-                recipe_id="Recipe_IngotIron_C",
-                building_id="Build_SmelterMk1_C",
-                machine_count=smelters,
-                is_existing=True,
-            ),
-            ProductionNode(
-                node_id="save_Recipe_IronPlate_C",
-                recipe_id="Recipe_IronPlate_C",
-                building_id="Build_ConstructorMk1_C",
-                machine_count=constructors,
-                is_existing=True,
-            ),
-        ),
-        flows=(),
-    )
-
-
 def _proposed(context: OrchestratorContext, name: str, arguments: dict[str, Any]) -> Plan:
     result, _, _ = _run(context, _call(name, arguments))
     assert result.plan_proposal is not None
@@ -153,7 +99,7 @@ def _revise(plan: Plan, context: OrchestratorContext = _CONTEXT, **arguments: An
 
 
 def test_a_new_plan_is_offered_with_what_it_was_planned_from() -> None:
-    context = replace(_CONTEXT, existing_graph=_existing(smelters=2, constructors=0))
+    context = replace(_CONTEXT, existing_graph=iron_factory(smelters=2, constructors=0))
 
     result, _, _ = _run(
         context,
@@ -174,7 +120,7 @@ def test_a_new_plan_is_offered_with_what_it_was_planned_from() -> None:
 
 def test_an_expansion_is_offered_as_a_plan_extending_the_factory() -> None:
     """2 smelters and 1 constructor leave 30 ingots and 20 plates spare: the plan draws on them."""
-    context = replace(_CONTEXT, existing_graph=_existing(smelters=2, constructors=1))
+    context = replace(_CONTEXT, existing_graph=iron_factory(smelters=2, constructors=1))
 
     plan = _proposed(
         context,
@@ -341,13 +287,13 @@ def test_show_plan_draws_the_plan_as_it_stands() -> None:
 def test_a_plan_extending_the_factory_extends_it_as_it_stood() -> None:
     """The plan adds a constructor to the one standing; the player has built it since. Revised,
     the plan still extends the one that stood -- the one they built is the plan's own."""
-    before = replace(_CONTEXT, existing_graph=_existing(smelters=2, constructors=1))
+    before = replace(_CONTEXT, existing_graph=iron_factory(smelters=2, constructors=1))
     plan = _proposed(
         before,
         "expand_existing_factory",
         {"target_item_id": "Iron Plate", "target_rate_per_minute": 40},
     )
-    built = replace(_CONTEXT, existing_graph=_existing(smelters=2, constructors=2))
+    built = replace(_CONTEXT, existing_graph=iron_factory(smelters=2, constructors=2))
 
     same, _ = _revise(plan, built, targets={"Iron Plate": 40})
     more, tool_result = _revise(plan, built, targets={"Iron Plate": 60})
@@ -366,7 +312,7 @@ def test_a_plan_extending_the_factory_extends_it_as_it_stood() -> None:
 
 
 def test_a_plan_is_offered_only_with_its_own_graph() -> None:
-    context = replace(_CONTEXT, existing_graph=_existing(smelters=2, constructors=1))
+    context = replace(_CONTEXT, existing_graph=iron_factory(smelters=2, constructors=1))
 
     result, _, _ = _run(
         context,
@@ -391,7 +337,7 @@ def _saved(*, smelters: int, constructors: int) -> OrchestratorContext:
     """A save with `smelters` and `constructors` standing, at full clock."""
     return replace(
         _CONTEXT,
-        existing_graph=_existing(smelters=smelters, constructors=constructors),
+        existing_graph=iron_factory(smelters=smelters, constructors=constructors),
         existing_placements=_built(Recipe_IngotIron_C=smelters, Recipe_IronPlate_C=constructors),
     )
 
@@ -477,7 +423,7 @@ def _mined(*nodes: ResourceNode) -> OrchestratorContext:
     """`_ON_NODES` with a save in which a miner stands on each of `nodes`."""
     return replace(
         _ON_NODES,
-        existing_graph=_existing(smelters=0, constructors=0),
+        existing_graph=iron_factory(smelters=0, constructors=0),
         existing_placements=tuple(
             PlacementRecord("Build_MinerMk1_C", node.position, resource_node_id=node.node_id)
             for node in nodes
@@ -568,7 +514,7 @@ def _two_factories(**fields: Any) -> OrchestratorContext:
     )
     return replace(
         _CONTEXT,
-        existing_graph=_existing(smelters=4, constructors=1),
+        existing_graph=iron_factory(smelters=4, constructors=1),
         existing_placements=mega + lone,
         factory_sites=sites,
         **fields,

@@ -1,10 +1,6 @@
-"""Verification & feedback scoring module (implementation.md Stage 15).
-
-Pure scoring functions over a `ResponseArtifact`: RAG-consistency, distance-from-optimum,
-LLM-as-a-judge hooks, and feedback capture — in memory, or kept in JSON-lines files alongside a log
-of every answer. Depends only on `pioneer.contracts` and the Stage 4 Verifier (explicitly allowed by
-implementation.md — a finished function library, not a live integration); tested against hand-built
-fixture artifacts with known-correct expected scores.
+"""Verification & feedback: scoring a `ResponseArtifact` (grounding, distance from optimum,
+LLM-as-a-judge hooks), and feedback capture — in memory, or in JSON-lines files beside a log of
+every answer.
 """
 
 from pioneer.verification_feedback.feedback import FeedbackStore, JsonlFeedbackStore, ResponseLog

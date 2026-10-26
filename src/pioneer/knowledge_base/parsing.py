@@ -10,18 +10,10 @@ from __future__ import annotations
 
 import re
 
+from pioneer.common import class_name_from_path
+
 _ITEM_AMOUNT_RE = re.compile(r'ItemClass="([^"]+)"\s*,\s*Amount=(-?\d+(?:\.\d+)?)')
 _QUOTED_RE = re.compile(r'"([^"]+)"')
-
-
-def class_name_from_path(path: str) -> str:
-    """Extract the bare class name from a UE object path.
-
-    `/Script/Engine.BlueprintGeneratedClass'/Game/.../Desc_IronIngot.Desc_IronIngot_C'`
-    -> `Desc_IronIngot_C`. Also handles paths with no quote wrapper, e.g.
-    `/Script/FactoryGame.FGBuildableAutomatedWorkBench` -> `FGBuildableAutomatedWorkBench`.
-    """
-    return path.rsplit(".", 1)[-1].rstrip("'")
 
 
 def parse_item_amounts(raw: str) -> tuple[tuple[str, float], ...]:

@@ -1,8 +1,5 @@
-"""Deterministic retrieval half of the Q&A Engine (implementation.md Stage 11).
-
-Plain TF-IDF cosine-similarity ranking over an in-memory corpus of `Passage`s — no model, no I/O.
-Kept separate from `engine.py`'s LLM call so this half stays unit-testable without ever invoking a
-model, per architecture.md §3's split between deterministic and LLM code paths.
+"""Deterministic retrieval for the Q&A Engine: TF-IDF cosine-similarity ranking over an in-memory
+corpus of `Passage`s — no model, no I/O.
 """
 
 from __future__ import annotations
@@ -45,7 +42,7 @@ class ScoredPassage:
 
 def significant_words(text: str) -> list[str]:
     """`text`'s words worth matching on, lower-cased, function words dropped — what retrieval
-    scores passages by, and what the Stage 15 grounding check compares an answer against."""
+    scores passages by, and what the grounding check compares an answer against."""
     return [token for token in _TOKEN_RE.findall(text.lower()) if token not in _STOPWORDS]
 
 

@@ -1,5 +1,4 @@
-"""Tests for FeedbackStore — feedback keyed to a response id, not a session
-(implementation.md Stage 15)."""
+"""Tests for FeedbackStore — feedback keyed to a response id, not a session."""
 
 import json
 

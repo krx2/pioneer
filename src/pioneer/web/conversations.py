@@ -1,22 +1,14 @@
-"""The page's conversations, kept on disk so the sidebar can list them and any of them can be
-picked up again — also after a restart, or in another browser.
+"""The page's conversations, kept on disk so the sidebar can list them and any can be picked up
+again, also after a restart.
 
-One JSON file per conversation under `directory`: its title (the first question, shortened), when
-it was started and last answered, and its turns, each the question and the answer exactly as the
-page was sent it — rendered chat, verification badges, graph and map links — so reopening one
-draws it as it was first shown. The graph and map pages those links point at are kept next to them
-under `pages/`: the server holds only the newest answers in memory, and a conversation's panels
-should outlive that.
+One JSON file per conversation under `directory`, each turn the answer exactly as the page was sent
+it, so reopening one draws it as first shown; its graph and map pages are kept under `pages/`.
+A conversation also keeps its plan: accepting a proposal works only while it's a proposal for the
+plan the conversation has, so an older revision can't overwrite a newer one. Each accepted revision
+is noted in `history`; what the player marked built (`marked`) stays across revisions.
 
-A conversation also keeps its plan (see `contracts.plan`): an answer that planned something keeps
-the plan it proposed next to it, as `web.plans` writes it, and accepting that proposal makes it the
-conversation's plan -- only while it's still a proposal for the plan the conversation has, so a
-revision of an older version, or a second first plan, can't overwrite a newer one. Each accepted
-revision is noted in the plan's `history`, with the question that asked for it; what the player
-marked built (`marked`, recipe id -> machines) stays with the plan across its revisions.
-
-Every id is checked against the shape the server itself hands out before it's made into a path,
-so no request can name a file outside `directory`.
+Every id is checked against the shape the server hands out before it's made into a path, so no
+request can name a file outside `directory`.
 """
 
 from __future__ import annotations
@@ -24,9 +16,10 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+
+from pioneer.common import utc_timestamp, write_text_atomic
 
 PageKind = Literal["graph", "map"]
 
@@ -41,6 +34,8 @@ class PlanChanged(Exception):
 
 class ConversationStore:
     """Not thread-safe by itself: the server calls it under its own lock."""
+
+    keeps = True
 
     def __init__(self, directory: Path | str) -> None:
         self._directory = Path(directory)
@@ -72,7 +67,7 @@ class ConversationStore:
         in place of one answered again — with the plan it proposes, if any, and returns the
         conversation's id. Without an id, or with one no conversation has, a new conversation is
         started."""
-        now = _now()
+        now = utc_timestamp("milliseconds")
         conversation = self.get(conversation_id) if conversation_id else None
         if conversation is None:
             conversation = {
@@ -133,7 +128,7 @@ class ConversationStore:
         revision = current["plan"].get("revision", 0) if current is not None else 0
         if proposed.get("revision") != revision + 1:
             raise PlanChanged(response_id)
-        now = _now()
+        now = utc_timestamp("milliseconds")
         before = current or {}
         conversation["plan"] = {
             "plan": proposed,
@@ -183,10 +178,8 @@ class ConversationStore:
 
     def save_page(self, response_id: str, kind: PageKind, page: str) -> None:
         path = self._page_path(response_id, kind)
-        if path is None:
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(page, encoding="utf-8")
+        if path is not None:
+            write_text_atomic(path, page)
 
     def page(self, response_id: str, kind: PageKind) -> str | None:
         path = self._page_path(response_id, kind)
@@ -197,8 +190,7 @@ class ConversationStore:
     def _write(self, conversation: dict[str, Any]) -> None:
         path = self._path(conversation["id"])
         assert path is not None  # the id is one this store made or checked
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(conversation, ensure_ascii=False), encoding="utf-8")
+        write_text_atomic(path, json.dumps(conversation, ensure_ascii=False))
 
     def _path(self, conversation_id: str | None) -> Path | None:
         if not conversation_id or not _ID.match(conversation_id):
@@ -221,6 +213,36 @@ class ConversationStore:
         if not all(key in conversation for key in ("id", "title", "updated_at")):
             return None
         return conversation
+
+
+class NoConversations:
+    """What the server reads conversations from when none are kept: there are none."""
+
+    keeps = False
+
+    def list(self) -> list[dict[str, Any]]:
+        return []
+
+    def get(self, conversation_id: str) -> None:
+        return None
+
+    def plan(self, conversation_id: str) -> None:
+        return None
+
+    def accepted_plans(self) -> dict[str, dict[str, Any]]:
+        return {}
+
+    def accept_plan(self, conversation_id: str, response_id: str) -> None:
+        return None
+
+    def mark_plan(self, conversation_id: str, recipe_id: str, machines: float) -> None:
+        return None
+
+    def delete(self, conversation_id: str) -> bool:
+        return False
+
+    def page(self, response_id: str, kind: PageKind) -> None:
+        return None
 
 
 def _accepted(conversation: dict[str, Any]) -> dict[str, Any] | None:
@@ -265,7 +287,3 @@ def _title(question: str) -> str:
         return text
     cut = text[:_TITLE_CHARS].rsplit(" ", 1)[0]
     return f"{cut or text[:_TITLE_CHARS]}…"
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds")
